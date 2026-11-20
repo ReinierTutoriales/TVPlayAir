@@ -2,20 +2,19 @@ package com.tvplayair.receiver
 
 import android.os.Bundle
 import androidx.activity.ComponentActivity
-import androidx.activity.compose.setContent
-import androidx.tv.material3.MaterialTheme
-import androidx.tv.material3.Surface
-import androidx.tv.material3.Text
+import com.tvplayair.receiver.session.SessionConnection
 
 class MainActivity : ComponentActivity() {
+    private lateinit var sessionConnection: SessionConnection
+
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
-        setContent {
-            MaterialTheme {
-                Surface {
-                    Text(text = "TVPlayAir")
-                }
-            }
-        }
+        sessionConnection = SessionConnection(this)
+        sessionConnection.connect()
+    }
+
+    override fun onDestroy() {
+        sessionConnection.close()
+        super.onDestroy()
     }
 }
