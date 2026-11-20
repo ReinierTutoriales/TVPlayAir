@@ -1,6 +1,5 @@
 package com.tvplayair.receiver.ui
 
-import androidx.activity.compose.BackHandler
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -43,8 +42,6 @@ fun TvOverlayMenu(
         }
         return
     }
-
-    BackHandler(enabled = true, onBack = onDismiss)
 
     val firstControlFocus = remember { FocusRequester() }
     LaunchedEffect(state.visible) {

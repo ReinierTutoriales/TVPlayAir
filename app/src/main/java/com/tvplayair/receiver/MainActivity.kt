@@ -121,7 +121,7 @@ class MainActivity : ComponentActivity(), SurfaceLayerController {
                 override fun onSharedMemoryReady(generationId: Int) {
                     sharedMemoryReady = true
                     mirrorDecoder.setGeneration(generationId)
-                    audioConsumer.start(generationId)
+                    audioConsumer.setGeneration(generationId)
                     refreshOverlayTelemetry()
                 }
 
@@ -170,11 +170,15 @@ class MainActivity : ComponentActivity(), SurfaceLayerController {
                     activeRemote: String
                 ) {
                     overlayState = overlayState.copy(connectedClient = clientName)
+                    if (presentationCoordinator.state != PresentationState.DIRECT_ACTIVE) {
+                        audioConsumer.start()
+                    }
                     refreshOverlayTelemetry()
                 }
 
                 override fun onClientDisconnected() {
                     overlayState = overlayState.copy(connectedClient = null)
+                    audioConsumer.stop()
                     refreshOverlayTelemetry()
                 }
             }
@@ -194,6 +198,10 @@ class MainActivity : ComponentActivity(), SurfaceLayerController {
         }
 
         if (overlayState.visible) {
+            if (keyCode == KeyEvent.KEYCODE_BACK) {
+                setOverlayVisible(false)
+                return true
+            }
             return super.onKeyDown(keyCode, event)
         }
 

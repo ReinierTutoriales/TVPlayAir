@@ -43,6 +43,7 @@ Java_com_tvplayair_receiver_session_NativeSharedMemory_nativeMapConsumerBuffer(
     if (kind == 0) {
         mapped = gConsumerVideo.mapFd(fd, static_cast<size_t>(bytes), false);
     } else if (kind == 1) {
+        tvplayair::oboeConsumer().stop();
         mapped = gConsumerAudio.mapFd(fd, static_cast<size_t>(bytes), false);
     } else {
         ::close(fd);

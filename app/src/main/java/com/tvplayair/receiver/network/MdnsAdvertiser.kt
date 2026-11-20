@@ -139,7 +139,7 @@ class MdnsAdvertiser(context: Context) {
             }
 
             override fun onRegistrationFailed(serviceInfo: NsdServiceInfo, errorCode: Int) {
-                Log.e(TAG, "Failed to register $serviceType (code=$errorCode)")
+                Log.e(TAG, "Failed to register $serviceType (${serviceInfo.serviceName}, code=$errorCode)")
             }
 
             override fun onServiceUnregistered(serviceInfo: NsdServiceInfo) {

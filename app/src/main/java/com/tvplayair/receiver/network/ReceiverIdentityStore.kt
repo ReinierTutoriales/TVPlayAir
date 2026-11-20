@@ -77,13 +77,14 @@ object ReceiverIdentityHelper {
 
     fun availableNames(systemDeviceName: String?): List<String> {
         val list = ArrayList<String>()
+        for (preset in ROOM_PRESETS) {
+            list.add(preset)
+        }
         val sys = systemDeviceName?.trim().orEmpty()
         if (sys.isNotEmpty()) {
-            list.add(sanitizeServiceName(sys))
-        }
-        for (preset in ROOM_PRESETS) {
-            if (list.none { it.equals(preset, ignoreCase = true) }) {
-                list.add(preset)
+            val prefixed = sanitizeServiceName("TVPlayAir $sys")
+            if (list.none { it.equals(prefixed, ignoreCase = true) }) {
+                list.add(prefixed)
             }
         }
         return list
@@ -130,7 +131,17 @@ class ReceiverIdentityStore(context: Context) {
         val mac = existingMac ?: ByteArray(6).also { random.nextBytes(it) }
             .let { ReceiverIdentityHelper.formatLocalMac(it) }
         val uuid = existingUuid ?: UUID.randomUUID().toString()
-        val name = existingName ?: ReceiverIdentityHelper.sanitizeServiceName(readSystemDeviceName())
+        val sysName = readSystemDeviceName()
+        // Avoid bare system hostname (e.g. "GoogleTV5124") which collides with Android 14
+        // built-in Cast mDNS records; prefix with "TVPlayAir" for conflict-free AirPlay discovery.
+        val defaultName = if (!sysName.isNullOrEmpty()) {
+            ReceiverIdentityHelper.sanitizeServiceName("TVPlayAir $sysName")
+        } else {
+            "TVPlayAir"
+        }
+        val name = existingName
+            ?.takeUnless { !sysName.isNullOrEmpty() && it.equals(sysName, ignoreCase = true) }
+            ?: defaultName
         val priv = existingPriv ?: ByteArray(Ed25519.SECRET_KEY_SIZE).also {
             Ed25519.generatePrivateKey(random, it)
         }

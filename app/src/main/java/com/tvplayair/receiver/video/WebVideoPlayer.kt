@@ -1,11 +1,15 @@
 package com.tvplayair.receiver.video
 
 import android.content.Context
+import android.os.Handler
+import android.os.Looper
+import android.util.Log
 import android.view.SurfaceView
 import androidx.annotation.OptIn
 import androidx.media3.common.AudioAttributes
 import androidx.media3.common.C
 import androidx.media3.common.MediaItem
+import androidx.media3.common.PlaybackException
 import androidx.media3.common.Player
 import androidx.media3.common.util.UnstableApi
 import androidx.media3.datasource.DefaultHttpDataSource
@@ -24,20 +28,44 @@ class WebVideoPlayer(
 ) : DirectVideoEngine {
 
     companion object {
+        private const val TAG = "WebVideoPlayer"
+        private const val TELEMETRY_INTERVAL_MS = 1_000L
         const val SAFARI_IOS_USER_AGENT =
             "Mozilla/5.0 (iPhone; CPU iPhone OS 18_0 like Mac OS X) " +
                 "AppleWebKit/605.1.15 (KHTML, like Gecko) Version/18.0 Mobile/15E148 Safari/604.1"
     }
 
     private val appContext = context.applicationContext
+    private val mainHandler = Handler(Looper.getMainLooper())
     private var player: ExoPlayer? = null
+
+    private val telemetryTicker = object : Runnable {
+        override fun run() {
+            val exo = player ?: return
+            onTelemetryChanged(currentTelemetry())
+            if (exo.playbackState == Player.STATE_READY || exo.playbackState == Player.STATE_BUFFERING) {
+                mainHandler.postDelayed(this, TELEMETRY_INTERVAL_MS)
+            }
+        }
+    }
 
     private val playerListener = object : Player.Listener {
         override fun onPlaybackStateChanged(playbackState: Int) {
+            Log.i(TAG, "ExoPlayer state=$playbackState")
             onTelemetryChanged(currentTelemetry())
+            mainHandler.removeCallbacks(telemetryTicker)
+            if (playbackState == Player.STATE_READY || playbackState == Player.STATE_BUFFERING) {
+                mainHandler.postDelayed(telemetryTicker, TELEMETRY_INTERVAL_MS)
+            }
         }
 
         override fun onIsPlayingChanged(isPlaying: Boolean) {
+            Log.i(TAG, "ExoPlayer isPlaying=$isPlaying")
+            onTelemetryChanged(currentTelemetry())
+        }
+
+        override fun onPlayerError(error: PlaybackException) {
+            Log.e(TAG, "ExoPlayer error (${error.errorCodeName}): ${error.message}", error)
             onTelemetryChanged(currentTelemetry())
         }
     }
@@ -104,6 +132,7 @@ class WebVideoPlayer(
     }
 
     override fun stopAndClear() {
+        mainHandler.removeCallbacks(telemetryTicker)
         player?.let { exo ->
             exo.stop()
             exo.clearMediaItems()
@@ -137,6 +166,7 @@ class WebVideoPlayer(
     }
 
     fun release() {
+        mainHandler.removeCallbacks(telemetryTicker)
         player?.let { exo ->
             exo.removeListener(playerListener)
             exo.stop()

@@ -61,9 +61,12 @@ public:
     // or failure. Caller must pass a descriptor whose ownership was detached.
     bool mapFd(int fd, size_t bytes, bool initialize, uint32_t capacity = 0,
                uint32_t payloadCapacity = 0) {
-        if (fd < 0 || bytes < sizeof(RingHeader) || mapping_) {
+        if (fd < 0 || bytes < sizeof(RingHeader)) {
             if (fd >= 0) ::close(fd);
             return false;
+        }
+        if (mapping_) {
+            detach();
         }
 #ifdef __ANDROID__
         const size_t fdSize = ASharedMemory_getSize(fd);

@@ -21,11 +21,11 @@ class ReceiverIdentityTest {
         assertEquals("TVPlayAir", ReceiverIdentityHelper.sanitizeServiceName("   "))
 
         val options = ReceiverIdentityHelper.availableNames("Living Room OLED")
-        assertEquals("Living Room OLED", options.first())
-        assertTrue(options.contains("TVPlayAir Sala"))
+        assertEquals("TVPlayAir Sala", options.first())
         assertTrue(options.contains("TVPlayAir Habitacion"))
+        assertTrue(options.contains("TVPlayAir Living Room OLED"))
 
-        val next = ReceiverIdentityHelper.nextReceiverName("Living Room OLED", "Living Room OLED")
-        assertEquals("TVPlayAir Sala", next)
+        val next = ReceiverIdentityHelper.nextReceiverName("TVPlayAir Sala", "Living Room OLED")
+        assertEquals("TVPlayAir Habitacion", next)
     }
 }
