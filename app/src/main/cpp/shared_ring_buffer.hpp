@@ -28,6 +28,7 @@ struct alignas(kCacheLine) RingHeader {
     uint32_t version;
     uint32_t capacity;
     uint32_t slotSize;
+    uint32_t payloadCapacity;
     alignas(kCacheLine) std::atomic<uint32_t> writePos;
     alignas(kCacheLine) std::atomic<uint32_t> readPos;
     std::atomic<uint32_t> droppedPackets;
@@ -90,6 +91,7 @@ public:
             header_->capacity = capacity;
             header_->slotSize = static_cast<uint32_t>(
                 alignUp(sizeof(PacketHeader) + payloadCapacity));
+            header_->payloadCapacity = payloadCapacity;
             header_->writePos.store(0, std::memory_order_relaxed);
             header_->readPos.store(0, std::memory_order_relaxed);
             header_->droppedPackets.store(0, std::memory_order_relaxed);
@@ -112,7 +114,7 @@ public:
 
     RingResult writePacket(const void* data, uint32_t size, uint32_t generationId) {
         if (!valid() || (!data && size != 0)) return RingResult::Invalid;
-        if (size > header_->slotSize - sizeof(PacketHeader)) {
+        if (size > header_->payloadCapacity) {
             header_->droppedPackets.fetch_add(1, std::memory_order_relaxed);
             return RingResult::Oversized;
         }
@@ -143,7 +145,7 @@ public:
             header_->readPos.store(read + 1, std::memory_order_release);
             return RingResult::StaleGeneration;
         }
-        if (size > header_->slotSize - sizeof(PacketHeader)) {
+        if (size > header_->payloadCapacity) {
             header_->readPos.store(read + 1, std::memory_order_release);
             return RingResult::Invalid;
         }
@@ -169,7 +171,9 @@ private:
         if (!header_ || !mapping_ || header_->magic != kRingMagic ||
             header_->version != kRingVersion || header_->capacity < 2 ||
             (header_->capacity & (header_->capacity - 1)) != 0 ||
-            header_->slotSize <= sizeof(PacketHeader)) return false;
+            header_->slotSize <= sizeof(PacketHeader) ||
+            header_->payloadCapacity == 0 ||
+            header_->payloadCapacity > header_->slotSize - sizeof(PacketHeader)) return false;
         const size_t required = alignUp(sizeof(RingHeader)) +
             static_cast<size_t>(header_->slotSize) * header_->capacity;
         return required <= mappingBytes_;
