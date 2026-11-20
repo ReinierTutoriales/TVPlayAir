@@ -44,6 +44,14 @@ Java_com_tvplayair_receiver_session_NativeSharedMemory_nativeMapConsumerBuffer(
 }
 
 namespace tvplayair {
+SharedRingBuffer& producerVideoRing() {
+    return gProducerVideo;
+}
+
+SharedRingBuffer& producerAudioRing() {
+    return gProducerAudio;
+}
+
 SharedRingBuffer& consumerAudioRing() {
     return gConsumerAudio;
 }
