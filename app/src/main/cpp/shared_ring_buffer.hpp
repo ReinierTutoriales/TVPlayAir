@@ -9,6 +9,9 @@
 #include <sys/mman.h>
 #include <sys/stat.h>
 #include <unistd.h>
+#ifdef __ANDROID__
+#include <android/sharedmem.h>
+#endif
 
 namespace tvplayair {
 
@@ -62,11 +65,19 @@ public:
             if (fd >= 0) ::close(fd);
             return false;
         }
+#ifdef __ANDROID__
+        const size_t fdSize = ASharedMemory_getSize(fd);
+        if (fdSize < bytes) {
+            ::close(fd);
+            return false;
+        }
+#else
         struct stat st {};
         if (::fstat(fd, &st) != 0 || st.st_size < static_cast<off_t>(bytes)) {
             ::close(fd);
             return false;
         }
+#endif
         void* mapped = ::mmap(nullptr, bytes, PROT_READ | PROT_WRITE, MAP_SHARED, fd, 0);
         const int mapError = errno;
         ::close(fd);

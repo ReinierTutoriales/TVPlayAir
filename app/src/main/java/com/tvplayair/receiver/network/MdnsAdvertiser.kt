@@ -83,11 +83,14 @@ class MdnsAdvertiser(context: Context) {
     private var multicastLock: WifiManager.MulticastLock? = null
     private var airPlayListener: NsdManager.RegistrationListener? = null
     private var raopListener: NsdManager.RegistrationListener? = null
+    private var activeConfig: AirPlayAdvertiseConfig? = null
     private var started = false
 
     @Synchronized
     fun start(config: AirPlayAdvertiseConfig) {
+        if (started && activeConfig == config) return
         if (started) stop()
+        activeConfig = config
         acquireLocks()
         registerService(
             serviceName = config.serviceName,
@@ -109,6 +112,7 @@ class MdnsAdvertiser(context: Context) {
     @Synchronized
     fun stop() {
         started = false
+        activeConfig = null
         unregisterSafe(airPlayListener)
         airPlayListener = null
         unregisterSafe(raopListener)
