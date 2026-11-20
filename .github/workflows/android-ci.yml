@@ -25,8 +25,13 @@ jobs:
           g++ -std=c++17 -O2 -Wall -Wextra -Werror -pthread \
             -Iapp/src/main/cpp app/src/test/cpp/shared_ring_buffer_test.cpp \
             -o shared-ring-buffer-test
+          g++ -std=c++17 -O2 -Wall -Wextra -Werror -pthread \
+            -Iapp/src/main/cpp app/src/test/cpp/audio_pcm_pipeline_test.cpp \
+            -o audio-pcm-pipeline-test
       - name: Execute Linux host stress test
-        run: ./shared-ring-buffer-test
+        run: |
+          ./shared-ring-buffer-test
+          ./audio-pcm-pipeline-test
 
   assemble:
     runs-on: ubuntu-latest
@@ -49,5 +54,7 @@ jobs:
         run: chmod +x gradlew
       - name: Set up Gradle
         uses: gradle/actions/setup-gradle@v4
+      - name: Run JVM unit tests
+        run: ./gradlew --no-daemon testDebugUnitTest
       - name: Assemble debug APK
         run: ./gradlew --no-daemon assembleDebug
