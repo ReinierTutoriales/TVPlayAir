@@ -10,11 +10,21 @@ import android.os.Looper
 import android.os.ParcelFileDescriptor
 import com.tvplayair.receiver.ipc.ITvPlayCallback
 import com.tvplayair.receiver.ipc.ITvPlaySession
+import com.tvplayair.receiver.video.DirectPlaybackTelemetry
+
+interface SessionEventListener {
+    fun onSharedMemoryReady(generationId: Int) = Unit
+    fun onSharedMemoryDetached() = Unit
+    fun onVideoConfigChanged(mimeType: String, width: Int, height: Int, generationId: Int) = Unit
+    fun onDirectVideoUrl(url: String, startPositionSec: Double) = Unit
+    fun onDirectVideoCommand(command: String, value: Double) = Unit
+    fun onClientConnected(clientName: String, dacpId: String, activeRemote: String) = Unit
+    fun onClientDisconnected() = Unit
+}
 
 class SessionConnection(
     context: Context,
-    private val onSharedMemoryReady: () -> Unit = {},
-    private val onSharedMemoryDetached: () -> Unit = {}
+    private val listener: SessionEventListener = object : SessionEventListener {}
 ) {
     private val appContext = context.applicationContext
     private val handler = Handler(Looper.getMainLooper())
@@ -22,13 +32,15 @@ class SessionConnection(
     private var remoteBinder: IBinder? = null
     private var bound = false
     private var retryDelayMs = 250L
+    private var lastGenerationId = 0
 
     private val callback = object : ITvPlayCallback.Stub() {
         override fun onSharedMemoryReady(
             videoFd: ParcelFileDescriptor,
             videoSize: Long,
             audioFd: ParcelFileDescriptor,
-            audioSize: Long
+            audioSize: Long,
+            generationId: Int
         ) {
             val videoMapped = NativeSharedMemory.nativeMapConsumerBuffer(
                 0, videoFd.detachFd(), videoSize
@@ -39,12 +51,48 @@ class SessionConnection(
             if (!videoMapped || !audioMapped) {
                 handleBinderDeath()
             } else {
+                lastGenerationId = generationId
                 handler.removeCallbacks(notifyReady)
                 handler.post(notifyReady)
             }
         }
 
         override fun onSessionUnavailable() = handleBinderDeath()
+
+        override fun onVideoConfigChanged(
+            mimeType: String,
+            width: Int,
+            height: Int,
+            generationId: Int
+        ) {
+            handler.post {
+                if (bound) listener.onVideoConfigChanged(mimeType, width, height, generationId)
+            }
+        }
+
+        override fun onDirectVideoUrl(url: String, startPositionSec: Double) {
+            handler.post {
+                if (bound) listener.onDirectVideoUrl(url, startPositionSec)
+            }
+        }
+
+        override fun onDirectVideoCommand(command: String, value: Double) {
+            handler.post {
+                if (bound) listener.onDirectVideoCommand(command, value)
+            }
+        }
+
+        override fun onClientConnected(clientName: String, dacpId: String, activeRemote: String) {
+            handler.post {
+                if (bound) listener.onClientConnected(clientName, dacpId, activeRemote)
+            }
+        }
+
+        override fun onClientDisconnected() {
+            handler.post {
+                if (bound) listener.onClientDisconnected()
+            }
+        }
     }
 
     private val deathRecipient = IBinder.DeathRecipient {
@@ -62,6 +110,7 @@ class SessionConnection(
                 remoteBinder = binder
                 service = ITvPlaySession.Stub.asInterface(binder)
                 service?.registerCallback(callback)
+                service?.startServer()
                 retryDelayMs = 250L
             } catch (_: Exception) {
                 handleBinderDeath()
@@ -81,13 +130,33 @@ class SessionConnection(
         if (!bound) scheduleReconnect()
     }
 
+    fun sendDacpCommand(command: String) {
+        runCatching { service?.sendDacpCommand(command) }
+    }
+
+    fun updatePlaybackTelemetry(telemetry: DirectPlaybackTelemetry) {
+        runCatching {
+            service?.updatePlaybackTelemetry(
+                telemetry.durationSec,
+                telemetry.positionSec,
+                telemetry.rate,
+                telemetry.isPlaying,
+                telemetry.isBuffering
+            )
+        }
+    }
+
+    fun configureAdvertising(maxWidth: Int, maxHeight: Int, hevcEnabled: Boolean) {
+        runCatching { service?.configureAdvertising(maxWidth, maxHeight, hevcEnabled) }
+    }
+
     private fun handleBinderDeath() {
         if (Looper.myLooper() != Looper.getMainLooper()) {
             handler.post { handleBinderDeath() }
             return
         }
         handler.removeCallbacks(notifyReady)
-        onSharedMemoryDetached()
+        listener.onSharedMemoryDetached()
         NativeSharedMemory.nativeDetachConsumerBuffers()
         service = null
         remoteBinder?.let { runCatching { it.unlinkToDeath(deathRecipient, 0) } }
@@ -106,7 +175,7 @@ class SessionConnection(
     }
 
     private val notifyReady = Runnable {
-        if (bound) onSharedMemoryReady()
+        if (bound) listener.onSharedMemoryReady(lastGenerationId)
     }
 
     private val reconnect = Runnable { connect() }
@@ -114,7 +183,11 @@ class SessionConnection(
     fun close() {
         handler.removeCallbacks(reconnect)
         handler.removeCallbacks(notifyReady)
-        onSharedMemoryDetached()
+        runCatching {
+            service?.unregisterCallback(callback)
+            service?.stopServer()
+        }
+        listener.onSharedMemoryDetached()
         NativeSharedMemory.nativeDetachConsumerBuffers()
         service = null
         remoteBinder?.let { runCatching { it.unlinkToDeath(deathRecipient, 0) } }

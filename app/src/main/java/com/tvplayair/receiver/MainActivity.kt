@@ -2,6 +2,7 @@ package com.tvplayair.receiver
 
 import android.graphics.Color
 import android.os.Bundle
+import android.view.KeyEvent
 import android.view.SurfaceHolder
 import android.view.SurfaceView
 import android.view.View
@@ -10,8 +11,12 @@ import android.view.WindowManager
 import android.widget.FrameLayout
 import androidx.activity.ComponentActivity
 import com.tvplayair.receiver.audio.OboeAudioConsumer
+import com.tvplayair.receiver.control.DacpCommand
 import com.tvplayair.receiver.session.SessionConnection
+import com.tvplayair.receiver.session.SessionEventListener
 import com.tvplayair.receiver.video.MirrorDecoder
+import com.tvplayair.receiver.video.MirrorVideoConfig
+import com.tvplayair.receiver.video.PresentationState
 import com.tvplayair.receiver.video.SurfaceLayerController
 import com.tvplayair.receiver.video.VideoPresentationCoordinator
 import com.tvplayair.receiver.video.WebVideoPlayer
@@ -66,7 +71,15 @@ class MainActivity : ComponentActivity(), SurfaceLayerController {
 
         audioConsumer = OboeAudioConsumer(this)
         mirrorDecoder = MirrorDecoder { mirrorSurfaceView.holder.surface }
-        webVideoPlayer = WebVideoPlayer(this, directSurfaceView)
+        webVideoPlayer = WebVideoPlayer(
+            context = this,
+            surfaceView = directSurfaceView,
+            onTelemetryChanged = { telemetry ->
+                if (::sessionConnection.isInitialized) {
+                    sessionConnection.updatePlaybackTelemetry(telemetry)
+                }
+            }
+        )
         presentationCoordinator = VideoPresentationCoordinator(
             mirrorEngine = mirrorDecoder,
             directEngine = webVideoPlayer,
@@ -76,19 +89,116 @@ class MainActivity : ComponentActivity(), SurfaceLayerController {
 
         sessionConnection = SessionConnection(
             context = this,
-            onSharedMemoryReady = {
-                sharedMemoryReady = true
-                audioConsumer.start()
-                if (mirrorSurfaceView.holder.surface?.isValid == true) {
-                    presentationCoordinator.startMirror()
+            listener = object : SessionEventListener {
+                override fun onSharedMemoryReady(generationId: Int) {
+                    sharedMemoryReady = true
+                    mirrorDecoder.setGeneration(generationId)
+                    audioConsumer.start(generationId)
+                    if (mirrorSurfaceView.holder.surface?.isValid == true) {
+                        presentationCoordinator.startMirror()
+                    }
                 }
-            },
-            onSharedMemoryDetached = {
-                sharedMemoryReady = false
-                presentationCoordinator.onSessionDied()
+
+                override fun onSharedMemoryDetached() {
+                    sharedMemoryReady = false
+                    presentationCoordinator.onSessionDied()
+                }
+
+                override fun onVideoConfigChanged(
+                    mimeType: String,
+                    width: Int,
+                    height: Int,
+                    generationId: Int
+                ) {
+                    mirrorDecoder.setGeneration(generationId)
+                    audioConsumer.setGeneration(generationId)
+                    mirrorDecoder.updateConfig(MirrorVideoConfig(mimeType, width, height))
+                }
+
+                override fun onDirectVideoUrl(url: String, startPositionSec: Double) {
+                    presentationCoordinator.switchToDirectVideo(url, startPositionSec)
+                }
+
+                override fun onDirectVideoCommand(command: String, value: Double) {
+                    when (command) {
+                        "play" -> presentationCoordinator.playDirect()
+                        "pause" -> presentationCoordinator.pauseDirect()
+                        "seek" -> presentationCoordinator.seekDirect(value)
+                        "stop" -> presentationCoordinator.switchToMirror()
+                    }
+                }
             }
         )
         sessionConnection.connect()
+    }
+
+    override fun onKeyDown(keyCode: Int, event: KeyEvent?): Boolean {
+        val inDirectMode = presentationCoordinator.state == PresentationState.DIRECT_ACTIVE
+        when (keyCode) {
+            KeyEvent.KEYCODE_MEDIA_PLAY_PAUSE -> {
+                if (inDirectMode) {
+                    if (presentationCoordinator.directTelemetry().isPlaying) {
+                        presentationCoordinator.pauseDirect()
+                    } else {
+                        presentationCoordinator.playDirect()
+                    }
+                } else {
+                    sessionConnection.sendDacpCommand(DacpCommand.PLAY_PAUSE.wirePath)
+                }
+                return true
+            }
+            KeyEvent.KEYCODE_MEDIA_PLAY -> {
+                if (inDirectMode) {
+                    presentationCoordinator.playDirect()
+                } else {
+                    sessionConnection.sendDacpCommand(DacpCommand.PLAY.wirePath)
+                }
+                return true
+            }
+            KeyEvent.KEYCODE_MEDIA_PAUSE -> {
+                if (inDirectMode) {
+                    presentationCoordinator.pauseDirect()
+                } else {
+                    sessionConnection.sendDacpCommand(DacpCommand.PAUSE.wirePath)
+                }
+                return true
+            }
+            KeyEvent.KEYCODE_MEDIA_STOP -> {
+                if (inDirectMode) {
+                    presentationCoordinator.switchToMirror()
+                } else {
+                    sessionConnection.sendDacpCommand(DacpCommand.STOP.wirePath)
+                }
+                return true
+            }
+            KeyEvent.KEYCODE_MEDIA_NEXT -> {
+                sessionConnection.sendDacpCommand(DacpCommand.NEXT.wirePath)
+                return true
+            }
+            KeyEvent.KEYCODE_MEDIA_PREVIOUS -> {
+                sessionConnection.sendDacpCommand(DacpCommand.PREVIOUS.wirePath)
+                return true
+            }
+            KeyEvent.KEYCODE_MEDIA_FAST_FORWARD -> {
+                if (inDirectMode) {
+                    val pos = presentationCoordinator.directTelemetry().positionSec
+                    presentationCoordinator.seekDirect(pos + 10.0)
+                } else {
+                    sessionConnection.sendDacpCommand(DacpCommand.BEGIN_FF.wirePath)
+                }
+                return true
+            }
+            KeyEvent.KEYCODE_MEDIA_REWIND -> {
+                if (inDirectMode) {
+                    val pos = presentationCoordinator.directTelemetry().positionSec
+                    presentationCoordinator.seekDirect((pos - 10.0).coerceAtLeast(0.0))
+                } else {
+                    sessionConnection.sendDacpCommand(DacpCommand.BEGIN_REW.wirePath)
+                }
+                return true
+            }
+        }
+        return super.onKeyDown(keyCode, event)
     }
 
     override fun showMirrorSurface() {
