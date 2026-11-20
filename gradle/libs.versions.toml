@@ -1,6 +1,6 @@
 [versions]
 agp = "9.5.2"
-kotlin = "2.4.10"
+kotlin = "2.4.21"
 compose-bom = "2026.04.01"
 activity-compose = "1.13.0"
 tv-material = "1.1.0"
