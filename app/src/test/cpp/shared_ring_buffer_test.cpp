@@ -1,4 +1,3 @@
-#define _GNU_SOURCE
 #include "shared_ring_buffer.hpp"
 
 #include <array>

@@ -13,16 +13,25 @@ class SessionService : Service() {
 
     private val binder = object : ITvPlaySession.Stub() {
         override fun registerCallback(callback: ITvPlayCallback) {
-            val video = ensureBuffer(0, 16L * 1024 * 1024)
-            val audio = ensureBuffer(1, 512L * 1024)
+            val video = ensureBuffer(0)
+            val audio = ensureBuffer(1)
             if (video == null || audio == null) {
                 callback.onSessionUnavailable()
                 return
             }
-            callback.onSharedMemoryReady(
-                ParcelFileDescriptor.dup(video.fileDescriptor), 16L * 1024 * 1024,
-                ParcelFileDescriptor.dup(audio.fileDescriptor), 512L * 1024
-            )
+            val videoCopy = ParcelFileDescriptor.dup(video.fileDescriptor)
+            try {
+                val audioCopy = ParcelFileDescriptor.dup(audio.fileDescriptor)
+                try {
+                    callback.onSharedMemoryReady(
+                        videoCopy, 16L * 1024 * 1024, audioCopy, 512L * 1024
+                    )
+                } finally {
+                    audioCopy.close()
+                }
+            } finally {
+                videoCopy.close()
+            }
         }
 
         override fun unregisterCallback(callback: ITvPlayCallback) = Unit
@@ -30,7 +39,7 @@ class SessionService : Service() {
         override fun stopServer() = Unit
     }
 
-    private fun ensureBuffer(kind: Int, size: Long): ParcelFileDescriptor? {
+    private fun ensureBuffer(kind: Int): ParcelFileDescriptor? {
         val current = if (kind == 0) videoFd else audioFd
         if (current != null) return current
         val rawFd = NativeSharedMemory.nativeCreateProducerBuffer(kind)

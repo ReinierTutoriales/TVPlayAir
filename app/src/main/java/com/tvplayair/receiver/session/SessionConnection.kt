@@ -15,6 +15,7 @@ class SessionConnection(context: Context) {
     private val appContext = context.applicationContext
     private val handler = Handler(Looper.getMainLooper())
     private var service: ITvPlaySession? = null
+    private var remoteBinder: IBinder? = null
     private var bound = false
     private var retryDelayMs = 250L
 
@@ -37,13 +38,19 @@ class SessionConnection(context: Context) {
         override fun onSessionUnavailable() = handleBinderDeath()
     }
 
-    private val deathRecipient = IBinder.DeathRecipient { handler.post { handleBinderDeath() } }
+    private val deathRecipient = IBinder.DeathRecipient {
+        handler.post { handleBinderDeath() }
+    }
 
     private val connection = object : ServiceConnection {
         override fun onServiceConnected(name: ComponentName?, binder: IBinder?) {
-            if (binder == null) return
+            if (binder == null) {
+                handleBinderDeath()
+                return
+            }
             try {
                 binder.linkToDeath(deathRecipient, 0)
+                remoteBinder = binder
                 service = ITvPlaySession.Stub.asInterface(binder)
                 service?.registerCallback(callback)
                 retryDelayMs = 250L
@@ -62,15 +69,26 @@ class SessionConnection(context: Context) {
             connection,
             Context.BIND_AUTO_CREATE
         )
+        if (!bound) scheduleReconnect()
     }
 
     private fun handleBinderDeath() {
+        if (Looper.myLooper() != Looper.getMainLooper()) {
+            handler.post { handleBinderDeath() }
+            return
+        }
         NativeSharedMemory.nativeDetachConsumerBuffers()
         service = null
+        remoteBinder?.let { runCatching { it.unlinkToDeath(deathRecipient, 0) } }
+        remoteBinder = null
         if (bound) {
             runCatching { appContext.unbindService(connection) }
             bound = false
         }
+        scheduleReconnect()
+    }
+
+    private fun scheduleReconnect() {
         handler.removeCallbacks(reconnect)
         handler.postDelayed(reconnect, retryDelayMs)
         retryDelayMs = (retryDelayMs * 2).coerceAtMost(2000L)
@@ -82,6 +100,8 @@ class SessionConnection(context: Context) {
         handler.removeCallbacks(reconnect)
         NativeSharedMemory.nativeDetachConsumerBuffers()
         service = null
+        remoteBinder?.let { runCatching { it.unlinkToDeath(deathRecipient, 0) } }
+        remoteBinder = null
         if (bound) {
             runCatching { appContext.unbindService(connection) }
             bound = false
