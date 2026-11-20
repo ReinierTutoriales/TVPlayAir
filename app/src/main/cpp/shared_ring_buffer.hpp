@@ -9,6 +9,9 @@
 #include <sys/mman.h>
 #include <sys/stat.h>
 #include <unistd.h>
+#ifdef __ANDROID__
+#include <android/sharedmem.h>
+#endif
 
 namespace tvplayair {
 
@@ -58,15 +61,26 @@ public:
     // or failure. Caller must pass a descriptor whose ownership was detached.
     bool mapFd(int fd, size_t bytes, bool initialize, uint32_t capacity = 0,
                uint32_t payloadCapacity = 0) {
-        if (fd < 0 || bytes < sizeof(RingHeader) || mapping_) {
+        if (fd < 0 || bytes < sizeof(RingHeader)) {
             if (fd >= 0) ::close(fd);
             return false;
         }
+        if (mapping_) {
+            detach();
+        }
+#ifdef __ANDROID__
+        const size_t fdSize = ASharedMemory_getSize(fd);
+        if (fdSize < bytes) {
+            ::close(fd);
+            return false;
+        }
+#else
         struct stat st {};
         if (::fstat(fd, &st) != 0 || st.st_size < static_cast<off_t>(bytes)) {
             ::close(fd);
             return false;
         }
+#endif
         void* mapped = ::mmap(nullptr, bytes, PROT_READ | PROT_WRITE, MAP_SHARED, fd, 0);
         const int mapError = errno;
         ::close(fd);

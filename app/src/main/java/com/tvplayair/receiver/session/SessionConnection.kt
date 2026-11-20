@@ -146,8 +146,13 @@ class SessionConnection(
         }
     }
 
-    fun configureAdvertising(maxWidth: Int, maxHeight: Int, hevcEnabled: Boolean) {
-        runCatching { service?.configureAdvertising(maxWidth, maxHeight, hevcEnabled) }
+    fun configureAdvertising(
+        maxWidth: Int,
+        maxHeight: Int,
+        hevcEnabled: Boolean,
+        serviceName: String
+    ) {
+        runCatching { service?.configureAdvertising(maxWidth, maxHeight, hevcEnabled, serviceName) }
     }
 
     private fun handleBinderDeath() {

@@ -1,5 +1,7 @@
 #include <jni.h>
+#include <android/log.h>
 #include <android/sharedmem.h>
+#include <cerrno>
 #include <unistd.h>
 
 #include "oboe_consumer.hpp"
@@ -37,10 +39,25 @@ Java_com_tvplayair_receiver_session_NativeSharedMemory_nativeCreateProducerBuffe
 extern "C" JNIEXPORT jboolean JNICALL
 Java_com_tvplayair_receiver_session_NativeSharedMemory_nativeMapConsumerBuffer(
     JNIEnv*, jobject, jint kind, jint fd, jlong bytes) {
-    if (kind == 0) return gConsumerVideo.mapFd(fd, static_cast<size_t>(bytes), false);
-    if (kind == 1) return gConsumerAudio.mapFd(fd, static_cast<size_t>(bytes), false);
-    ::close(fd);
-    return JNI_FALSE;
+    bool mapped = false;
+    if (kind == 0) {
+        mapped = gConsumerVideo.mapFd(fd, static_cast<size_t>(bytes), false);
+    } else if (kind == 1) {
+        tvplayair::oboeConsumer().stop();
+        mapped = gConsumerAudio.mapFd(fd, static_cast<size_t>(bytes), false);
+    } else {
+        ::close(fd);
+    }
+    if (!mapped) {
+        __android_log_print(
+            ANDROID_LOG_ERROR,
+            "TVPlayAirIPC",
+            "nativeMapConsumerBuffer failed: kind=%d bytes=%lld errno=%d",
+            kind,
+            static_cast<long long>(bytes),
+            errno);
+    }
+    return mapped ? JNI_TRUE : JNI_FALSE;
 }
 
 namespace tvplayair {

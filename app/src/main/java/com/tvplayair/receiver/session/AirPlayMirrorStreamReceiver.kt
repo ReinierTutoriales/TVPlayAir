@@ -9,6 +9,9 @@ import java.net.Socket
 import java.nio.ByteBuffer
 import java.nio.ByteOrder
 import java.util.concurrent.atomic.AtomicBoolean
+import javax.crypto.Cipher
+import javax.crypto.spec.IvParameterSpec
+import javax.crypto.spec.SecretKeySpec
 
 data class AirPlayMirrorHeader(
     val payloadSize: Int,
@@ -74,7 +77,20 @@ class AirPlayMirrorStreamReceiver(
 
     @Volatile
     private var serverSocket: ServerSocket? = null
+    @Volatile
+    private var streamCipher: Cipher? = null
     private var acceptThread: Thread? = null
+
+    fun configureStreamCipher(key16: ByteArray, iv16: ByteArray) {
+        if (key16.size != 16 || iv16.size != 16) return
+        streamCipher = Cipher.getInstance("AES/CTR/NoPadding").apply {
+            init(Cipher.DECRYPT_MODE, SecretKeySpec(key16, "AES"), IvParameterSpec(iv16))
+        }
+    }
+
+    fun clearStreamCipher() {
+        streamCipher = null
+    }
 
     fun start(port: Int = DEFAULT_MIRROR_PORT): Boolean {
         if (running.get()) return true
@@ -163,12 +179,20 @@ class AirPlayMirrorStreamReceiver(
 
     private fun readIntoDirectBuffer(input: BufferedInputStream, length: Int): Boolean {
         directPayload.clear()
+        val cipher = streamCipher
         var remaining = length
         while (remaining > 0) {
             val toRead = remaining.coerceAtMost(readChunk.size)
             val n = runCatching { input.read(readChunk, 0, toRead) }.getOrDefault(-1)
             if (n <= 0) return false
-            directPayload.put(readChunk, 0, n)
+            if (cipher != null) {
+                val plain = cipher.update(readChunk, 0, n)
+                if (plain != null && plain.isNotEmpty()) {
+                    directPayload.put(plain)
+                }
+            } else {
+                directPayload.put(readChunk, 0, n)
+            }
             remaining -= n
         }
         directPayload.flip()

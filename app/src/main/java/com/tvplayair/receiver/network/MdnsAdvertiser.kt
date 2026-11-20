@@ -15,7 +15,8 @@ data class AirPlayAdvertiseConfig(
     val maxWidth: Int = 3840,
     val maxHeight: Int = 2160,
     val hevcEnabled: Boolean = true,
-    val piUuid: String = UUID.randomUUID().toString()
+    val piUuid: String = UUID.randomUUID().toString(),
+    val publicKeyHex: String = "0".repeat(64)
 )
 
 object MdnsTxtRecords {
@@ -23,15 +24,18 @@ object MdnsTxtRecords {
     const val RAOP_SERVICE_TYPE = "_raop._tcp."
     const val AIRPLAY_FEATURES = "0x5A7FFFF7,0x1E"
     const val AIRPLAY_FLAGS = "0x44"
-    const val AIRPLAY_MODEL = "AppleTV11,1"
+    const val AIRPLAY_MODEL = "AppleTV3,2"
 
     fun buildAirPlayTxt(config: AirPlayAdvertiseConfig): Map<String, String> = linkedMapOf(
+        "acl" to "0",
         "deviceid" to config.deviceId,
         "features" to AIRPLAY_FEATURES,
         "flags" to AIRPLAY_FLAGS,
         "model" to AIRPLAY_MODEL,
         "overscanned" to "0",
         "pi" to config.piUuid,
+        "pk" to config.publicKeyHex,
+        "rsf" to "0x0",
         "srcvers" to "220.68",
         "vv" to "2"
     )
@@ -47,7 +51,9 @@ object MdnsTxtRecords {
         "cn" to "0,1,2,3",
         "da" to "true",
         "et" to "0,3,5",
+        "ft" to AIRPLAY_FEATURES,
         "md" to "0,1,2",
+        "pk" to config.publicKeyHex,
         "pw" to "false",
         "sf" to AIRPLAY_FLAGS,
         "sr" to "48000",
@@ -55,7 +61,8 @@ object MdnsTxtRecords {
         "sv" to "false",
         "tp" to "UDP",
         "vn" to "65537",
-        "vs" to "220.68"
+        "vs" to "220.68",
+        "vv" to "2"
     )
 }
 
@@ -76,11 +83,14 @@ class MdnsAdvertiser(context: Context) {
     private var multicastLock: WifiManager.MulticastLock? = null
     private var airPlayListener: NsdManager.RegistrationListener? = null
     private var raopListener: NsdManager.RegistrationListener? = null
+    private var activeConfig: AirPlayAdvertiseConfig? = null
     private var started = false
 
     @Synchronized
     fun start(config: AirPlayAdvertiseConfig) {
+        if (started && activeConfig == config) return
         if (started) stop()
+        activeConfig = config
         acquireLocks()
         registerService(
             serviceName = config.serviceName,
@@ -102,6 +112,7 @@ class MdnsAdvertiser(context: Context) {
     @Synchronized
     fun stop() {
         started = false
+        activeConfig = null
         unregisterSafe(airPlayListener)
         airPlayListener = null
         unregisterSafe(raopListener)
@@ -128,7 +139,7 @@ class MdnsAdvertiser(context: Context) {
             }
 
             override fun onRegistrationFailed(serviceInfo: NsdServiceInfo, errorCode: Int) {
-                Log.e(TAG, "Failed to register $serviceType (code=$errorCode)")
+                Log.e(TAG, "Failed to register $serviceType (${serviceInfo.serviceName}, code=$errorCode)")
             }
 
             override fun onServiceUnregistered(serviceInfo: NsdServiceInfo) {

@@ -9,6 +9,8 @@ import com.tvplayair.receiver.ipc.ITvPlayCallback
 import com.tvplayair.receiver.ipc.ITvPlaySession
 import com.tvplayair.receiver.network.AirPlayAdvertiseConfig
 import com.tvplayair.receiver.network.MdnsAdvertiser
+import com.tvplayair.receiver.network.ReceiverIdentityHelper
+import com.tvplayair.receiver.network.ReceiverIdentityStore
 import com.tvplayair.receiver.video.DirectPlaybackTelemetry
 
 class SessionService : Service() {
@@ -18,11 +20,13 @@ class SessionService : Service() {
     @Volatile
     private var callback: ITvPlayCallback? = null
 
+    private lateinit var identityStore: ReceiverIdentityStore
     private lateinit var mdnsAdvertiser: MdnsAdvertiser
     private lateinit var dacpController: DacpController
     private lateinit var protocolEngine: AirPlayProtocolEngine
 
     private var advertiseConfig = AirPlayAdvertiseConfig()
+    private var ed25519PrivateKey: ByteArray? = null
     private var serverRunning = false
 
     private val protocolListener = object : AirPlayProtocolListener {
@@ -112,8 +116,19 @@ class SessionService : Service() {
             dacpController.sendCommand(command)
         }
 
-        override fun configureAdvertising(maxWidth: Int, maxHeight: Int, hevcEnabled: Boolean) {
+        override fun configureAdvertising(
+            maxWidth: Int,
+            maxHeight: Int,
+            hevcEnabled: Boolean,
+            serviceName: String
+        ) {
+            val cleanName = if (serviceName.isNotBlank()) {
+                identityStore.saveServiceName(serviceName)
+            } else {
+                advertiseConfig.serviceName
+            }
             advertiseConfig = advertiseConfig.copy(
+                serviceName = ReceiverIdentityHelper.sanitizeServiceName(cleanName),
                 maxWidth = maxWidth,
                 maxHeight = maxHeight,
                 hevcEnabled = hevcEnabled
@@ -126,6 +141,15 @@ class SessionService : Service() {
 
     override fun onCreate() {
         super.onCreate()
+        identityStore = ReceiverIdentityStore(this)
+        val identity = identityStore.loadOrCreate()
+        ed25519PrivateKey = identity.ed25519PrivateKey
+        advertiseConfig = advertiseConfig.copy(
+            serviceName = identity.serviceName,
+            deviceId = identity.deviceId,
+            piUuid = identity.piUuid,
+            publicKeyHex = identity.ed25519PublicKeyHex
+        )
         mdnsAdvertiser = MdnsAdvertiser(this)
         dacpController = DacpController(this)
         protocolEngine = AirPlayDirectHttpServer(protocolListener)
@@ -139,7 +163,9 @@ class SessionService : Service() {
                 airPlayPort = advertiseConfig.airPlayPort,
                 maxWidth = advertiseConfig.maxWidth,
                 maxHeight = advertiseConfig.maxHeight,
-                hevcEnabled = advertiseConfig.hevcEnabled
+                hevcEnabled = advertiseConfig.hevcEnabled,
+                deviceId = advertiseConfig.deviceId,
+                ed25519PrivateKey = ed25519PrivateKey
             )
         )
         if (started) {

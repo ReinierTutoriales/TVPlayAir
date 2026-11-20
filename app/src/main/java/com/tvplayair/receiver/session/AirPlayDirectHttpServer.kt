@@ -45,6 +45,11 @@ class AirPlayDirectHttpServer(
         generationProvider = { generationId.get() },
         isHevcProvider = { activeConfig.hevcEnabled }
     )
+    private val raopRtspServer = RaopRtspServer(
+        listener = listener,
+        configProvider = { activeConfig },
+        mirrorReceiver = mirrorReceiver
+    )
 
     override fun start(config: AirPlayServerConfig): Boolean {
         activeConfig = config
@@ -65,12 +70,14 @@ class AirPlayDirectHttpServer(
             start()
         }
         mirrorReceiver.start()
+        raopRtspServer.start()
         Log.i(TAG, "AirPlay control HTTP server listening on port ${config.airPlayPort}")
         return true
     }
 
     override fun stop() {
         running.set(false)
+        raopRtspServer.stop()
         mirrorReceiver.stop()
         runCatching { serverSocket?.close() }
         serverSocket = null
@@ -180,7 +187,7 @@ class AirPlayDirectHttpServer(
             }
             method == "GET" && path == "/info" -> {
                 val info = AirPlayInfoPlist.formatInfoXml(
-                    deviceId = "58:55:CA:1A:E2:88",
+                    deviceId = activeConfig.deviceId,
                     maxWidth = activeConfig.maxWidth,
                     maxHeight = activeConfig.maxHeight,
                     hevcEnabled = activeConfig.hevcEnabled
@@ -188,7 +195,7 @@ class AirPlayDirectHttpServer(
                 writeResponse(output, 200, "OK", "text/x-apple-plist+xml", info)
             }
             method == "GET" && path == "/server-info" -> {
-                val info = AirPlayInfoPlist.formatServerInfoXml("58:55:CA:1A:E2:88")
+                val info = AirPlayInfoPlist.formatServerInfoXml(activeConfig.deviceId)
                 writeResponse(output, 200, "OK", "text/x-apple-plist+xml", info)
             }
             method == "POST" && path == "/reverse" -> {

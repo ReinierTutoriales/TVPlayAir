@@ -18,6 +18,8 @@ import androidx.tv.material3.MaterialTheme
 import com.tvplayair.receiver.audio.OboeAudioConsumer
 import com.tvplayair.receiver.control.DacpCommand
 import com.tvplayair.receiver.control.TvRemoteHidBridge
+import com.tvplayair.receiver.network.ReceiverIdentityHelper
+import com.tvplayair.receiver.network.ReceiverIdentityStore
 import com.tvplayair.receiver.session.SessionConnection
 import com.tvplayair.receiver.session.SessionEventListener
 import com.tvplayair.receiver.ui.TvOverlayMenu
@@ -28,6 +30,8 @@ import com.tvplayair.receiver.video.PresentationState
 import com.tvplayair.receiver.video.SurfaceLayerController
 import com.tvplayair.receiver.video.VideoPresentationCoordinator
 import com.tvplayair.receiver.video.WebVideoPlayer
+import java.net.Inet4Address
+import java.net.NetworkInterface
 
 class MainActivity : ComponentActivity(), SurfaceLayerController {
     private lateinit var mirrorSurfaceView: SurfaceView
@@ -39,6 +43,7 @@ class MainActivity : ComponentActivity(), SurfaceLayerController {
     private lateinit var presentationCoordinator: VideoPresentationCoordinator
     private lateinit var sessionConnection: SessionConnection
     private lateinit var hidBridge: TvRemoteHidBridge
+    private lateinit var identityStore: ReceiverIdentityStore
 
     private var sharedMemoryReady = false
     private var overlayState by mutableStateOf(TvOverlayState())
@@ -46,6 +51,9 @@ class MainActivity : ComponentActivity(), SurfaceLayerController {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
+        identityStore = ReceiverIdentityStore(this)
+        val initialIdentity = identityStore.loadOrCreate()
+        overlayState = overlayState.copy(receiverName = initialIdentity.serviceName)
 
         // Two native SurfaceViews managed by SurfaceFlinger (zero OpenGL ES in v1.0)
         // to preserve direct Hardware Composer HDR10 / HLG / Dolby Vision passthrough.
@@ -69,6 +77,8 @@ class MainActivity : ComponentActivity(), SurfaceLayerController {
                 MaterialTheme {
                     TvOverlayMenu(
                         state = overlayState,
+                        onOpenMenu = { setOverlayVisible(true) },
+                        onCycleReceiverName = ::cycleReceiverName,
                         onToggleResolution = ::toggleResolutionPreset,
                         onToggleHevc = ::toggleHevcSetting,
                         onAdjustAudioOffset = ::adjustAudioOffset,
@@ -111,10 +121,7 @@ class MainActivity : ComponentActivity(), SurfaceLayerController {
                 override fun onSharedMemoryReady(generationId: Int) {
                     sharedMemoryReady = true
                     mirrorDecoder.setGeneration(generationId)
-                    audioConsumer.start(generationId)
-                    if (mirrorSurfaceView.holder.surface?.isValid == true) {
-                        presentationCoordinator.startMirror()
-                    }
+                    audioConsumer.setGeneration(generationId)
                     refreshOverlayTelemetry()
                 }
 
@@ -136,6 +143,9 @@ class MainActivity : ComponentActivity(), SurfaceLayerController {
                     mirrorDecoder.setGeneration(generationId)
                     audioConsumer.setGeneration(generationId)
                     mirrorDecoder.updateConfig(MirrorVideoConfig(mimeType, width, height))
+                    if (mirrorSurfaceView.holder.surface?.isValid == true) {
+                        presentationCoordinator.startMirror()
+                    }
                     refreshOverlayTelemetry()
                 }
 
@@ -160,16 +170,21 @@ class MainActivity : ComponentActivity(), SurfaceLayerController {
                     activeRemote: String
                 ) {
                     overlayState = overlayState.copy(connectedClient = clientName)
+                    if (presentationCoordinator.state != PresentationState.DIRECT_ACTIVE) {
+                        audioConsumer.start()
+                    }
                     refreshOverlayTelemetry()
                 }
 
                 override fun onClientDisconnected() {
                     overlayState = overlayState.copy(connectedClient = null)
+                    audioConsumer.stop()
                     refreshOverlayTelemetry()
                 }
             }
         )
         sessionConnection.connect()
+        refreshOverlayTelemetry()
     }
 
     override fun onKeyDown(keyCode: Int, event: KeyEvent?): Boolean {
@@ -183,7 +198,19 @@ class MainActivity : ComponentActivity(), SurfaceLayerController {
         }
 
         if (overlayState.visible) {
+            if (keyCode == KeyEvent.KEYCODE_BACK) {
+                setOverlayVisible(false)
+                return true
+            }
             return super.onKeyDown(keyCode, event)
+        }
+
+        if ((keyCode == KeyEvent.KEYCODE_DPAD_CENTER || keyCode == KeyEvent.KEYCODE_ENTER) &&
+            (event == null || event.repeatCount == 0) &&
+            !hidBridge.isConnected()
+        ) {
+            setOverlayVisible(true)
+            return true
         }
 
         val inDirectMode = presentationCoordinator.state == PresentationState.DIRECT_ACTIVE
@@ -270,13 +297,29 @@ class MainActivity : ComponentActivity(), SurfaceLayerController {
         }
     }
 
+    private fun cycleReceiverName() {
+        val nextName = ReceiverIdentityHelper.nextReceiverName(
+            current = overlayState.receiverName,
+            systemDeviceName = identityStore.readSystemDeviceName()
+        )
+        val saved = identityStore.saveServiceName(nextName)
+        overlayState = overlayState.copy(receiverName = saved)
+        sessionConnection.configureAdvertising(
+            overlayState.resolutionPreset.width,
+            overlayState.resolutionPreset.height,
+            overlayState.hevcEnabled,
+            saved
+        )
+    }
+
     private fun toggleResolutionPreset() {
         val next = overlayState.toggleResolution()
         overlayState = next
         sessionConnection.configureAdvertising(
             next.resolutionPreset.width,
             next.resolutionPreset.height,
-            next.hevcEnabled
+            next.hevcEnabled,
+            next.receiverName
         )
     }
 
@@ -286,7 +329,8 @@ class MainActivity : ComponentActivity(), SurfaceLayerController {
         sessionConnection.configureAdvertising(
             next.resolutionPreset.width,
             next.resolutionPreset.height,
-            next.hevcEnabled
+            next.hevcEnabled,
+            next.receiverName
         )
     }
 
@@ -304,9 +348,23 @@ class MainActivity : ComponentActivity(), SurfaceLayerController {
             oboeUnderruns = audioConsumer.getUnderrunCount(),
             oboeRecoveries = audioConsumer.getRecoveryCount(),
             mirrorDroppedNonIdr = mirrorDecoder.frameGate.droppedNonIdrFrames,
-            hidAvailable = hidBridge.isAvailable()
+            hidAvailable = hidBridge.isAvailable(),
+            localIpAddress = resolveLocalIpv4()
         )
     }
+
+    private fun resolveLocalIpv4(): String = runCatching {
+        val interfaces = NetworkInterface.getNetworkInterfaces() ?: return "No network"
+        for (iface in interfaces) {
+            if (!iface.isUp || iface.isLoopback) continue
+            for (addr in iface.inetAddresses) {
+                if (addr is Inet4Address && !addr.isLoopbackAddress) {
+                    return addr.hostAddress ?: continue
+                }
+            }
+        }
+        "No network"
+    }.getOrDefault("No network")
 
     override fun showMirrorSurface() {
         directSurfaceView.visibility = View.INVISIBLE
@@ -329,7 +387,7 @@ class MainActivity : ComponentActivity(), SurfaceLayerController {
 
     private fun surfaceCallback(isDirectSurface: Boolean) = object : SurfaceHolder.Callback {
         override fun surfaceCreated(holder: SurfaceHolder) {
-            if (!isDirectSurface && sharedMemoryReady) {
+            if (!isDirectSurface && sharedMemoryReady && overlayState.connectedClient != null) {
                 presentationCoordinator.startMirror()
                 refreshOverlayTelemetry()
             }
