@@ -45,6 +45,10 @@ class AirPlayDirectHttpServer(
         generationProvider = { generationId.get() },
         isHevcProvider = { activeConfig.hevcEnabled }
     )
+    private val raopRtspServer = RaopRtspServer(
+        listener = listener,
+        configProvider = { activeConfig }
+    )
 
     override fun start(config: AirPlayServerConfig): Boolean {
         activeConfig = config
@@ -65,12 +69,14 @@ class AirPlayDirectHttpServer(
             start()
         }
         mirrorReceiver.start()
+        raopRtspServer.start()
         Log.i(TAG, "AirPlay control HTTP server listening on port ${config.airPlayPort}")
         return true
     }
 
     override fun stop() {
         running.set(false)
+        raopRtspServer.stop()
         mirrorReceiver.stop()
         runCatching { serverSocket?.close() }
         serverSocket = null
