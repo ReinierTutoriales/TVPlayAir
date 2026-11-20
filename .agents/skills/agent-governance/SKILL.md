@@ -1,37 +1,54 @@
 ---
 name: agent-governance
-description: Mandatory rules for all agents. Enforces branch naming, authorship, verification before writing, and optimal documentation. Use before any commit, branch, or documentation change.
+description: Mandatory rules for all agents. Enforces owner-only Git identity, evidence-first changes, deterministic build pins, scope control and exact-SHA integration gates.
 ---
 
 # Agent Governance
 
-Hard constraints that override convenience:
+These constraints override convenience and apply to every task.
 
-## Branches
-- Never create, push, or reference branches whose name contains an AI name, model name, tool name, or non-owner identifier.
-- Forbidden patterns: `claude-*`, `gpt-*`, `grok-*`, `ai-*`, `agent-*`, `copilot-*`, `cursor-*`, or any similar.
-- Use only short, descriptive, owner-neutral names that describe the change.
+## Before any change
 
-## Authorship and signing
-- Never set author, committer, or any signature to a name, email, or identity other than the repository owner (`ReinierTutoriales`).
-- Do not insert AI names, tool names, or third-party identities into commit messages, trailers (`Signed-off-by`, `Co-authored-by`), or file metadata.
-- Commit messages must describe the change factually; do not attribute the work to an agent.
+- Read `AGENTS.md`, this skill, the relevant product skill, implementation, tests and current contracts.
+- Record base SHA, reproducible failure or unmet requirement, expected behavior, affected consumers and the smallest meaningful regression test.
+- Classify failures as product, dependency, build configuration, test fixture or environment before changing anything.
+- Do not make speculative edits, cosmetic churn, duplicate tests or broad refactors to solve a narrow failure.
 
-## Verify before writing
-- Read the relevant source, tests, contracts, and existing documentation before proposing or writing any change.
-- Do not write code, comments, or documentation for the sake of writing.
-- Every line added must be the minimal change that solves a demonstrated need and is traceable to existing code or a clearly labeled, minimal assumption.
-- If something is unclear, state the gap explicitly instead of inventing behavior.
+## Git identity and branches
 
-## Documentation
-- Update documentation only when it reflects verified current behavior.
-- Do not invent APIs, policies, guarantees, or future plans.
-- Prefer editing existing docs over creating new files.
-- Keep documentation short, precise, and consistent with the code and tests.
+- Use short, descriptive, owner-neutral branch names. Never use AI/model/tool names or identifiers in branch names.
+- Author and committer must be the repository owner `ReinierTutoriales`; no AI/tool names, third-party identities, trailers or attribution in commit metadata.
+- Commit messages state the technical change, not who performed it.
+- Do not merge or create the next milestone branch while the current exact-HEAD gate is pending or failing.
 
-## Optimal code
-- Prefer the simplest correct solution that matches existing style and patterns.
-- Avoid speculative refactors, unused helpers, extra abstractions, or changes without measured benefit.
-- A change is incomplete until it has been verified against existing tests and contracts.
+## Deterministic dependency governance
 
-These rules apply to every agent and every change.
+The v1.0 baseline is pinned: minSdk 29, compileSdk 36, targetSdk 35, NDK 28.2.13676358, CMake 3.22.1, Oboe 1.11.0 and Compose BOM 2026.04.01. Do not use dynamic versions or silently upgrade pins. Any proposed change must:
+1. identify the requirement that necessitates it;
+2. inspect official release notes/API compatibility;
+3. inspect the resolved dependency graph, including transitives and artifacts outside BOM control;
+4. verify no dependency requires API 37+;
+5. update Gradle and CI consistently and prove the exact new SHA in CI.
+
+Do not raise compileSdk to hide an incompatible transitive dependency without an explicit product decision.
+
+## Evidence and documentation
+
+- Every code or policy addition must trace to current source, a test, an official contract or an explicitly labeled product requirement.
+- Distinguish desired behavior from implemented behavior and measured device capability.
+- Do not invent APIs, guarantees, benchmark results or hardware compatibility.
+- Update existing documentation only when it describes verified current behavior or a clearly labeled requirement. Prefer concise edits over new documents.
+- Keep claims falsifiable: name the command, SHA, test, device or measurement that supports them.
+
+## Integration gate
+
+- Baseline: `assembleDebug` must pass on the exact PR HEAD.
+- From IPC onward: `assembleDebug` and native SPSC stress tests must pass on the exact PR HEAD.
+- Run relevant unit tests and lint; report their outcomes independently.
+- A previous green SHA, a queued/running job, or a green job for another branch is not a pass.
+- No squash merge, next-branch creation or next-milestone implementation until the current gate is green.
+- Device-only requirements remain open until tested on real Android TV hardware.
+
+## Minimality
+
+Prefer one root cause per commit, the smallest regression test that detects it, no weakened assertions, and the least code that satisfies the verified requirement. Do not optimize by intuition; measure latency, memory, throughput or frame timing before claiming improvement.

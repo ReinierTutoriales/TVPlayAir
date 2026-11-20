@@ -1,20 +1,31 @@
 ---
 name: code-quality
-description: Use when optimizing, cleaning, or reviewing code. Prioritizes simplicity, low-latency behavior, maintainability, and TV remote usability.
+description: Use when optimizing, cleaning, or reviewing TVPlayAir. Prioritizes correctness, bounded resource use, low latency and Android TV hardware constraints.
 ---
 
 # Code Quality
 
-- Analyze for real improvements in clarity, performance, memory use, latency and remote navigation.
-- Prefer the simplest correct solution that matches existing style and keeps the app small/predictable.
-- If a superior alternative exists, choose the most production-solid one for Android TV; state what improved.
-- Keep changes focused and measurable against TV hardware constraints (VPU, memory, Binder).
-- Do not write for the sake of writing.
-- Verify against existing tests and code before considering the change complete.
-- Update documentation only when it reflects verified current behavior.
-- Note any remaining need for real Android TV device validation.
-- Follow agent-governance rules on branches and authorship.
+- Optimize only a demonstrated bottleneck or defect. State the baseline, measurement method and result; otherwise describe the change as a correctness or maintainability improvement, not a performance win.
+- Prefer the smallest correct implementation that matches project patterns and keeps the app predictable on low-memory TV hardware.
+- Account for VPU decoder slots, native heap, SharedMemory capacity, Binder traffic, network-thread blocking, audio callback deadlines and Surface lifecycle.
+- Never block the network/media producer on a full ring buffer. Keep SPSC ownership single-producer/single-consumer and prove memory ordering and wrap-around behavior with native tests.
+- Keep protocol parsing/session work isolated in `:session`; do not leak protocol-specific details into UI or presentation contracts.
+- Keep DACP mandatory and Bluetooth HID optional/best-effort. Failure of optional HID must not affect playback or receiver availability.
+- Preserve native SurfaceView presentation and v1.0's no-OpenGL constraint.
+- Do not introduce dependencies, abstractions, allocations, copies, threads or callbacks without a demonstrated need.
+- Verify compatibility from minSdk 29 through targetSdk 35 and the pinned compileSdk 36 baseline.
+- Check current official Android/AndroidX/Media3/NDK/Oboe documentation before replacing APIs or relying on codec/OS behavior.
+- Report residual device validation explicitly; CI cannot establish HDR passthrough, VPU capacity, audio latency or Bluetooth stack behavior.
+- Follow `agent-governance` for all Git mutations.
+
+## Media and resource transitions
+
+- Model mirror ↔ direct-web playback as an explicit state machine with one owner of the active VPU decode path.
+- Release the mirror MediaCodec before preparing ExoPlayer; do not rely on simultaneous 4K HEVC decode.
+- On return to mirror, restore required codec configuration and gate output until a valid IDR frame. Test transition ordering, cancellation and failure paths.
+- For Oboe, implement Exclusive-to-Shared fallback and stream recovery using the pinned API. Never perform blocking work in the real-time audio callback.
+- For SharedMemory, define FD ownership, map/unmap lifetime, generation invalidation and bounded packet handling. No stale pointer may survive detach or generation change.
 
 ## Replacing older code
 
-Replace an implementation only when the alternative improves security, correctness, performance, maintainability or compatibility from minSdk to targetSdk, and say which. Check the current official Android/AndroidX reference first.
+Replace an implementation only when the alternative improves security, correctness, resource use, maintainability or compatibility. Identify the old defect and verify the replacement against actual code, tests and official references. Avoid speculative refactors and duplicated abstractions.

@@ -1,53 +1,74 @@
 # TVPlayAir — Agent Instructions
 
-## Project
-Receptor AirPlay independiente para Android TV. Arquitectura de 3 capas con proceso aislado `:session`, SharedMemory SPSC para datos de video/audio, dos SurfaceView nativos (MediaCodec + ExoPlayer) y control DACP + HID opcional.
+## Product north star
 
-## Stack
-- Kotlin / Android (Compose for TV overlay)
-- Gradle Kotlin DSL
-- NDK r27+ / CMake 3.22+
-- Media3 ExoPlayer, Google Oboe, MediaCodec
-- AIDL + SharedMemory (ASharedMemory_create)
+Build an independent AirPlay multimedia receiver for Android TV. The iPhone is the controller/source, not the display pipeline for direct web playback: supported web video must play on the TV through Media3 ExoPlayer. v1.0 has four non-negotiable pillars:
 
-## Verification commands
-Use the Gradle wrapper. For a functional change, run the affected unit tests first.
-Use `testDebugUnitTest`, `lintDebug` and `assembleDebug` before integration when the environment supports Android builds. CI on the exact head is the integration gate; report local tests and CI separately.
+1. **Independent playback:** direct web video on the TV, independent of mirroring the phone screen.
+2. **Native presentation quality:** target 4K/60, HEVC 10-bit and HDR passthrough where the TV SoC, decoder, display path, source and Android stack support them. No forced lossy recompression and no OpenGL in v1.0.
+3. **Sofa control:** DACP is mandatory; Bluetooth HID is optional/best-effort and must never block core operation.
+4. **Replaceable protocol engine:** isolate protocol work in `:session`; AIDL is the control plane and a lock-free SPSC SharedMemory ring is the media data plane. Keep protocol implementation behind stable internal contracts so C can later be replaced by Rust/Kotlin without rewriting presentation/UI.
 
-## Priorities
-- Keep the app stable, low-latency and predictable on Android TV hardware.
-- Respect VPU limits (no simultaneous 4K HEVC decode).
-- Isolate protocol crashes in `:session` process.
-- Prefer native Android APIs (SurfaceView, MediaCodec, Oboe, SharedMemory). Avoid unnecessary dependencies.
-- Do not invent APIs, behaviors or protocol features not present in the codebase or official documentation.
+These are product requirements, not claims that every Android TV device supports every codec, HDR format, bitrate or input feature. Prove each capability on representative hardware before claiming it.
 
-## Target and validation (mandatory)
-- Target Android TV and compatible TV boxes on API 29+, with D-pad input.
-- Validate on hardware for video decode, HDR, audio sync and process recovery.
-- Verify in this order and report only what was run: (1) build and unit tests, (2) emulator or device with D-pad for UI, (3) real Android TV for MediaCodec/ExoPlayer/HDR/SharedMemory claims.
-- Never describe a change as performance-improved or latency-reduced without a measurement; never call a flow validated without a run.
+## v1.0 scope firewall
 
-## Hard Rules for All Agents (mandatory)
-- **Branches**: Never create or push branches whose name contains an AI name, model name, tool name, or any non-owner identifier. Use only descriptive, owner-neutral names.
-- **Authorship / signing**: Never commit, sign, or set author/committer to any name, email, or identity that is not the repository owner (`ReinierTutoriales`). Do not use AI names, tool names, or third-party identities in commit messages, trailers, or metadata.
-- **Write only what is verified**: Read the relevant files, tests, contracts, and documentation before proposing or writing any change. Every addition must be the minimal change that solves a demonstrated need.
-- **Documentation**: Update or create documentation only when it reflects verified current behavior. Prefer updating existing docs over creating new ones.
-- **Optimal code**: Prefer the simplest correct solution that matches existing style and patterns. Avoid speculative refactors or changes without measured benefit.
+Only implement the six v1.0 milestones: (1) deterministic Android baseline/CI, (2) AIDL + SharedMemory IPC and native stress tests, (3) Oboe audio pipeline, (4) MediaCodec/ExoPlayer video and VPU handoff, (5) AirPlay/mDNS/DACP session, (6) TV UI/HID and device validation. Do not start v2.0 work until all six are closed: GLSurfaceView/OpenGL PiP or split-screen, USB CDC-NCM, PTP multiroom, persistent HomeKit pairing, or protocol-engine rewrite. Reject unrelated scope creep; record it for later instead of implementing it.
+
+## Deterministic build baseline
+
+Pin and keep aligned in Gradle and CI:
+- `minSdk = 29`, `compileSdk = 36`, `targetSdk = 35`
+- NDK `28.2.13676358`
+- CMake `3.22.1`
+- Oboe `1.11.0`
+- Compose BOM `2026.04.01` (API 36-compatible baseline)
+
+No floating versions, dynamic versions, unreviewed upgrades or dependency that requires API 37+. Before changing a pin, inspect release notes and the dependency graph. Confirm the resolved artifacts, not just declared coordinates. Use `dependencyInsight` for unexpected Compose/AndroidX versions. Do not upgrade the SDK to conceal an incompatible transitive dependency; first identify the dependency introducing it and assess a compatible stable version.
+
+## Stack and architecture
+
+- Kotlin / Android, Gradle Kotlin DSL, Compose for TV overlay.
+- Media3 ExoPlayer, MediaCodec, Google Oboe, NDK/C++ and AIDL.
+- Isolated `:session` process; main process owns presentation and UI.
+- Two native SurfaceViews in v1.0; no OpenGL rendering path.
+- SPSC ring: producer never blocks; overflow drops rather than stalls; validate header/version/generation and packet bounds.
+- DACP mandatory. Bluetooth HID optional and best-effort.
+
+## Hardware and media contracts
+
+- Treat VPU capacity as a hard resource. Never run two simultaneous 4K HEVC decoders unless the specific device has been measured to support it. Release the mirror decoder before preparing the direct ExoPlayer path; define and test the reverse transition, including SPS/PPS/VPS restoration and IDR gating.
+- On API 30+, query the documented MediaCodec low-latency feature before relying on it. Use documented priority fallback where supported. Never force `KEY_OPERATING_RATE = 32767`; do not invent codec capabilities.
+- Oboe: attempt Exclusive when appropriate; on failure explicitly reopen Shared. Implement stream-error recovery, including `onErrorAfterClose()`, according to the pinned Oboe API contract.
+- SharedMemory is created natively with `ASharedMemory_create`. Transfer FD ownership explicitly. Consumer closes its received `ParcelFileDescriptor` immediately after successful mmap; every detach/generation replacement must munmap and invalidate stale access.
+- 4K/60, HEVC 10-bit, HDR10/HLG/Dolby Vision, audio latency and DACP interoperability are device/source/stack-dependent. Never turn a target into a universal guarantee.
+
+## Verification commands and binary gates
+
+Use the Gradle wrapper. Run focused tests first, then relevant neighboring tests. For a functional change, add a regression assertion that fails on the old defect. CI on the exact branch HEAD is the integration gate:
+- Baseline: `assembleDebug = success`.
+- From IPC milestone onward: `assembleDebug = success` **and** native SPSC tests = success.
+- Add relevant unit tests/lint/build checks; report each separately. A green older SHA does not validate a newer SHA.
+- Never merge, create the next milestone branch, or begin its implementation while the current milestone gate is red, pending, or attached to another SHA.
+
+Hardware validation is a separate gate for claims CI cannot prove: codec/VPU transitions, HDR metadata, audio sync, DACP device compatibility, Bluetooth HID, long-running stability and process-death recovery. Record device/model, Android/API level, source format, duration, measured results and failures. If no hardware run occurred, mark it pending; do not infer success from compilation.
+
+## Working method
+
+1. Read this file, the relevant skill, implementation, tests, engineering spec and official Android/AndroidX/NDK/Oboe/Media3 docs before changing behavior.
+2. Record base SHA, exact failing check or missing behavior, expected outcome, affected consumers and the smallest regression test.
+3. Classify failures before editing: product defect, dependency resolution, build configuration, test fixture or runner/environment. Fix the cause, not the symptom.
+4. One root cause and one reviewable commit per change where practical. Avoid broad refactors and duplicate tests.
+5. Inspect resolved dependencies when version alignment is in question. Do not assume the BOM controls artifacts outside its constraints.
+6. Require exact-HEAD CI success before integration. Keep the next milestone blocked until the current milestone is closed.
+7. Report evidence, unverified assumptions, residual risks and hardware checks separately. Never claim zero regressions or unmeasured performance gains.
+
+## Git and authorship
+
+- Use descriptive, owner-neutral branch names; never put AI/model/tool names in branches.
+- Author and committer identity must remain the repository owner, `ReinierTutoriales`. No AI/tool attribution, trailers or metadata.
+- Read the relevant Git governance skill before branch, commit, PR or merge operations.
 
 ## Skills
-Read only the relevant `.agents/skills/` instructions: `precise-coding` for implementation, `testing-discipline` for functional changes, `tv-ui` for focus/layout/overlay, `code-quality` for refactors, and `agent-governance` before Git mutations. Use `no-ai-slop` for prose only (documentation, commit and PR text).
 
-## Contracts that every change must preserve
-- SharedMemory ring buffer is SPSC lock-free; producer never blocks.
-- MediaCodec is released when ExoPlayer takes the foreground (VPU limit).
-- SPS/PPS cache + IDR gate on return to mirror.
-- Two native SurfaceViews in v1.0 (no OpenGL).
-- DACP is mandatory; Bluetooth HID is optional and fails silently.
-- Process `:session` crash must not kill the UI.
-
-## Method and verification
-1. Record base SHA, reproducible failure, expected behavior and consumers of the changed code. Read current tests and contracts before editing.
-2. Fix one cause per commit when possible.
-3. For functional changes, add a test that detects the old defect. Do not weaken existing assertions.
-4. Require green CI for the exact SHA before integrating. For video, audio, HDR and process recovery, also record device validation or mark it as pending.
-5. Do not promise zero regressions. Distinguish automatic coverage, measurement and residual risk.
+Read the relevant `.agents/skills/` file before work: `tvplayair-v1-architecture` for product boundaries/media architecture; `precise-coding` for implementation; `testing-discipline` for tests and CI; `tv-ui` for focus/layout; `code-quality` for optimization/refactors; `agent-governance` before Git mutations; `no-ai-slop` for prose only.
