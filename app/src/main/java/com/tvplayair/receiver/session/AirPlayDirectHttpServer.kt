@@ -38,9 +38,16 @@ class AirPlayDirectHttpServer(
 
     @Volatile
     private var serverSocket: ServerSocket? = null
+    @Volatile
+    private var activeConfig = AirPlayServerConfig()
     private var acceptThread: Thread? = null
+    private val mirrorReceiver = AirPlayMirrorStreamReceiver(
+        generationProvider = { generationId.get() },
+        isHevcProvider = { activeConfig.hevcEnabled }
+    )
 
     override fun start(config: AirPlayServerConfig): Boolean {
+        activeConfig = config
         if (running.get()) return true
         val socket = runCatching {
             ServerSocket().apply {
@@ -57,12 +64,14 @@ class AirPlayDirectHttpServer(
             isDaemon = true
             start()
         }
+        mirrorReceiver.start()
         Log.i(TAG, "AirPlay control HTTP server listening on port ${config.airPlayPort}")
         return true
     }
 
     override fun stop() {
         running.set(false)
+        mirrorReceiver.stop()
         runCatching { serverSocket?.close() }
         serverSocket = null
         acceptThread?.let {
@@ -168,6 +177,26 @@ class AirPlayDirectHttpServer(
             method == "POST" && path == "/stop" -> {
                 listener.onDirectVideoCommand("stop", 0.0)
                 writeResponse(output, 200, "OK")
+            }
+            method == "GET" && path == "/info" -> {
+                val info = AirPlayInfoPlist.formatInfoXml(
+                    deviceId = "58:55:CA:1A:E2:88",
+                    maxWidth = activeConfig.maxWidth,
+                    maxHeight = activeConfig.maxHeight,
+                    hevcEnabled = activeConfig.hevcEnabled
+                )
+                writeResponse(output, 200, "OK", "text/x-apple-plist+xml", info)
+            }
+            method == "GET" && path == "/server-info" -> {
+                val info = AirPlayInfoPlist.formatServerInfoXml("58:55:CA:1A:E2:88")
+                writeResponse(output, 200, "OK", "text/x-apple-plist+xml", info)
+            }
+            method == "POST" && path == "/reverse" -> {
+                val resp = "HTTP/1.1 101 Switching Protocols\r\n" +
+                    "Upgrade: PTTH/1.0\r\n" +
+                    "Connection: Upgrade\r\n\r\n"
+                output.write(resp.toByteArray(StandardCharsets.US_ASCII))
+                output.flush()
             }
             method == "GET" && path == "/playback-info" -> {
                 val plist = AirPlayPlaybackInfoFormatter.formatPlist(latestTelemetry.get())

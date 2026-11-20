@@ -28,10 +28,14 @@ jobs:
           g++ -std=c++17 -O2 -Wall -Wextra -Werror -pthread \
             -Iapp/src/main/cpp app/src/test/cpp/audio_pcm_pipeline_test.cpp \
             -o audio-pcm-pipeline-test
+          g++ -std=c++17 -O2 -Wall -Wextra -Werror -pthread \
+            -Iapp/src/main/cpp app/src/test/cpp/nal_and_producer_test.cpp \
+            -o nal-and-producer-test
       - name: Execute Linux host stress test
         run: |
           ./shared-ring-buffer-test
           ./audio-pcm-pipeline-test
+          ./nal-and-producer-test
 
   assemble:
     runs-on: ubuntu-latest
