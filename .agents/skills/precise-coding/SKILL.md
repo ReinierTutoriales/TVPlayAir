@@ -1,17 +1,19 @@
 ---
 name: precise-coding
-description: Use when writing or modifying any code. Forces grounded output by verifying against the existing codebase. Reduces hallucinations and token waste.
+description: Use when writing or modifying TVPlayAir code. Requires source-grounded changes, pinned dependency compatibility and preservation of v1.0 media/process contracts.
 ---
 
-# Precise Coding (Anti-Hallucination)
+# Precise Coding
 
-1. Read the relevant existing Kotlin/Java/native files, layouts, and tests before writing anything.
-2. Never invent Android APIs, MediaCodec behaviors, ExoPlayer interfaces, SharedMemory patterns, AIDL contracts, focus handling, or features not already present or clearly documented.
-3. If unclear, state the assumption explicitly instead of inventing.
-4. Prefer the smallest change that matches existing patterns and preserves TV remote UX, low-latency video and process isolation.
-5. Do not claim correctness or test passage unless reasoned from the actual project files.
-6. Write only the precise code needed. Do not write for the sake of writing. Avoid speculative refactors or unused code.
-7. Update documentation only when it reflects verified current behavior. Prefer editing existing docs over creating new ones.
-8. Follow agent-governance rules: no AI-named branches, no authorship other than the repository owner.
-
-Every line must be traceable to existing code or a clearly labeled minimal assumption.
+1. Read the actual Kotlin/Java/C++/AIDL/build files, callers, tests and engineering spec before editing. Never code from a roadmap alone.
+2. Check official Android, AndroidX, Media3, NDK and Oboe documentation for APIs and behavior that are version- or device-dependent.
+3. Do not invent APIs, codec capabilities, AirPlay/DACP behavior, ExoPlayer callbacks, Binder semantics, SharedMemory guarantees or Bluetooth support.
+4. Keep the v1.0 baseline pinned: minSdk 29, compileSdk 36, targetSdk 35, NDK 28.2.13676358, CMake 3.22.1, Oboe 1.11.0 and Compose BOM 2026.04.01. No dependency may require API 37+. Inspect resolved transitives with Gradle when resolution is unexpected; a BOM does not necessarily govern every AndroidX artifact.
+5. Preserve the product boundary: independent direct web playback on TV through Media3; native video presentation; DACP required; HID optional; protocol isolated in `:session`; AIDL control plane; SPSC SharedMemory data plane.
+6. Respect the single-VPU-path contract. Release mirror MediaCodec before preparing ExoPlayer; define the reverse transition with codec-config restoration and IDR gating. Never force undocumented operating rates or assume low-latency codec support; query documented capability on API 30+.
+7. Oboe must attempt Exclusive where appropriate, explicitly fall back to Shared and recover stream errors using the pinned API. Do not block the real-time callback.
+8. SharedMemory must be created in native code with `ASharedMemory_create`. Define FD ownership and close the consumer PFD after mmap. Every detach/generation replacement must munmap and invalidate old access. The producer must never block.
+9. Keep v2.0 features out of v1.0: no OpenGL/GLSurfaceView PiP or split-screen, USB CDC-NCM, PTP multiroom, persistent HomeKit or protocol rewrite until all six v1.0 milestones close.
+10. Make the smallest change that solves a demonstrated need. Avoid unrelated formatting, speculative abstractions and duplicate code.
+11. Add a focused regression test for each functional defect. Never weaken assertions or claim tests/builds passed without an actual run on the exact SHA.
+12. Every line must trace to source, a test, an official contract or an explicitly labeled product requirement. State uncertainty rather than guessing.
