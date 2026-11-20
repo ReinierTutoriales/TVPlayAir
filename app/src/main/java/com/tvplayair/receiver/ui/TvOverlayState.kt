@@ -23,7 +23,8 @@ data class TvOverlayState(
     val oboeRecoveries: Long = 0L,
     val mirrorDroppedNonIdr: Long = 0L,
     val hidAvailable: Boolean = false,
-    val localIpAddress: String = "Connecting..."
+    val localIpAddress: String = "Connecting...",
+    val receiverName: String = "TVPlayAir"
 ) {
     companion object {
         const val OFFSET_STEP_MS = 10

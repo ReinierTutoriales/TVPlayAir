@@ -28,6 +28,7 @@ import com.tvplayair.receiver.video.PresentationState
 @Composable
 fun TvOverlayMenu(
     state: TvOverlayState,
+    onCycleReceiverName: () -> Unit,
     onToggleResolution: () -> Unit,
     onToggleHevc: () -> Unit,
     onAdjustAudioOffset: (Int) -> Unit,
@@ -68,10 +69,17 @@ fun TvOverlayMenu(
             )
 
             Button(
-                onClick = onToggleResolution,
+                onClick = onCycleReceiverName,
                 modifier = Modifier
                     .fillMaxWidth()
                     .focusRequester(firstControlFocus)
+            ) {
+                Text("Device: ${state.receiverName}")
+            }
+
+            Button(
+                onClick = onToggleResolution,
+                modifier = Modifier.fillMaxWidth()
             ) {
                 Text("Resolution: ${state.resolutionPreset.label}")
             }
@@ -161,7 +169,7 @@ private fun TvStandbyScreen(state: TvOverlayState) {
             verticalArrangement = Arrangement.spacedBy(10.dp)
         ) {
             Text(
-                text = "TVPlayAir",
+                text = state.receiverName,
                 style = MaterialTheme.typography.displaySmall,
                 color = Color.White
             )

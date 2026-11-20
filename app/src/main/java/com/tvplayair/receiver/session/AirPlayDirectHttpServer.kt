@@ -187,7 +187,7 @@ class AirPlayDirectHttpServer(
             }
             method == "GET" && path == "/info" -> {
                 val info = AirPlayInfoPlist.formatInfoXml(
-                    deviceId = "58:55:CA:1A:E2:88",
+                    deviceId = activeConfig.deviceId,
                     maxWidth = activeConfig.maxWidth,
                     maxHeight = activeConfig.maxHeight,
                     hevcEnabled = activeConfig.hevcEnabled
@@ -195,7 +195,7 @@ class AirPlayDirectHttpServer(
                 writeResponse(output, 200, "OK", "text/x-apple-plist+xml", info)
             }
             method == "GET" && path == "/server-info" -> {
-                val info = AirPlayInfoPlist.formatServerInfoXml("58:55:CA:1A:E2:88")
+                val info = AirPlayInfoPlist.formatServerInfoXml(activeConfig.deviceId)
                 writeResponse(output, 200, "OK", "text/x-apple-plist+xml", info)
             }
             method == "POST" && path == "/reverse" -> {

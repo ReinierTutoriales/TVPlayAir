@@ -128,7 +128,7 @@ class RaopRtspServer(
                 if (request.uri.endsWith("/info")) {
                     val cfg = configProvider()
                     val xml = AirPlayInfoPlist.formatInfoXml(
-                        deviceId = "58:55:CA:1A:E2:88",
+                        deviceId = cfg.deviceId,
                         maxWidth = cfg.maxWidth,
                         maxHeight = cfg.maxHeight,
                         hevcEnabled = cfg.hevcEnabled

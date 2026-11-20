@@ -18,6 +18,8 @@ import androidx.tv.material3.MaterialTheme
 import com.tvplayair.receiver.audio.OboeAudioConsumer
 import com.tvplayair.receiver.control.DacpCommand
 import com.tvplayair.receiver.control.TvRemoteHidBridge
+import com.tvplayair.receiver.network.ReceiverIdentityHelper
+import com.tvplayair.receiver.network.ReceiverIdentityStore
 import com.tvplayair.receiver.session.SessionConnection
 import com.tvplayair.receiver.session.SessionEventListener
 import com.tvplayair.receiver.ui.TvOverlayMenu
@@ -41,6 +43,7 @@ class MainActivity : ComponentActivity(), SurfaceLayerController {
     private lateinit var presentationCoordinator: VideoPresentationCoordinator
     private lateinit var sessionConnection: SessionConnection
     private lateinit var hidBridge: TvRemoteHidBridge
+    private lateinit var identityStore: ReceiverIdentityStore
 
     private var sharedMemoryReady = false
     private var overlayState by mutableStateOf(TvOverlayState())
@@ -48,6 +51,9 @@ class MainActivity : ComponentActivity(), SurfaceLayerController {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
+        identityStore = ReceiverIdentityStore(this)
+        val initialIdentity = identityStore.loadOrCreate()
+        overlayState = overlayState.copy(receiverName = initialIdentity.serviceName)
 
         // Two native SurfaceViews managed by SurfaceFlinger (zero OpenGL ES in v1.0)
         // to preserve direct Hardware Composer HDR10 / HLG / Dolby Vision passthrough.
@@ -71,6 +77,7 @@ class MainActivity : ComponentActivity(), SurfaceLayerController {
                 MaterialTheme {
                     TvOverlayMenu(
                         state = overlayState,
+                        onCycleReceiverName = ::cycleReceiverName,
                         onToggleResolution = ::toggleResolutionPreset,
                         onToggleHevc = ::toggleHevcSetting,
                         onAdjustAudioOffset = ::adjustAudioOffset,
@@ -273,13 +280,29 @@ class MainActivity : ComponentActivity(), SurfaceLayerController {
         }
     }
 
+    private fun cycleReceiverName() {
+        val nextName = ReceiverIdentityHelper.nextReceiverName(
+            current = overlayState.receiverName,
+            systemDeviceName = identityStore.readSystemDeviceName()
+        )
+        val saved = identityStore.saveServiceName(nextName)
+        overlayState = overlayState.copy(receiverName = saved)
+        sessionConnection.configureAdvertising(
+            overlayState.resolutionPreset.width,
+            overlayState.resolutionPreset.height,
+            overlayState.hevcEnabled,
+            saved
+        )
+    }
+
     private fun toggleResolutionPreset() {
         val next = overlayState.toggleResolution()
         overlayState = next
         sessionConnection.configureAdvertising(
             next.resolutionPreset.width,
             next.resolutionPreset.height,
-            next.hevcEnabled
+            next.hevcEnabled,
+            next.receiverName
         )
     }
 
@@ -289,7 +312,8 @@ class MainActivity : ComponentActivity(), SurfaceLayerController {
         sessionConnection.configureAdvertising(
             next.resolutionPreset.width,
             next.resolutionPreset.height,
-            next.hevcEnabled
+            next.hevcEnabled,
+            next.receiverName
         )
     }
 
