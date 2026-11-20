@@ -8,7 +8,8 @@ data class AirPlayServerConfig(
     val maxWidth: Int = 3840,
     val maxHeight: Int = 2160,
     val hevcEnabled: Boolean = true,
-    val deviceId: String = "58:55:CA:1A:E2:88"
+    val deviceId: String = "58:55:CA:1A:E2:88",
+    val ed25519PrivateKey: ByteArray? = null
 )
 
 interface AirPlayProtocolListener {

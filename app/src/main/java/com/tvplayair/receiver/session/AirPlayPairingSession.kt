@@ -14,7 +14,8 @@ import javax.crypto.spec.SecretKeySpec
  * using RFC 7748 X25519, RFC 8032 Ed25519, SHA-512 and AES-128-CTR.
  */
 class AirPlayPairingSession(
-    private val random: SecureRandom = SecureRandom()
+    private val random: SecureRandom = SecureRandom(),
+    initialEdPrivateKey: ByteArray? = null
 ) {
     private val edPrivateKey = ByteArray(Ed25519.SECRET_KEY_SIZE)
     private val edPublicKey = ByteArray(Ed25519.PUBLIC_KEY_SIZE)
@@ -30,7 +31,17 @@ class AirPlayPairingSession(
         private set
 
     init {
-        Ed25519.generatePrivateKey(random, edPrivateKey)
+        if (initialEdPrivateKey != null && initialEdPrivateKey.size == Ed25519.SECRET_KEY_SIZE) {
+            System.arraycopy(initialEdPrivateKey, 0, edPrivateKey, 0, Ed25519.SECRET_KEY_SIZE)
+        } else {
+            Ed25519.generatePrivateKey(random, edPrivateKey)
+        }
+        Ed25519.generatePublicKey(edPrivateKey, 0, edPublicKey, 0)
+    }
+
+    fun setEdPrivateKey(privateKey32: ByteArray) {
+        if (privateKey32.size != Ed25519.SECRET_KEY_SIZE) return
+        System.arraycopy(privateKey32, 0, edPrivateKey, 0, Ed25519.SECRET_KEY_SIZE)
         Ed25519.generatePublicKey(edPrivateKey, 0, edPublicKey, 0)
     }
 

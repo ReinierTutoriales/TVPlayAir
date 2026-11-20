@@ -26,6 +26,7 @@ class SessionService : Service() {
     private lateinit var protocolEngine: AirPlayProtocolEngine
 
     private var advertiseConfig = AirPlayAdvertiseConfig()
+    private var ed25519PrivateKey: ByteArray? = null
     private var serverRunning = false
 
     private val protocolListener = object : AirPlayProtocolListener {
@@ -142,10 +143,12 @@ class SessionService : Service() {
         super.onCreate()
         identityStore = ReceiverIdentityStore(this)
         val identity = identityStore.loadOrCreate()
+        ed25519PrivateKey = identity.ed25519PrivateKey
         advertiseConfig = advertiseConfig.copy(
             serviceName = identity.serviceName,
             deviceId = identity.deviceId,
-            piUuid = identity.piUuid
+            piUuid = identity.piUuid,
+            publicKeyHex = identity.ed25519PublicKeyHex
         )
         mdnsAdvertiser = MdnsAdvertiser(this)
         dacpController = DacpController(this)
@@ -161,7 +164,8 @@ class SessionService : Service() {
                 maxWidth = advertiseConfig.maxWidth,
                 maxHeight = advertiseConfig.maxHeight,
                 hevcEnabled = advertiseConfig.hevcEnabled,
-                deviceId = advertiseConfig.deviceId
+                deviceId = advertiseConfig.deviceId,
+                ed25519PrivateKey = ed25519PrivateKey
             )
         )
         if (started) {

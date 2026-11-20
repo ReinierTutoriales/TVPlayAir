@@ -44,6 +44,7 @@ class RaopRtspServer(
     fun currentGenerationId(): Int = generationId.get()
 
     fun start(port: Int = DEFAULT_RAOP_PORT): Boolean {
+        configProvider().ed25519PrivateKey?.let { pairingSession.setEdPrivateKey(it) }
         if (running.get()) return true
         val socket = runCatching {
             ServerSocket().apply {

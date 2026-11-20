@@ -77,6 +77,7 @@ class MainActivity : ComponentActivity(), SurfaceLayerController {
                 MaterialTheme {
                     TvOverlayMenu(
                         state = overlayState,
+                        onOpenMenu = { setOverlayVisible(true) },
                         onCycleReceiverName = ::cycleReceiverName,
                         onToggleResolution = ::toggleResolutionPreset,
                         onToggleHevc = ::toggleHevcSetting,
@@ -121,9 +122,6 @@ class MainActivity : ComponentActivity(), SurfaceLayerController {
                     sharedMemoryReady = true
                     mirrorDecoder.setGeneration(generationId)
                     audioConsumer.start(generationId)
-                    if (mirrorSurfaceView.holder.surface?.isValid == true) {
-                        presentationCoordinator.startMirror()
-                    }
                     refreshOverlayTelemetry()
                 }
 
@@ -145,6 +143,9 @@ class MainActivity : ComponentActivity(), SurfaceLayerController {
                     mirrorDecoder.setGeneration(generationId)
                     audioConsumer.setGeneration(generationId)
                     mirrorDecoder.updateConfig(MirrorVideoConfig(mimeType, width, height))
+                    if (mirrorSurfaceView.holder.surface?.isValid == true) {
+                        presentationCoordinator.startMirror()
+                    }
                     refreshOverlayTelemetry()
                 }
 
@@ -194,6 +195,14 @@ class MainActivity : ComponentActivity(), SurfaceLayerController {
 
         if (overlayState.visible) {
             return super.onKeyDown(keyCode, event)
+        }
+
+        if ((keyCode == KeyEvent.KEYCODE_DPAD_CENTER || keyCode == KeyEvent.KEYCODE_ENTER) &&
+            (event == null || event.repeatCount == 0) &&
+            !hidBridge.isConnected()
+        ) {
+            setOverlayVisible(true)
+            return true
         }
 
         val inDirectMode = presentationCoordinator.state == PresentationState.DIRECT_ACTIVE
@@ -370,7 +379,7 @@ class MainActivity : ComponentActivity(), SurfaceLayerController {
 
     private fun surfaceCallback(isDirectSurface: Boolean) = object : SurfaceHolder.Callback {
         override fun surfaceCreated(holder: SurfaceHolder) {
-            if (!isDirectSurface && sharedMemoryReady) {
+            if (!isDirectSurface && sharedMemoryReady && overlayState.connectedClient != null) {
                 presentationCoordinator.startMirror()
                 refreshOverlayTelemetry()
             }

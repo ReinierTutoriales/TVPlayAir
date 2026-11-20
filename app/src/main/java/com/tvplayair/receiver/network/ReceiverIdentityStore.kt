@@ -2,6 +2,7 @@ package com.tvplayair.receiver.network
 
 import android.content.Context
 import android.provider.Settings
+import org.bouncycastle.math.ec.rfc8032.Ed25519
 import java.security.SecureRandom
 import java.util.Locale
 import java.util.UUID
@@ -9,7 +10,9 @@ import java.util.UUID
 data class ReceiverIdentity(
     val serviceName: String,
     val deviceId: String,
-    val piUuid: String
+    val piUuid: String,
+    val ed25519PrivateKey: ByteArray,
+    val ed25519PublicKeyHex: String
 )
 
 object ReceiverIdentityHelper {
@@ -38,6 +41,30 @@ object ReceiverIdentityHelper {
             raw6[4].toInt() and 0xFF,
             raw6[5].toInt() and 0xFF
         )
+    }
+
+    fun toHexLower(bytes: ByteArray): String {
+        val sb = StringBuilder(bytes.size * 2)
+        for (b in bytes) {
+            sb.append(String.format(Locale.US, "%02x", b.toInt() and 0xFF))
+        }
+        return sb.toString()
+    }
+
+    fun fromHex(hex: String): ByteArray? {
+        if (hex.length % 2 != 0) return null
+        return runCatching {
+            ByteArray(hex.length / 2) { i ->
+                hex.substring(i * 2, i * 2 + 2).toInt(16).toByte()
+            }
+        }.getOrNull()
+    }
+
+    fun deriveEd25519PublicKeyHex(privateKey32: ByteArray): String {
+        require(privateKey32.size == Ed25519.SECRET_KEY_SIZE) { "Expected 32-byte Ed25519 private key" }
+        val pub = ByteArray(Ed25519.PUBLIC_KEY_SIZE)
+        Ed25519.generatePublicKey(privateKey32, 0, pub, 0)
+        return toHexLower(pub)
     }
 
     fun sanitizeServiceName(raw: String?): String {
@@ -70,8 +97,8 @@ object ReceiverIdentityHelper {
 }
 
 /**
- * Persists a stable per-TV AirPlay identity (unique deviceId MAC, piUuid and room name)
- * so multiple Android TVs on the same network are cleanly distinguishable on iOS.
+ * Persists a stable per-TV AirPlay identity (unique deviceId MAC, piUuid, Ed25519 keypair
+ * and room name) so multiple Android TVs on the same network are cleanly distinguishable on iOS.
  */
 class ReceiverIdentityStore(context: Context) {
     companion object {
@@ -79,6 +106,7 @@ class ReceiverIdentityStore(context: Context) {
         private const val KEY_DEVICE_ID = "device_id"
         private const val KEY_PI_UUID = "pi_uuid"
         private const val KEY_SERVICE_NAME = "service_name"
+        private const val KEY_ED25519_PRIV = "ed25519_priv"
     }
 
     private val appContext = context.applicationContext
@@ -91,23 +119,38 @@ class ReceiverIdentityStore(context: Context) {
     }.getOrNull()
 
     fun loadOrCreate(): ReceiverIdentity {
+        val random = SecureRandom()
         val existingMac = prefs.getString(KEY_DEVICE_ID, null)
         val existingUuid = prefs.getString(KEY_PI_UUID, null)
         val existingName = prefs.getString(KEY_SERVICE_NAME, null)
+        val existingPrivHex = prefs.getString(KEY_ED25519_PRIV, null)
+        val existingPriv = existingPrivHex?.let { ReceiverIdentityHelper.fromHex(it) }
+            ?.takeIf { it.size == Ed25519.SECRET_KEY_SIZE }
 
-        val mac = existingMac ?: ByteArray(6).also { SecureRandom().nextBytes(it) }
+        val mac = existingMac ?: ByteArray(6).also { random.nextBytes(it) }
             .let { ReceiverIdentityHelper.formatLocalMac(it) }
         val uuid = existingUuid ?: UUID.randomUUID().toString()
         val name = existingName ?: ReceiverIdentityHelper.sanitizeServiceName(readSystemDeviceName())
+        val priv = existingPriv ?: ByteArray(Ed25519.SECRET_KEY_SIZE).also {
+            Ed25519.generatePrivateKey(random, it)
+        }
+        val pubHex = ReceiverIdentityHelper.deriveEd25519PublicKeyHex(priv)
 
-        if (existingMac == null || existingUuid == null || existingName == null) {
+        if (existingMac == null || existingUuid == null || existingName == null || existingPriv == null) {
             prefs.edit()
                 .putString(KEY_DEVICE_ID, mac)
                 .putString(KEY_PI_UUID, uuid)
                 .putString(KEY_SERVICE_NAME, name)
+                .putString(KEY_ED25519_PRIV, ReceiverIdentityHelper.toHexLower(priv))
                 .apply()
         }
-        return ReceiverIdentity(serviceName = name, deviceId = mac, piUuid = uuid)
+        return ReceiverIdentity(
+            serviceName = name,
+            deviceId = mac,
+            piUuid = uuid,
+            ed25519PrivateKey = priv,
+            ed25519PublicKeyHex = pubHex
+        )
     }
 
     fun saveServiceName(name: String): String {

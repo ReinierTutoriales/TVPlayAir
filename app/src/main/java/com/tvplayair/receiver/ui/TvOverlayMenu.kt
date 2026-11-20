@@ -6,9 +6,11 @@ import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.width
 import androidx.compose.runtime.Composable
@@ -28,6 +30,7 @@ import com.tvplayair.receiver.video.PresentationState
 @Composable
 fun TvOverlayMenu(
     state: TvOverlayState,
+    onOpenMenu: () -> Unit,
     onCycleReceiverName: () -> Unit,
     onToggleResolution: () -> Unit,
     onToggleHevc: () -> Unit,
@@ -36,7 +39,7 @@ fun TvOverlayMenu(
 ) {
     if (!state.visible) {
         if (state.presentationState == PresentationState.IDLE && state.connectedClient == null) {
-            TvStandbyScreen(state)
+            TvStandbyScreen(state = state, onOpenMenu = onOpenMenu)
         }
         return
     }
@@ -56,7 +59,7 @@ fun TvOverlayMenu(
     ) {
         Column(
             modifier = Modifier
-                .width(360.dp)
+                .width(380.dp)
                 .fillMaxHeight()
                 .background(Color(0xE614181F))
                 .padding(24.dp),
@@ -74,14 +77,14 @@ fun TvOverlayMenu(
                     .fillMaxWidth()
                     .focusRequester(firstControlFocus)
             ) {
-                Text("Device: ${state.receiverName}")
+                Text("Dispositivo: ${state.receiverName}")
             }
 
             Button(
                 onClick = onToggleResolution,
                 modifier = Modifier.fillMaxWidth()
             ) {
-                Text("Resolution: ${state.resolutionPreset.label}")
+                Text("Resolución: ${state.resolutionPreset.label}")
             }
 
             Button(
@@ -92,7 +95,7 @@ fun TvOverlayMenu(
             }
 
             Text(
-                text = "Audio Offset: ${state.audioOffsetMs} ms",
+                text = "Offset de audio: ${state.audioOffsetMs} ms",
                 style = MaterialTheme.typography.titleMedium,
                 color = Color(0xFFD8DEE9)
             )
@@ -127,7 +130,7 @@ fun TvOverlayMenu(
                     color = Color(0xFF88C0D0)
                 )
                 Text(
-                    text = "Client: ${state.connectedClient ?: "Idle"}",
+                    text = "Cliente: ${state.connectedClient ?: "En espera"}",
                     style = MaterialTheme.typography.bodySmall,
                     color = Color(0xFFD8DEE9)
                 )
@@ -140,7 +143,7 @@ fun TvOverlayMenu(
                 )
                 Text(
                     text = "IDR drops: ${state.mirrorDroppedNonIdr} | BT HID: " +
-                        if (state.hidAvailable) "Ready" else "Off",
+                        if (state.hidAvailable) "Listo" else "Off",
                     style = MaterialTheme.typography.bodySmall,
                     color = Color(0xFFD8DEE9)
                 )
@@ -150,14 +153,22 @@ fun TvOverlayMenu(
                 onClick = onDismiss,
                 modifier = Modifier.fillMaxWidth()
             ) {
-                Text("Close Menu")
+                Text("Cerrar")
             }
         }
     }
 }
 
 @Composable
-private fun TvStandbyScreen(state: TvOverlayState) {
+private fun TvStandbyScreen(
+    state: TvOverlayState,
+    onOpenMenu: () -> Unit
+) {
+    val settingsFocus = remember { FocusRequester() }
+    LaunchedEffect(Unit) {
+        settingsFocus.requestFocus()
+    }
+
     Box(
         modifier = Modifier
             .fillMaxSize()
@@ -166,7 +177,7 @@ private fun TvStandbyScreen(state: TvOverlayState) {
     ) {
         Column(
             horizontalAlignment = Alignment.CenterHorizontally,
-            verticalArrangement = Arrangement.spacedBy(10.dp)
+            verticalArrangement = Arrangement.spacedBy(12.dp)
         ) {
             Text(
                 text = state.receiverName,
@@ -174,16 +185,23 @@ private fun TvStandbyScreen(state: TvOverlayState) {
                 color = Color.White
             )
             Text(
-                text = "Ready for AirPlay  •  ${state.resolutionPreset.label}  •  " +
+                text = "Listo para AirPlay  •  ${state.resolutionPreset.label}  •  " +
                     if (state.hevcEnabled) "H.265/HEVC" else "H.264",
                 style = MaterialTheme.typography.titleMedium,
                 color = Color(0xFF88C0D0)
             )
             Text(
-                text = "LAN: ${state.localIpAddress}:7000  |  Press MENU for settings",
+                text = "Red local: ${state.localIpAddress}:7000",
                 style = MaterialTheme.typography.bodyMedium,
                 color = Color(0xFF9AA7B8)
             )
+            Spacer(modifier = Modifier.height(12.dp))
+            Button(
+                onClick = onOpenMenu,
+                modifier = Modifier.focusRequester(settingsFocus)
+            ) {
+                Text("Ajustes (OK)")
+            }
         }
     }
 }
