@@ -23,6 +23,7 @@ import androidx.compose.ui.unit.dp
 import androidx.tv.material3.Button
 import androidx.tv.material3.MaterialTheme
 import androidx.tv.material3.Text
+import com.tvplayair.receiver.video.PresentationState
 
 @Composable
 fun TvOverlayMenu(
@@ -32,7 +33,12 @@ fun TvOverlayMenu(
     onAdjustAudioOffset: (Int) -> Unit,
     onDismiss: () -> Unit
 ) {
-    if (!state.visible) return
+    if (!state.visible) {
+        if (state.presentationState == PresentationState.IDLE && state.connectedClient == null) {
+            TvStandbyScreen(state)
+        }
+        return
+    }
 
     BackHandler(enabled = true, onBack = onDismiss)
 
@@ -138,6 +144,38 @@ fun TvOverlayMenu(
             ) {
                 Text("Close Menu")
             }
+        }
+    }
+}
+
+@Composable
+private fun TvStandbyScreen(state: TvOverlayState) {
+    Box(
+        modifier = Modifier
+            .fillMaxSize()
+            .background(Color(0xFF0C1017)),
+        contentAlignment = Alignment.Center
+    ) {
+        Column(
+            horizontalAlignment = Alignment.CenterHorizontally,
+            verticalArrangement = Arrangement.spacedBy(10.dp)
+        ) {
+            Text(
+                text = "TVPlayAir",
+                style = MaterialTheme.typography.displaySmall,
+                color = Color.White
+            )
+            Text(
+                text = "Ready for AirPlay  •  ${state.resolutionPreset.label}  •  " +
+                    if (state.hevcEnabled) "H.265/HEVC" else "H.264",
+                style = MaterialTheme.typography.titleMedium,
+                color = Color(0xFF88C0D0)
+            )
+            Text(
+                text = "LAN: ${state.localIpAddress}:7000  |  Press MENU for settings",
+                style = MaterialTheme.typography.bodyMedium,
+                color = Color(0xFF9AA7B8)
+            )
         }
     }
 }

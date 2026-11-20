@@ -28,6 +28,8 @@ import com.tvplayair.receiver.video.PresentationState
 import com.tvplayair.receiver.video.SurfaceLayerController
 import com.tvplayair.receiver.video.VideoPresentationCoordinator
 import com.tvplayair.receiver.video.WebVideoPlayer
+import java.net.Inet4Address
+import java.net.NetworkInterface
 
 class MainActivity : ComponentActivity(), SurfaceLayerController {
     private lateinit var mirrorSurfaceView: SurfaceView
@@ -170,6 +172,7 @@ class MainActivity : ComponentActivity(), SurfaceLayerController {
             }
         )
         sessionConnection.connect()
+        refreshOverlayTelemetry()
     }
 
     override fun onKeyDown(keyCode: Int, event: KeyEvent?): Boolean {
@@ -304,9 +307,23 @@ class MainActivity : ComponentActivity(), SurfaceLayerController {
             oboeUnderruns = audioConsumer.getUnderrunCount(),
             oboeRecoveries = audioConsumer.getRecoveryCount(),
             mirrorDroppedNonIdr = mirrorDecoder.frameGate.droppedNonIdrFrames,
-            hidAvailable = hidBridge.isAvailable()
+            hidAvailable = hidBridge.isAvailable(),
+            localIpAddress = resolveLocalIpv4()
         )
     }
+
+    private fun resolveLocalIpv4(): String = runCatching {
+        val interfaces = NetworkInterface.getNetworkInterfaces() ?: return "No network"
+        for (iface in interfaces) {
+            if (!iface.isUp || iface.isLoopback) continue
+            for (addr in iface.inetAddresses) {
+                if (addr is Inet4Address && !addr.isLoopbackAddress) {
+                    return addr.hostAddress ?: continue
+                }
+            }
+        }
+        "No network"
+    }.getOrDefault("No network")
 
     override fun showMirrorSurface() {
         directSurfaceView.visibility = View.INVISIBLE

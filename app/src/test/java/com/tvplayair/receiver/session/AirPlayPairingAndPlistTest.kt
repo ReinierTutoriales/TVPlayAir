@@ -146,4 +146,27 @@ class AirPlayPairingAndPlistTest {
         assertArrayEquals(byteArrayOf(0x0A, 0x0B, 0x0C, 0x0D), parsed["eiv"] as ByteArray)
         assertNull(BinaryPlistParser.parse("not-a-bplist".toByteArray()))
     }
+
+    @Test
+    fun encodesAndDecodesNestedSetupBinaryPlistRoundTrip() {
+        val original = linkedMapOf<String, Any>(
+            "streams" to listOf(
+                linkedMapOf<String, Any>(
+                    "dataPort" to 7100L,
+                    "type" to 110L
+                )
+            ),
+            "timingPort" to 6002L
+        )
+        val encoded = BinaryPlistWriter.encode(original)
+        assertTrue(BinaryPlistParser.isBinaryPlist(encoded))
+
+        val decoded = BinaryPlistParser.parse(encoded) as? Map<*, *>
+        assertNotNull(decoded)
+        assertEquals(6002L, decoded!!["timingPort"])
+        val streams = decoded["streams"] as? List<*>
+        val first = streams?.firstOrNull() as? Map<*, *>
+        assertEquals(7100L, first?.get("dataPort"))
+        assertEquals(110L, first?.get("type"))
+    }
 }

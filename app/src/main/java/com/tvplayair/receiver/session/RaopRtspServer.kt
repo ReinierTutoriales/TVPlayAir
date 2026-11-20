@@ -239,7 +239,7 @@ class RaopRtspServer(
         val firstStream = streams?.firstOrNull() as? Map<*, *>
         val streamType = (firstStream?.get("type") as? Long)?.toInt()
 
-        val responseXml = when (streamType) {
+        val responseMap: Map<String, Any> = when (streamType) {
             110 -> { // AirPlay Screen Mirroring video stream
                 val connId = (firstStream["streamConnectionID"] as? Long) ?: 0L
                 val shared = pairingSession.sharedSecret
@@ -249,17 +249,14 @@ class RaopRtspServer(
                     val streamIv = AirPlayPairingSession.deriveMirrorStreamIv(key16, connId)
                     mirrorReceiver?.configureStreamCipher(streamKey, streamIv)
                 }
-                buildString {
-                    append("<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n")
-                    append("<plist version=\"1.0\"><dict>\n")
-                    append("  <key>streams</key><array><dict>\n")
-                    append("    <key>dataPort</key><integer>")
-                    append(AirPlayMirrorStreamReceiver.DEFAULT_MIRROR_PORT)
-                    append("</integer>\n")
-                    append("    <key>type</key><integer>110</integer>\n")
-                    append("  </dict></array>\n")
-                    append("</dict></plist>\n")
-                }
+                linkedMapOf(
+                    "streams" to listOf(
+                        linkedMapOf<String, Any>(
+                            "dataPort" to AirPlayMirrorStreamReceiver.DEFAULT_MIRROR_PORT.toLong(),
+                            "type" to 110L
+                        )
+                    )
+                )
             }
             96 -> { // AirPlay Audio stream
                 val sampleRate = (firstStream["sr"] as? Long)?.toInt() ?: PcmResampler.TARGET_SAMPLE_RATE
@@ -271,41 +268,30 @@ class RaopRtspServer(
                 }
                 audioReceiver.configureSession(codec = codec, sampleRate = sampleRate)
                 audioReceiver.start(RaopAudioRtpReceiver.DEFAULT_AUDIO_PORT)
-                buildString {
-                    append("<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n")
-                    append("<plist version=\"1.0\"><dict>\n")
-                    append("  <key>streams</key><array><dict>\n")
-                    append("    <key>dataPort</key><integer>")
-                    append(RaopAudioRtpReceiver.DEFAULT_AUDIO_PORT)
-                    append("</integer>\n")
-                    append("    <key>controlPort</key><integer>")
-                    append(RaopAudioRtpReceiver.DEFAULT_CONTROL_PORT)
-                    append("</integer>\n")
-                    append("    <key>type</key><integer>96</integer>\n")
-                    append("  </dict></array>\n")
-                    append("</dict></plist>\n")
-                }
+                linkedMapOf(
+                    "streams" to listOf(
+                        linkedMapOf<String, Any>(
+                            "dataPort" to RaopAudioRtpReceiver.DEFAULT_AUDIO_PORT.toLong(),
+                            "controlPort" to RaopAudioRtpReceiver.DEFAULT_CONTROL_PORT.toLong(),
+                            "type" to 96L
+                        )
+                    )
+                )
             }
             else -> { // Initial session SETUP (eiv/ekey + eventPort/timingPort)
-                buildString {
-                    append("<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n")
-                    append("<plist version=\"1.0\"><dict>\n")
-                    append("  <key>eventPort</key><integer>")
-                    append(configProvider().airPlayPort)
-                    append("</integer>\n")
-                    append("  <key>timingPort</key><integer>")
-                    append(RaopAudioRtpReceiver.DEFAULT_TIMING_PORT)
-                    append("</integer>\n")
-                    append("</dict></plist>\n")
-                }
+                linkedMapOf(
+                    "eventPort" to configProvider().airPlayPort.toLong(),
+                    "timingPort" to RaopAudioRtpReceiver.DEFAULT_TIMING_PORT.toLong()
+                )
             }
-        }.toByteArray(StandardCharsets.UTF_8)
+        }
 
+        val encoded = BinaryPlistWriter.encode(responseMap)
         output.write(
             RtspMessageParser.formatResponse(
                 200, "OK", cseq,
-                mapOf("Content-Type" to "text/x-apple-plist+xml"),
-                responseXml
+                mapOf("Content-Type" to "application/x-apple-binary-plist"),
+                encoded
             )
         )
     }
