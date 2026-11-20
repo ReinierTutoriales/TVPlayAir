@@ -47,7 +47,8 @@ class AirPlayDirectHttpServer(
     )
     private val raopRtspServer = RaopRtspServer(
         listener = listener,
-        configProvider = { activeConfig }
+        configProvider = { activeConfig },
+        mirrorReceiver = mirrorReceiver
     )
 
     override fun start(config: AirPlayServerConfig): Boolean {
