@@ -2,7 +2,6 @@ plugins {
     id("com.android.application")
     id("org.jetbrains.kotlin.plugin.compose")
 }
-
 android {
     namespace = "com.tvplayair.receiver"
     compileSdk = 36
@@ -42,7 +41,7 @@ android {
 }
 
 dependencies {
-    implementation(platform("androidx.compose:compose-bom:2026.09.00"))
+    implementation(platform("androidx.compose:compose-bom:2026.04.01"))
     implementation("androidx.activity:activity-compose:1.13.0")
     implementation("androidx.tv:tv-material:1.1.0")
     implementation("com.google.oboe:oboe:1.11.0")
