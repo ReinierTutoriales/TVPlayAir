@@ -11,7 +11,11 @@ import android.os.ParcelFileDescriptor
 import com.tvplayair.receiver.ipc.ITvPlayCallback
 import com.tvplayair.receiver.ipc.ITvPlaySession
 
-class SessionConnection(context: Context) {
+class SessionConnection(
+    context: Context,
+    private val onSharedMemoryReady: () -> Unit = {},
+    private val onSharedMemoryDetached: () -> Unit = {}
+) {
     private val appContext = context.applicationContext
     private val handler = Handler(Looper.getMainLooper())
     private var service: ITvPlaySession? = null
@@ -32,7 +36,12 @@ class SessionConnection(context: Context) {
             val audioMapped = NativeSharedMemory.nativeMapConsumerBuffer(
                 1, audioFd.detachFd(), audioSize
             )
-            if (!videoMapped || !audioMapped) handleBinderDeath()
+            if (!videoMapped || !audioMapped) {
+                handleBinderDeath()
+            } else {
+                handler.removeCallbacks(notifyReady)
+                handler.post(notifyReady)
+            }
         }
 
         override fun onSessionUnavailable() = handleBinderDeath()
@@ -77,6 +86,8 @@ class SessionConnection(context: Context) {
             handler.post { handleBinderDeath() }
             return
         }
+        handler.removeCallbacks(notifyReady)
+        onSharedMemoryDetached()
         NativeSharedMemory.nativeDetachConsumerBuffers()
         service = null
         remoteBinder?.let { runCatching { it.unlinkToDeath(deathRecipient, 0) } }
@@ -94,10 +105,16 @@ class SessionConnection(context: Context) {
         retryDelayMs = (retryDelayMs * 2).coerceAtMost(2000L)
     }
 
+    private val notifyReady = Runnable {
+        if (bound) onSharedMemoryReady()
+    }
+
     private val reconnect = Runnable { connect() }
 
     fun close() {
         handler.removeCallbacks(reconnect)
+        handler.removeCallbacks(notifyReady)
+        onSharedMemoryDetached()
         NativeSharedMemory.nativeDetachConsumerBuffers()
         service = null
         remoteBinder?.let { runCatching { it.unlinkToDeath(deathRecipient, 0) } }

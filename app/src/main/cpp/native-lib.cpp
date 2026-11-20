@@ -1,8 +1,8 @@
 #include <jni.h>
 #include <android/sharedmem.h>
-#include <oboe/Oboe.h>
 #include <unistd.h>
 
+#include "oboe_consumer.hpp"
 #include "shared_ring_buffer.hpp"
 
 namespace {
@@ -43,9 +43,16 @@ Java_com_tvplayair_receiver_session_NativeSharedMemory_nativeMapConsumerBuffer(
     return JNI_FALSE;
 }
 
+namespace tvplayair {
+SharedRingBuffer& consumerAudioRing() {
+    return gConsumerAudio;
+}
+} // namespace tvplayair
+
 extern "C" JNIEXPORT void JNICALL
 Java_com_tvplayair_receiver_session_NativeSharedMemory_nativeDetachConsumerBuffers(
     JNIEnv*, jobject) {
+    tvplayair::oboeConsumer().stop();
     gConsumerVideo.detach();
     gConsumerAudio.detach();
 }
