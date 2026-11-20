@@ -57,6 +57,23 @@ Java_com_tvplayair_receiver_session_NativeSharedMemory_nativeDetachConsumerBuffe
     gConsumerAudio.detach();
 }
 
+extern "C" JNIEXPORT jint JNICALL
+Java_com_tvplayair_receiver_session_NativeSharedMemory_nativeReadVideoPacket(
+    JNIEnv* env, jobject, jobject directBuffer, jint generationId) {
+    if (!directBuffer) return -2;
+    void* dst = env->GetDirectBufferAddress(directBuffer);
+    const jlong capacity = env->GetDirectBufferCapacity(directBuffer);
+    if (!dst || capacity <= 0) return -2;
+
+    uint32_t outSize = 0;
+    const tvplayair::RingResult result = gConsumerVideo.readPacket(
+        dst, static_cast<uint32_t>(capacity), &outSize, static_cast<uint32_t>(generationId));
+    if (result == tvplayair::RingResult::Ok) return static_cast<jint>(outSize);
+    if (result == tvplayair::RingResult::Empty) return 0;
+    if (result == tvplayair::RingResult::StaleGeneration) return -1;
+    return -2;
+}
+
 extern "C" JNIEXPORT void JNICALL
 Java_com_tvplayair_receiver_session_NativeSharedMemory_nativeDestroyProducerBuffers(
     JNIEnv*, jobject) {

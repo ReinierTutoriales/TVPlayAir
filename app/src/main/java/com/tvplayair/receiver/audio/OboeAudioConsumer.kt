@@ -7,12 +7,13 @@ import android.media.AudioManager
 import android.os.Handler
 import android.os.Looper
 import android.util.Log
+import com.tvplayair.receiver.video.AudioHandoffController
 
 /**
  * Manages the native Google Oboe audio consumer and API 29+ AudioFocus lifecycle.
  * Reads normalized PCM 16-bit / 48 kHz stereo frames from the consumer SharedRingBuffer.
  */
-class OboeAudioConsumer(context: Context) {
+class OboeAudioConsumer(context: Context) : AudioHandoffController {
     companion object {
         private const val TAG = "OboeAudioConsumer"
         const val MIN_OFFSET_MS = -200
@@ -80,7 +81,7 @@ class OboeAudioConsumer(context: Context) {
         return requestFocusAndStart()
     }
 
-    fun stop() {
+    override fun stop() {
         active = false
         nativeStop()
         abandonAudioFocus()
@@ -90,7 +91,7 @@ class OboeAudioConsumer(context: Context) {
      * Suspends mirror Oboe playback and yields AudioFocus when ExoPlayer takes over
      * direct web video playback, and restores focus + playback when returning to mirror.
      */
-    fun setPausedForExternalPlayer(paused: Boolean) {
+    override fun setPausedForExternalPlayer(paused: Boolean) {
         if (pausedForExternalPlayer == paused) return
         pausedForExternalPlayer = paused
         if (paused) {
