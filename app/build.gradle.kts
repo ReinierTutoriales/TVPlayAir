@@ -1,6 +1,6 @@
 plugins {
-    id("com.android.application")
-    id("org.jetbrains.kotlin.plugin.compose")
+    alias(libs.plugins.android.application)
+    alias(libs.plugins.kotlin.compose)
 }
 android {
     namespace = "com.tvplayair.receiver"
@@ -41,15 +41,15 @@ android {
 }
 
 dependencies {
-    implementation(platform("androidx.compose:compose-bom:2026.04.01"))
-    implementation("androidx.activity:activity-compose:1.13.0")
-    implementation("androidx.tv:tv-material:1.1.0")
-    implementation("com.google.oboe:oboe:1.11.0")
-    implementation("androidx.media3:media3-exoplayer:1.11.1")
-    implementation("androidx.media3:media3-exoplayer-hls:1.11.1")
-    implementation("androidx.media3:media3-exoplayer-dash:1.11.1")
+    implementation(platform(libs.androidx.compose.bom))
+    implementation(libs.androidx.activity.compose)
+    implementation(libs.androidx.tv.material)
+    implementation(libs.oboe)
+    implementation(libs.androidx.media3.exoplayer)
+    implementation(libs.androidx.media3.exoplayer.hls)
+    implementation(libs.androidx.media3.exoplayer.dash)
 
-    testImplementation("junit:junit:4.13.2")
+    testImplementation(libs.junit)
 
     debugImplementation("androidx.compose.ui:ui-tooling")
 }
