@@ -1,0 +1,24 @@
+# Build output
+build/
+.gradle/
+.kotlin/
+
+# Machine-specific settings and IDE files
+local.properties
+.idea/
+*.iml
+.DS_Store
+
+# Never commit signing keys or memory dumps
+*.jks
+*.keystore
+*.hprof
+
+# Native build artifacts
+app/src/main/cpp/third_party/
+*.a
+*.so
+
+# Generated Python bytecode
+__pycache__/
+*.pyc
