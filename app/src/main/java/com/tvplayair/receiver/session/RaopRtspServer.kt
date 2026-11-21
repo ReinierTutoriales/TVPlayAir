@@ -25,7 +25,8 @@ class RaopRtspServer(
     private val configProvider: () -> AirPlayServerConfig,
     private val mirrorReceiver: AirPlayMirrorStreamReceiver? = null,
     private val pairingSession: AirPlayPairingSession = AirPlayPairingSession(),
-    private val sharedGenerationId: AtomicInteger = AtomicInteger(1)
+    private val sharedGenerationId: AtomicInteger = AtomicInteger(1),
+    private val httpConnectionHandler: ((Socket, BufferedInputStream, String) -> Unit)? = null
 ) {
     companion object {
         private const val TAG = "RaopRtspServer"
@@ -36,6 +37,25 @@ class RaopRtspServer(
         private const val CLIENT_SO_TIMEOUT_MS = 30_000
         private const val PUBLIC_METHODS =
             "ANNOUNCE, SETUP, RECORD, PAUSE, FLUSH, TEARDOWN, OPTIONS, GET_PARAMETER, SET_PARAMETER, POST, GET"
+        private val VIDEO_CONTROL_PATHS = setOf(
+            "/server-info",
+            "/reverse",
+            "/play",
+            "/action",
+            "/scrub",
+            "/rate",
+            "/stop",
+            "/playback-info",
+            "/setProperty",
+            "/getProperty",
+            "/fp-setup2"
+        )
+
+        fun isDirectVideoControlRequest(firstLine: String): Boolean {
+            val parts = firstLine.trim().split(' ')
+            val path = parts.getOrNull(1)?.substringBefore('?') ?: return false
+            return path in VIDEO_CONTROL_PATHS
+        }
     }
 
     private val running = AtomicBoolean(false)
@@ -130,6 +150,16 @@ class RaopRtspServer(
                     ?: readUntilHeaderEnd(input)?.toString(StandardCharsets.UTF_8)
                     ?: break
                 pendingHeader = null
+
+                val firstLine = headerText.substringBefore("\r\n")
+                val httpDelegate = httpConnectionHandler
+                if (httpDelegate != null &&
+                    (!RtspMessageParser.isRtspRequestLine(firstLine) ||
+                        isDirectVideoControlRequest(firstLine))
+                ) {
+                    httpDelegate.invoke(socket, input, headerText)
+                    return
+                }
 
                 val preliminary = RtspMessageParser.parseRequest(headerText) ?: break
                 val lengthHeader = preliminary.header("content-length")

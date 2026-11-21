@@ -54,11 +54,89 @@ object AirPlayHttpRequestParser {
             return parseTextPlayBody(body.toString(Charsets.UTF_8))
         }
 
-        val fields = BinaryPlistParser.parse(body) as? Map<*, *> ?: return null
-        val url = (fields["Content-Location"] as? String)?.trim()?.takeIf { it.isNotEmpty() }
-            ?: return null
-        val position = (fields["Start-Position"] as? Number)?.toDouble()
+        val root = BinaryPlistParser.parse(body) ?: return null
+        val url = findUrlInPlist(root) ?: return null
+        val position = findNumberInPlist(root, setOf("start-position", "startposition", "bookmark-time"))
         return ParsedDirectPlayRequest(url, normalizeStartPosition(position))
+    }
+
+    fun summarizePlist(body: ByteArray): String {
+        if (!BinaryPlistParser.isBinaryPlist(body)) {
+            return body.toString(Charsets.UTF_8).replace("\r", " ").replace("\n", " ").take(240)
+        }
+        val root = BinaryPlistParser.parse(body)
+        return summarizeObject(root).take(300)
+    }
+
+    private fun summarizeObject(node: Any?, depth: Int = 0): String {
+        if (depth > 4) return "..."
+        return when (node) {
+            null -> "null"
+            is Map<*, *> -> node.entries.joinToString(prefix = "{", postfix = "}") { (k, v) ->
+                "$k:${summarizeObject(v, depth + 1)}"
+            }
+            is List<*> -> node.joinToString(prefix = "[", postfix = "]") { summarizeObject(it, depth + 1) }
+            is ByteArray -> "bytes(${node.size})"
+            is String -> if (node.length > 80) node.take(77) + "..." else node
+            else -> node.toString()
+        }
+    }
+
+    private fun findUrlInPlist(node: Any?, depth: Int = 0): String? {
+        if (depth > 8 || node == null) return null
+        when (node) {
+            is Map<*, *> -> {
+                for (keyName in listOf("Content-Location", "content-location", "URL", "url", "URI", "uri")) {
+                    for ((k, v) in node) {
+                        if (k is String && k.equals(keyName, ignoreCase = true) && v is String) {
+                            val trimmed = v.trim()
+                            if (trimmed.isNotEmpty()) {
+                                return trimmed
+                            }
+                        }
+                    }
+                }
+                for ((_, v) in node) {
+                    findUrlInPlist(v, depth + 1)?.let { return it }
+                }
+            }
+            is List<*> -> {
+                for (item in node) {
+                    findUrlInPlist(item, depth + 1)?.let { return it }
+                }
+            }
+            is String -> {
+                val trimmed = node.trim()
+                if (trimmed.startsWith("http://", ignoreCase = true) ||
+                    trimmed.startsWith("https://", ignoreCase = true)
+                ) {
+                    return trimmed
+                }
+            }
+        }
+        return null
+    }
+
+    private fun findNumberInPlist(node: Any?, keysLower: Set<String>, depth: Int = 0): Double? {
+        if (depth > 8 || node == null) return null
+        when (node) {
+            is Map<*, *> -> {
+                for ((k, v) in node) {
+                    if (k is String && k.lowercase(Locale.US) in keysLower && v is Number) {
+                        return v.toDouble()
+                    }
+                }
+                for ((_, v) in node) {
+                    findNumberInPlist(v, keysLower, depth + 1)?.let { return it }
+                }
+            }
+            is List<*> -> {
+                for (item in node) {
+                    findNumberInPlist(item, keysLower, depth + 1)?.let { return it }
+                }
+            }
+        }
+        return null
     }
 
     private fun parseTextPlayBody(body: String): ParsedDirectPlayRequest? {

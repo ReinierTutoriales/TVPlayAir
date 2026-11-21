@@ -68,7 +68,8 @@ class AirPlayDirectHttpServer(
         configProvider = { activeConfig },
         mirrorReceiver = mirrorReceiver,
         pairingSession = pairingSession,
-        sharedGenerationId = generationId
+        sharedGenerationId = generationId,
+        httpConnectionHandler = ::handleHttpConnection
     )
 
     override fun start(config: AirPlayServerConfig): Boolean {
@@ -146,63 +147,77 @@ class AirPlayDirectHttpServer(
 
     private fun handleClient(client: Socket) {
         client.use { sock ->
-            sock.soTimeout = CLIENT_SO_TIMEOUT_MS
-            sock.tcpNoDelay = true
-            val input = BufferedInputStream(sock.getInputStream())
-            val output = sock.getOutputStream()
-            val peer = sock.inetAddress?.hostAddress ?: "unknown"
+            handleHttpConnection(sock, BufferedInputStream(sock.getInputStream()))
+        }
+    }
 
-            while (running.get()) {
-                val headerBytes = readUntilHeaderEnd(input) ?: break
-                val headerText = String(headerBytes, StandardCharsets.UTF_8)
-                if (RtspMessageParser.isRtspRequestLine(headerText.substringBefore("\r\n"))) {
-                    raopRtspServer.handleConnection(sock, input, headerText)
-                    return
-                }
-                val lines = headerText.split("\r\n")
-                if (lines.isEmpty()) break
+    internal fun handleHttpConnection(
+        sock: Socket,
+        input: BufferedInputStream,
+        firstHeader: String? = null
+    ) {
+        sock.soTimeout = CLIENT_SO_TIMEOUT_MS
+        sock.tcpNoDelay = true
+        val output = sock.getOutputStream()
+        val peer = sock.inetAddress?.hostAddress ?: "unknown"
+        var pendingHeader = firstHeader
 
-                val requestParts = lines[0].split(' ')
-                if (requestParts.size < 2) break
-                val method = requestParts[0].uppercase(Locale.US)
-                val fullPath = requestParts[1]
-                val path = fullPath.substringBefore('?')
+        while (running.get()) {
+            val headerText = pendingHeader
+                ?: readUntilHeaderEnd(input)?.toString(StandardCharsets.UTF_8)
+                ?: break
+            pendingHeader = null
 
-                val headers = mutableMapOf<String, String>()
-                for (i in 1 until lines.size) {
-                    val line = lines[i]
-                    val colon = line.indexOf(':')
-                    if (colon > 0) {
-                        headers[line.substring(0, colon).trim().lowercase(Locale.US)] =
-                            line.substring(colon + 1).trim()
-                    }
-                }
-
-                val dacpId = headers["dacp-id"].orEmpty()
-                val activeRemote = headers["active-remote"].orEmpty()
-                val userAgent = headers["user-agent"].orEmpty().ifBlank { "Apple Device" }
-                if (dacpId.isNotEmpty() && activeRemote.isNotEmpty()) {
-                    listener.onClientConnected(userAgent, dacpId, activeRemote)
-                }
-
-                val contentLength = headers["content-length"]?.toIntOrNull()?.coerceIn(0, MAX_BODY_BYTES) ?: 0
-                val body = if (contentLength > 0) readExactBytes(input, contentLength) else ByteArray(0)
-                if (body.size != contentLength) break
-                val contentType = headers["content-type"].orEmpty()
-                Log.i(TAG, "<- $peer $method $fullPath (ct=$contentType len=${body.size})")
-
-                val sessionId = headers["x-apple-session-id"]?.takeIf { value ->
-                    value.length in 1..128 && value.all { it in '!'..'~' }
-                }
-                val sessionKey = AirPlayPlaybackEvents.SessionKey(peer, sessionId)
-                if (method == "POST" && path == "/reverse") {
-                    handleReverseChannel(sock, input, output, sessionKey)
-                    return
-                }
-                val keepAlive = !headers["connection"].equals("close", ignoreCase = true)
-                dispatchRequest(method, path, fullPath, body, output, sessionKey)
-                if (!keepAlive) break
+            val firstLine = headerText.substringBefore("\r\n")
+            if (RtspMessageParser.isRtspRequestLine(firstLine) &&
+                !RaopRtspServer.isDirectVideoControlRequest(firstLine)
+            ) {
+                raopRtspServer.handleConnection(sock, input, headerText)
+                return
             }
+            val lines = headerText.split("\r\n")
+            if (lines.isEmpty()) break
+
+            val requestParts = lines[0].split(' ')
+            if (requestParts.size < 2) break
+            val method = requestParts[0].uppercase(Locale.US)
+            val fullPath = requestParts[1]
+            val path = fullPath.substringBefore('?')
+
+            val headers = mutableMapOf<String, String>()
+            for (i in 1 until lines.size) {
+                val line = lines[i]
+                val colon = line.indexOf(':')
+                if (colon > 0) {
+                    headers[line.substring(0, colon).trim().lowercase(Locale.US)] =
+                        line.substring(colon + 1).trim()
+                }
+            }
+
+            val dacpId = headers["dacp-id"].orEmpty()
+            val activeRemote = headers["active-remote"].orEmpty()
+            val userAgent = headers["user-agent"].orEmpty().ifBlank { "Apple Device" }
+            if (dacpId.isNotEmpty() && activeRemote.isNotEmpty()) {
+                listener.onClientConnected(userAgent, dacpId, activeRemote)
+            }
+
+            val contentLength = headers["content-length"]?.toIntOrNull()?.coerceIn(0, MAX_BODY_BYTES) ?: 0
+            val body = if (contentLength > 0) readExactBytes(input, contentLength) else ByteArray(0)
+            if (body.size != contentLength) break
+            val contentType = headers["content-type"].orEmpty()
+            Log.i(TAG, "<- $peer $method $fullPath (ct=$contentType len=${body.size})")
+
+            val sessionId = headers["x-apple-session-id"]?.takeIf { value ->
+                value.length in 1..128 && value.all { it in '!'..'~' }
+            }
+            val sessionKey = AirPlayPlaybackEvents.SessionKey(peer, sessionId)
+            if (method == "POST" && path == "/reverse") {
+                handleReverseChannel(sock, input, output, sessionKey)
+                return
+            }
+            val keepAlive = !headers["connection"].equals("close", ignoreCase = true)
+            dispatchRequest(method, path, fullPath, body, output, sessionKey)
+            if (!keepAlive) break
         }
     }
 
@@ -282,12 +297,36 @@ class AirPlayDirectHttpServer(
                         latestTelemetry.set(idleTelemetry.copy(isBuffering = true))
                         listener.onDirectVideoUrl(parsed.url, parsed.startPosition, playbackId)
                     }
-                    Log.i(TAG, "-> /play 200 OK startPosition=${parsed.startPosition}")
+                    Log.i(TAG, "-> /play 200 OK url=${parsed.url} startPosition=${parsed.startPosition}")
                     writeResponse(output, 200, "OK")
                 } else {
-                    Log.w(TAG, "-> /play 400 Bad Request")
-                    writeResponse(output, 400, "Bad Request")
+                    Log.w(TAG, "-> /play had no direct URL (${AirPlayHttpRequestParser.summarizePlist(bodyBytes)})")
+                    writeResponse(output, 200, "OK")
                 }
+            }
+            method == "POST" && path == "/action" -> {
+                val parsed = AirPlayHttpRequestParser.parsePlayBody(bodyBytes)
+                if (parsed != null) {
+                    playbackEvents.start(sessionKey) { playbackId ->
+                        latestTelemetry.set(idleTelemetry.copy(isBuffering = true))
+                        listener.onDirectVideoUrl(parsed.url, parsed.startPosition, playbackId)
+                    }
+                    Log.i(TAG, "-> /action started direct video url=${parsed.url} pos=${parsed.startPosition}")
+                } else {
+                    Log.i(TAG, "-> /action 200 OK (${AirPlayHttpRequestParser.summarizePlist(bodyBytes)})")
+                }
+                val reply = BinaryPlistWriter.encode(mapOf("errorCode" to 0L))
+                writeBinaryResponse(output, 200, "OK", "application/x-apple-binary-plist", reply)
+            }
+            method == "GET" && path == "/scrub" -> {
+                val t = latestTelemetry.get()
+                val scrubBody = String.format(
+                    Locale.US,
+                    "duration: %.6f\r\nposition: %.6f\r\n",
+                    t.durationSec.coerceAtLeast(0.0),
+                    t.positionSec.coerceAtLeast(0.0)
+                )
+                writeResponse(output, 200, "OK", "text/parameters", scrubBody)
             }
             method == "POST" && path == "/scrub" -> {
                 val position = AirPlayHttpRequestParser.parseQueryDouble(fullPath, "position")
@@ -335,14 +374,28 @@ class AirPlayDirectHttpServer(
                 writeResponse(output, 200, "OK", "text/x-apple-plist+xml", plist)
             }
             method == "PUT" && path == "/setProperty" -> {
+                val parsed = AirPlayHttpRequestParser.parsePlayBody(bodyBytes)
+                if (parsed != null) {
+                    playbackEvents.start(sessionKey) { playbackId ->
+                        latestTelemetry.set(idleTelemetry.copy(isBuffering = true))
+                        listener.onDirectVideoUrl(parsed.url, parsed.startPosition, playbackId)
+                    }
+                    Log.i(TAG, "-> PUT /setProperty started direct video url=${parsed.url}")
+                } else if (fullPath.contains("selectedMediaArray", ignoreCase = true)) {
+                    Log.i(TAG, "-> PUT $fullPath (${AirPlayHttpRequestParser.summarizePlist(bodyBytes)})")
+                }
                 val reply = BinaryPlistWriter.encode(mapOf("errorCode" to 0L))
                 Log.i(TAG, "-> PUT /setProperty 200 OK")
                 writeBinaryResponse(output, 200, "OK", "application/x-apple-binary-plist", reply)
             }
-            method == "GET" && path == "/getProperty" -> {
+            (method == "GET" || method == "POST") && path == "/getProperty" -> {
                 val reply = BinaryPlistWriter.encode(mapOf("errorCode" to 0L))
-                Log.i(TAG, "-> GET /getProperty 200 OK")
+                Log.i(TAG, "-> $method /getProperty 200 OK")
                 writeBinaryResponse(output, 200, "OK", "application/x-apple-binary-plist", reply)
+            }
+            method == "POST" && (path == "/audioMode" || path == "/fp-setup2") -> {
+                Log.i(TAG, "-> POST $path 200 OK")
+                writeResponse(output, 200, "OK")
             }
             else -> {
                 Log.w(TAG, "-> $method $path 404 Not Found")
