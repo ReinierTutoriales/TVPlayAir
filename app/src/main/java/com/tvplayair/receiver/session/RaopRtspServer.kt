@@ -360,8 +360,7 @@ class RaopRtspServer(
                     Log.i(TAG, "Configured mirror AES-CTR stream cipher (connId=$connId)")
                 }
                 val cfg = configProvider()
-                val mime = if (cfg.hevcEnabled) MediaFormat.MIMETYPE_VIDEO_HEVC else MediaFormat.MIMETYPE_VIDEO_AVC
-                listener.onVideoConfigChanged(mime, cfg.maxWidth, cfg.maxHeight, generationId.get())
+                listener.onVideoConfigChanged(MediaFormat.MIMETYPE_VIDEO_AVC, cfg.maxWidth, cfg.maxHeight, generationId.get())
                 linkedMapOf(
                     "streams" to listOf(
                         linkedMapOf<String, Any>(

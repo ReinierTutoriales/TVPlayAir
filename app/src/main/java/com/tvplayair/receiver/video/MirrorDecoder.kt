@@ -29,7 +29,7 @@ class MirrorDecoder(
 
     companion object {
         private const val TAG = "MirrorDecoder"
-        private const val MAX_PACKET_BYTES = 64 * 1024
+        private const val MAX_PACKET_BYTES = 480 * 1024
         private const val DEQUEUE_TIMEOUT_US = 4_000L
         private const val IDLE_POLL_SLEEP_MS = 2L
     }

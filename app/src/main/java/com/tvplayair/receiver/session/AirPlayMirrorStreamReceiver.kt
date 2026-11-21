@@ -24,7 +24,7 @@ object AirPlayMirrorHeaderParser {
     const val PAYLOAD_TYPE_VIDEO = 0
     const val PAYLOAD_TYPE_CODEC_CONFIG = 1
     const val PAYLOAD_TYPE_HEARTBEAT = 2
-    const val MAX_MIRROR_PAYLOAD_BYTES = 64 * 1024 - MirrorFrameGate.PACKET_HEADER_BYTES
+    const val MAX_MIRROR_PAYLOAD_BYTES = 480 * 1024 - MirrorFrameGate.PACKET_HEADER_BYTES
 
     /**
      * Parses the standard 128-byte little-endian AirPlay Mirroring TCP packet header:
@@ -133,6 +133,7 @@ class AirPlayMirrorStreamReceiver(
 
     private fun handleMirrorClient(client: Socket) {
         var packetCount = 0L
+        var streamIsHevc = false
         client.use { sock ->
             sock.soTimeout = CLIENT_TIMEOUT_MS
             sock.tcpNoDelay = true
@@ -142,7 +143,16 @@ class AirPlayMirrorStreamReceiver(
                 if (!readExact(input, headerScratch, AirPlayMirrorHeaderParser.HEADER_BYTES)) {
                     break
                 }
-                val header = AirPlayMirrorHeaderParser.parse(headerScratch) ?: break
+                val header = AirPlayMirrorHeaderParser.parse(headerScratch)
+                if (header == null) {
+                    val hdrBuf = ByteBuffer.wrap(headerScratch, 0, AirPlayMirrorHeaderParser.HEADER_BYTES)
+                        .order(ByteOrder.LITTLE_ENDIAN)
+                    Log.w(
+                        TAG,
+                        "Invalid mirror header: size=${hdrBuf.getInt(0)} type=${hdrBuf.getShort(4).toInt() and 0xFFFF}"
+                    )
+                    break
+                }
                 if (header.payloadSize == 0 ||
                     header.payloadType == AirPlayMirrorHeaderParser.PAYLOAD_TYPE_HEARTBEAT
                 ) {
@@ -151,6 +161,13 @@ class AirPlayMirrorStreamReceiver(
                 val isVideo = header.payloadType == AirPlayMirrorHeaderParser.PAYLOAD_TYPE_VIDEO
                 if (!readIntoDirectBuffer(input, header.payloadSize, decrypt = isVideo)) {
                     break
+                }
+                if (header.payloadType == AirPlayMirrorHeaderParser.PAYLOAD_TYPE_CODEC_CONFIG) {
+                    // avcC has (byte[4] & 0xFC) == 0xFC and (byte[5] & 0xE0) == 0xE0;
+                    // hvcC is >= 23 bytes with (byte[21] & 0xFC) == 0xFC.
+                    streamIsHevc = isHevcProvider() && header.payloadSize >= 23 &&
+                        (directPayload.get(4).toInt() and 0xFC) != 0xFC
+                    Log.i(TAG, "Mirror codec config: size=${header.payloadSize} streamIsHevc=$streamIsHevc")
                 }
                 packetCount++
                 if (packetCount == 1L || packetCount % 120L == 0L) {
@@ -161,15 +178,18 @@ class AirPlayMirrorStreamReceiver(
                 } else {
                     0
                 }
-                NativeSharedMemory.nativeWriteVideoFrame(
+                val writeRes = NativeSharedMemory.nativeWriteVideoFrame(
                     directBuffer = directPayload,
                     size = header.payloadSize,
                     ptsUs = header.ptsUs,
-                    isHevc = isHevcProvider(),
+                    isHevc = streamIsHevc,
                     isLengthPrefixed = isVideo,
                     generationId = generationProvider(),
                     extraFlags = extraFlags
                 )
+                if (writeRes < 0 && (packetCount <= 3L || packetCount % 60L == 0L)) {
+                    Log.w(TAG, "nativeWriteVideoFrame failed: res=$writeRes size=${header.payloadSize} type=${header.payloadType}")
+                }
             }
         }
         Log.i(TAG, "Mirror TCP client closed (packets=$packetCount)")

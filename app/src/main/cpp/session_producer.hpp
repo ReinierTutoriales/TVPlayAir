@@ -11,7 +11,7 @@
 
 namespace tvplayair {
 
-constexpr size_t kMaxVideoPacketBytes = 64 * 1024;
+constexpr size_t kMaxVideoPacketBytes = 480 * 1024;
 constexpr size_t kMaxVideoPayloadBytes = kMaxVideoPacketBytes - sizeof(VideoFramePacketHeader);
 
 SharedRingBuffer& producerVideoRing();
