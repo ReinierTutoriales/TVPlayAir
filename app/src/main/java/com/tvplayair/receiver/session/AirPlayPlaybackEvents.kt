@@ -35,9 +35,14 @@ internal class AirPlayPlaybackEvents {
                 <key>state</key><string>${state.value}</string>
                 </dict></plist>
             """.trimIndent()).toByteArray(StandardCharsets.UTF_8)
+            val contentType = if (customXmlBody != null) {
+                "text/x-apple-plist+xml"
+            } else {
+                "application/x-apple-plist"
+            }
             val header = buildString {
                 append("POST /event HTTP/1.1\r\n")
-                append("Content-Type: application/x-apple-plist\r\n")
+                append("Content-Type: ").append(contentType).append("\r\n")
                 append("Content-Length: ").append(body.size).append("\r\n")
                 if (appleSessionId != null) {
                     append("X-Apple-Session-ID: ").append(appleSessionId).append("\r\n")
@@ -151,18 +156,40 @@ internal class AirPlayPlaybackEvents {
             .replace("&", "&amp;")
             .replace("<", "&lt;")
             .replace(">", "&gt;")
+            .replace("\"", "&quot;")
         val sid = sessionIdOverride ?: playbackId.coerceAtLeast(1L)
+        val sessionUuid = activeChannel.key.appleSessionId ?: activeSession?.appleSessionId ?: "11111111-2222-3333-4444-555555555555"
         val xml = """
             <?xml version="1.0" encoding="UTF-8"?>
             <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
-            <plist version="1.0"><dict>
-            <key>FCUP_Request_ClientInfo</key><integer>1</integer>
-            <key>FCUP_Request_Headers</key><dict/>
-            <key>FCUP_Request_ID</key><integer>$requestId</integer>
-            <key>FCUP_Request_URL</key><string>$escapedUrl</string>
-            <key>sessionID</key><integer>$sid</integer>
-            <key>type</key><string>unhandledURL</string>
-            </dict></plist>
+            <plist version="1.0">
+            <dict>
+                <key>sessionID</key>
+                <integer>1</integer>
+                <key>type</key>
+                <string>unhandledURLRequest</string>
+                <key>request</key>
+                <dict>
+                    <key>FCUP_Response_ClientInfo</key>
+                    <integer>1</integer>
+                    <key>FCUP_Response_ClientRef</key>
+                    <integer>40030004</integer>
+                    <key>FCUP_Response_RequestID</key>
+                    <integer>$requestId</integer>
+                    <key>FCUP_Response_URL</key>
+                    <string>$escapedUrl</string>
+                    <key>sessionID</key>
+                    <integer>1</integer>
+                    <key>FCUP_Response_Headers</key>
+                    <dict>
+                        <key>X-Playback-Session-Id</key>
+                        <string>$sessionUuid</string>
+                        <key>User-Agent</key>
+                        <string>AppleCoreMedia/1.0.0.11B554a (Apple TV; U; CPU OS 7_0_4 like Mac OS X; en_us)</string>
+                    </dict>
+                </dict>
+            </dict>
+            </plist>
         """.trimIndent()
         activeChannel.offer(Event(State.LOADING, sid, customXmlBody = xml))
         return true

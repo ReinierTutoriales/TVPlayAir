@@ -390,10 +390,54 @@ class AirPlayDirectHttpServer(
         return if (trimmed.startsWith("/")) "$origin$trimmed" else "$baseDir$trimmed"
     }
 
-    private fun rewriteM3u8ForFcupProxy(m3u8Text: String, baseUrl: String): String {
-        val uriAttrRegex = Regex("""URI="([^"]+)"""")
+    private fun expandYtCondensedM3u8(m3u8Text: String): String {
+        if (!m3u8Text.contains("#YT-EXT-CONDENSED-")) return m3u8Text
+        var baseUri: String? = null
+        var params: List<String> = emptyList()
+        var prefix: String? = null
+        val baseUriRegex = Regex("""BASE-URI="([^"]+)"""")
+        val paramsRegex = Regex("""PARAMS="([^"]+)"""")
+        val prefixRegex = Regex("""PREFIX="([^"]+)"""")
         return buildString {
             for (rawLine in m3u8Text.lineSequence()) {
+                val trimmed = rawLine.trim()
+                if (trimmed.startsWith("#YT-EXT-CONDENSED-URL:") || trimmed.startsWith("#YT-EXT-CONDENSED-URI:")) {
+                    baseUri = baseUriRegex.find(trimmed)?.groupValues?.getOrNull(1)
+                    params = paramsRegex.find(trimmed)?.groupValues?.getOrNull(1)
+                        ?.split(',')
+                        ?.filter { it.isNotEmpty() }
+                        .orEmpty()
+                    prefix = prefixRegex.find(trimmed)?.groupValues?.getOrNull(1)
+                    continue
+                }
+                val activeBase = baseUri
+                val activePrefix = prefix
+                if (activeBase != null && activePrefix != null && params.isNotEmpty() &&
+                    !trimmed.startsWith("#") && trimmed.startsWith(activePrefix)
+                ) {
+                    val rest = trimmed.removePrefix(activePrefix)
+                    val parts = rest.split('/')
+                    val sb = StringBuilder(activeBase)
+                    val count = minOf(params.size, parts.size)
+                    for (i in 0 until count) {
+                        sb.append('/').append(params[i]).append('/').append(parts[i])
+                    }
+                    for (i in count until parts.size) {
+                        sb.append('/').append(parts[i])
+                    }
+                    append(sb.toString()).append('\n')
+                } else {
+                    append(rawLine).append('\n')
+                }
+            }
+        }
+    }
+
+    private fun rewriteM3u8ForFcupProxy(m3u8Text: String, baseUrl: String): String {
+        val expandedText = expandYtCondensedM3u8(m3u8Text)
+        val uriAttrRegex = Regex("""URI="([^"]+)"""")
+        return buildString {
+            for (rawLine in expandedText.lineSequence()) {
                 val line = rawLine.trim()
                 if (line.isEmpty()) {
                     append("\n")
