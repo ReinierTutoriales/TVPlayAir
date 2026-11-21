@@ -12,6 +12,12 @@ description: Use for TVPlayAir product changes, dependency/build fixes and miles
 - Classify the failure first: product logic, dependency graph, Gradle/SDK configuration, test fixture or CI runner/environment.
 - Do not change unrelated product code or weaken assertions to make CI green.
 
+## Mandatory multimedia continuity regression matrix
+
+For changes affecting playback, transport, metadata, UI or process boundaries, read `../media-continuity/SKILL.md`. Add deterministic tests for: audio A->audio B (same transport and new transport), audio->video->audio, video A->video B, mirror->video->mirror, rapid app switching, delayed artwork, reordered metadata, duplicated stop/flush, outdated reverse-channel commands, first-frame timeout, disconnect/reconnect, binder death, background/foreground and D-pad long-press. Assert that no stale generation can update the UI or receive controls; no state can remain in Preparing/Recovering forever.
+
+Instrument request-to-first-frame, first-audio, artwork freshness, A/V drift, dropped frames, underruns, p50/p95/p99 transition latency and error recovery. Run at least 100 simulated transitions in CI; publish actual measurements rather than inventing latency guarantees.
+
 ## Required verification
 
 - Run the focused test first, then affected neighboring suites.
