@@ -46,10 +46,15 @@ class AirPlayDirectHttpServer(
     private val pairingSession = AirPlayPairingSession()
     private val mirrorReceiver = AirPlayMirrorStreamReceiver(
         generationProvider = { generationId.get() },
-        onCodecConfigReady = { isHevc, generation ->
+        onCodecConfigReady = { isHevc, width, height, generation ->
             val config = activeConfig
             val mimeType = if (isHevc) MediaFormat.MIMETYPE_VIDEO_HEVC else MediaFormat.MIMETYPE_VIDEO_AVC
-            listener.onVideoConfigChanged(mimeType, config.maxWidth, config.maxHeight, generation)
+            listener.onVideoConfigChanged(
+                mimeType,
+                width.takeIf { it > 0 } ?: config.maxWidth,
+                height.takeIf { it > 0 } ?: config.maxHeight,
+                generation
+            )
         }
     )
     private val raopRtspServer = RaopRtspServer(

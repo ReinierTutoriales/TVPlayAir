@@ -16,7 +16,9 @@ import javax.crypto.spec.SecretKeySpec
 data class AirPlayMirrorHeader(
     val payloadSize: Int,
     val payloadType: Int,
-    val ptsUs: Long
+    val ptsUs: Long,
+    val width: Int = 0,
+    val height: Int = 0
 )
 
 object AirPlayMirrorHeaderParser {
@@ -25,6 +27,29 @@ object AirPlayMirrorHeaderParser {
     const val PAYLOAD_TYPE_CODEC_CONFIG = 1
     const val PAYLOAD_TYPE_HEARTBEAT = 2
     const val MAX_MIRROR_PAYLOAD_BYTES = 480 * 1024 - MirrorFrameGate.PACKET_HEADER_BYTES
+    private const val HVC1 = 0x68766331
+    private const val HVCC = 0x68766343
+    private const val VISUAL_SAMPLE_ENTRY_BYTES = 86
+
+    internal fun unwrapCodecConfig(data: ByteBuffer): ByteBuffer? {
+        if (data.limit() < 8) return data
+        val box = data.duplicate().order(ByteOrder.BIG_ENDIAN)
+        if (box.getInt(4) != HVC1) return data
+        val end = box.getInt(0)
+        if (end !in VISUAL_SAMPLE_ENTRY_BYTES..box.limit()) return null
+        var offset = VISUAL_SAMPLE_ENTRY_BYTES
+        while (end - offset >= 8) {
+            val size = box.getInt(offset)
+            if (size !in 8..(end - offset)) return null
+            if (box.getInt(offset + 4) == HVCC) {
+                box.limit(offset + size)
+                box.position(offset + 8)
+                return box.slice()
+            }
+            offset += size
+        }
+        return null
+    }
 
     internal fun isHevcCodecConfig(data: ByteBuffer): Boolean? {
         if (data.limit() < 7 || data.get(0) != 1.toByte()) return null
@@ -37,14 +62,15 @@ object AirPlayMirrorHeaderParser {
     /**
      * Parses the standard 128-byte little-endian AirPlay Mirroring TCP packet header:
      * - bytes 0..3: uint32 payloadSize
-     * - bytes 4..5: uint16 payloadType (0 = video NALs, 1 = codec config, 2 = heartbeat)
+     * - byte 4: payload type (0 = video NALs, 1 = codec config, 2 = heartbeat)
+     * - byte 5: subtype, including 0x10 for encrypted IDR frames
      * - bytes 8..15: uint64 NTP timestamp (32.32 fixed-point seconds -> microseconds)
      */
     fun parse(headerBytes: ByteArray): AirPlayMirrorHeader? {
         if (headerBytes.size < HEADER_BYTES) return null
         val buf = ByteBuffer.wrap(headerBytes, 0, HEADER_BYTES).order(ByteOrder.LITTLE_ENDIAN)
         val payloadSize = buf.getInt(0)
-        val payloadType = buf.getShort(4).toInt() and 0xFFFF
+        val payloadType = buf.get(4).toInt() and 0xFF
         val ntpRaw = buf.getLong(8)
 
         if (payloadSize < 0 || payloadSize > MAX_MIRROR_PAYLOAD_BYTES) return null
@@ -56,9 +82,16 @@ object AirPlayMirrorHeaderParser {
         return AirPlayMirrorHeader(
             payloadSize = payloadSize,
             payloadType = payloadType,
-            ptsUs = ptsUs
+            ptsUs = ptsUs,
+            width = if (payloadType == PAYLOAD_TYPE_CODEC_CONFIG) dimension(buf, 40, 16) else 0,
+            height = if (payloadType == PAYLOAD_TYPE_CODEC_CONFIG) dimension(buf, 44, 20) else 0
         )
     }
+
+    private fun dimension(header: ByteBuffer, offset: Int, fallbackOffset: Int): Int =
+        header.getFloat(offset).takeIf { it in 16f..8192f }?.toInt()
+            ?: header.getFloat(fallbackOffset).takeIf { it in 16f..8192f }?.toInt()
+            ?: 0
 }
 
 /**
@@ -68,7 +101,7 @@ object AirPlayMirrorHeaderParser {
  */
 class AirPlayMirrorStreamReceiver(
     private val generationProvider: () -> Int,
-    private val onCodecConfigReady: (isHevc: Boolean, generationId: Int) -> Unit
+    private val onCodecConfigReady: (isHevc: Boolean, width: Int, height: Int, generationId: Int) -> Unit
 ) {
     companion object {
         private const val TAG = "AirPlayMirrorReceiver"
@@ -142,6 +175,8 @@ class AirPlayMirrorStreamReceiver(
     private fun handleMirrorClient(client: Socket) {
         var packetCount = 0L
         var streamIsHevc: Boolean? = null
+        var streamWidth = 0
+        var streamHeight = 0
         client.use { sock ->
             sock.soTimeout = CLIENT_TIMEOUT_MS
             sock.tcpNoDelay = true
@@ -167,7 +202,9 @@ class AirPlayMirrorStreamReceiver(
                 if (!readIntoDirectBuffer(input, header.payloadSize, decrypt = isVideo)) {
                     break
                 }
-                val isHevc = if (isConfig) AirPlayMirrorHeaderParser.isHevcCodecConfig(directPayload)
+                val payload = if (isConfig) AirPlayMirrorHeaderParser.unwrapCodecConfig(directPayload) ?: continue
+                    else directPayload
+                val isHevc = if (isConfig) AirPlayMirrorHeaderParser.isHevcCodecConfig(payload)
                     else streamIsHevc.takeIf { isVideo }
                 if (isHevc == null) continue
                 val generationId = generationProvider()
@@ -181,17 +218,21 @@ class AirPlayMirrorStreamReceiver(
                     0
                 }
                 val writeRes = NativeSharedMemory.nativeWriteVideoFrame(
-                    directBuffer = directPayload,
-                    size = header.payloadSize,
+                    directBuffer = payload,
+                    size = payload.remaining(),
                     ptsUs = header.ptsUs,
                     isHevc = isHevc,
                     isLengthPrefixed = isVideo,
                     generationId = generationId,
                     extraFlags = extraFlags
                 )
-                if (writeRes == NativeSharedMemory.VIDEO_WRITE_OK && isConfig && streamIsHevc != isHevc) {
-                    streamIsHevc = isHevc
-                    onCodecConfigReady(isHevc, generationId)
+                if (writeRes == NativeSharedMemory.VIDEO_WRITE_OK && isConfig) {
+                    if (streamIsHevc != isHevc || streamWidth != header.width || streamHeight != header.height) {
+                        streamIsHevc = isHevc
+                        streamWidth = header.width
+                        streamHeight = header.height
+                        onCodecConfigReady(isHevc, streamWidth, streamHeight, generationId)
+                    }
                 } else if (writeRes != NativeSharedMemory.VIDEO_WRITE_OK &&
                     (packetCount <= 3L || packetCount % 60L == 0L)
                 ) {
