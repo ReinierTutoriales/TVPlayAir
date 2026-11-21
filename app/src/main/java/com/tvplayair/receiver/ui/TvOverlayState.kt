@@ -2,6 +2,7 @@ package com.tvplayair.receiver.ui
 
 import com.tvplayair.receiver.audio.OboeAudioConsumer
 import com.tvplayair.receiver.session.RaopNowPlaying
+import com.tvplayair.receiver.video.DirectPlaybackTelemetry
 import com.tvplayair.receiver.video.PresentationState
 
 enum class ResolutionPreset(val width: Int, val height: Int, val label: String) {
@@ -21,7 +22,8 @@ data class TvOverlayState(
     val receiverName: String = "TVPlayAir",
     val projectionHome: Boolean = false,
     val audioProjectionActive: Boolean = false,
-    val nowPlaying: RaopNowPlaying? = null
+    val nowPlaying: RaopNowPlaying? = null,
+    val videoControls: DirectPlaybackTelemetry? = null
 ) {
     companion object {
         const val OFFSET_STEP_MS = 10
@@ -33,6 +35,9 @@ data class TvOverlayState(
 
     val showingAudio: Boolean
         get() = showStandby && (audioProjectionActive || nowPlaying != null)
+
+    val showingVideoControls: Boolean
+        get() = !visible && presentationState == PresentationState.DIRECT_ACTIVE && videoControls != null
 
     fun stepAudioOffset(deltaMs: Int): TvOverlayState = copy(
         audioOffsetMs = (audioOffsetMs + deltaMs).coerceIn(

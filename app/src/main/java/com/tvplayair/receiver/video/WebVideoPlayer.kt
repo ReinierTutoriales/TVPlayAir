@@ -159,10 +159,18 @@ class WebVideoPlayer(
         player?.pause()
     }
 
+    fun togglePlayback() {
+        player?.let { exo ->
+            if (exo.playWhenReady) exo.pause() else exo.play()
+        }
+    }
+
     override fun seekTo(positionSec: Double) {
+        val exo = player ?: return
+        if (!exo.isCommandAvailable(Player.COMMAND_SEEK_IN_CURRENT_MEDIA_ITEM)) return
         pendingStartFraction = null
         val targetMs = (positionSec.coerceAtLeast(0.0) * 1000.0).toLong()
-        player?.seekTo(targetMs)
+        exo.seekTo(targetMs)
     }
 
     override fun stopAndClear() {

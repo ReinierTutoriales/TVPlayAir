@@ -3,6 +3,8 @@ package com.tvplayair.receiver
 import android.content.Intent
 import android.graphics.Color
 import android.os.Bundle
+import android.os.Handler
+import android.os.Looper
 import android.view.KeyEvent
 import android.view.SurfaceHolder
 import android.view.SurfaceView
@@ -16,6 +18,9 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.platform.ComposeView
+import androidx.core.view.WindowCompat
+import androidx.core.view.WindowInsetsCompat
+import androidx.core.view.WindowInsetsControllerCompat
 import androidx.tv.material3.MaterialTheme
 import com.tvplayair.receiver.audio.OboeAudioConsumer
 import com.tvplayair.receiver.control.DacpCommand
@@ -50,13 +55,21 @@ class MainActivity : ComponentActivity(), SurfaceLayerController {
     private var directPlaybackId = 0L
     private var overlayState by mutableStateOf(TvOverlayState())
 
-    private val closeSettingsOnBack = object : OnBackPressedCallback(false) {
-        override fun handleOnBackPressed() = setOverlayVisible(false)
+    private val mainHandler = Handler(Looper.getMainLooper())
+    private val hideVideoControls = Runnable { dismissVideoControls() }
+    private val closeOverlayOnBack = object : OnBackPressedCallback(false) {
+        override fun handleOnBackPressed() {
+            if (overlayState.visible) setOverlayVisible(false) else dismissVideoControls()
+        }
     }
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
-        onBackPressedDispatcher.addCallback(this, closeSettingsOnBack)
+        WindowCompat.getInsetsController(window, window.decorView).apply {
+            systemBarsBehavior = WindowInsetsControllerCompat.BEHAVIOR_SHOW_TRANSIENT_BARS_BY_SWIPE
+            hide(WindowInsetsCompat.Type.systemBars())
+        }
+        onBackPressedDispatcher.addCallback(this, closeOverlayOnBack)
         identityStore = ReceiverIdentityStore(this)
         val initialIdentity = identityStore.loadOrCreate()
         overlayState = overlayState.copy(
@@ -114,6 +127,9 @@ class MainActivity : ComponentActivity(), SurfaceLayerController {
             context = this,
             surfaceView = directSurfaceView,
             onTelemetryChanged = { telemetry ->
+                if (overlayState.showingVideoControls) {
+                    overlayState = overlayState.copy(videoControls = telemetry)
+                }
                 if (::sessionConnection.isInitialized && directPlaybackId != 0L) {
                     sessionConnection.updatePlaybackTelemetry(directPlaybackId, telemetry)
                 }
@@ -151,6 +167,7 @@ class MainActivity : ComponentActivity(), SurfaceLayerController {
                     sharedMemoryReady = false
                     mirrorRequested = false
                     directPlaybackId = 0L
+                    dismissVideoControls()
                     presentationCoordinator.onSessionDied()
                     overlayState = overlayState.copy(
                         connectedClient = null,
@@ -178,6 +195,7 @@ class MainActivity : ComponentActivity(), SurfaceLayerController {
                 }
 
                 override fun onDirectVideoUrl(url: String, startPosition: Double, playbackId: Long) {
+                    dismissVideoControls()
                     directPlaybackId = playbackId
                     presentationCoordinator.switchToDirectVideo(url, startPosition)
                     syncPresentationState()
@@ -240,17 +258,17 @@ class MainActivity : ComponentActivity(), SurfaceLayerController {
     }
 
     override fun onStop() {
+        dismissVideoControls()
         sessionConnection.setProjectionVisible(false)
         super.onStop()
     }
 
     override fun onKeyDown(keyCode: Int, event: KeyEvent?): Boolean {
-        val openDuringVideo = isSelectKey(keyCode) && !overlayState.visible &&
-            !overlayState.showStandby &&
-            (presentationCoordinator.state != PresentationState.MIRROR_ACTIVE || !hidBridge.isConnected())
+        val openDuringMirror = isSelectKey(keyCode) && !overlayState.visible &&
+            presentationCoordinator.state == PresentationState.MIRROR_ACTIVE && !hidBridge.isConnected()
         val openFromProjectionHome = isSelectKey(keyCode) && overlayState.projectionHome &&
             !overlayState.visible && overlayState.showStandby && !overlayState.showingAudio
-        if (isSettingsKey(keyCode) || openDuringVideo || openFromProjectionHome) {
+        if (isSettingsKey(keyCode) || openDuringMirror || openFromProjectionHome) {
             if (event?.repeatCount == 0) event.startTracking()
             return true
         }
@@ -258,14 +276,11 @@ class MainActivity : ComponentActivity(), SurfaceLayerController {
         if (overlayState.visible) return super.onKeyDown(keyCode, event)
 
         val inDirectMode = presentationCoordinator.state == PresentationState.DIRECT_ACTIVE
+        if (inDirectMode && handleDirectVideoKey(keyCode, event?.repeatCount ?: 0)) return true
         when (keyCode) {
             KeyEvent.KEYCODE_MEDIA_PLAY_PAUSE -> {
                 if (inDirectMode) {
-                    if (presentationCoordinator.directTelemetry().isPlaying) {
-                        presentationCoordinator.pauseDirect()
-                    } else {
-                        presentationCoordinator.playDirect()
-                    }
+                    webVideoPlayer.togglePlayback()
                 } else {
                     sessionConnection.sendDacpCommand(DacpCommand.PLAY_PAUSE.wirePath)
                 }
@@ -306,8 +321,7 @@ class MainActivity : ComponentActivity(), SurfaceLayerController {
             }
             KeyEvent.KEYCODE_MEDIA_FAST_FORWARD -> {
                 if (inDirectMode) {
-                    val pos = presentationCoordinator.directTelemetry().positionSec
-                    presentationCoordinator.seekDirect(pos + 10.0)
+                    seekVideoBy(10.0)
                 } else {
                     sessionConnection.sendDacpCommand(DacpCommand.BEGIN_FF.wirePath)
                 }
@@ -315,8 +329,7 @@ class MainActivity : ComponentActivity(), SurfaceLayerController {
             }
             KeyEvent.KEYCODE_MEDIA_REWIND -> {
                 if (inDirectMode) {
-                    val pos = presentationCoordinator.directTelemetry().positionSec
-                    presentationCoordinator.seekDirect((pos - 10.0).coerceAtLeast(0.0))
+                    seekVideoBy(-10.0)
                 } else {
                     sessionConnection.sendDacpCommand(DacpCommand.BEGIN_REW.wirePath)
                 }
@@ -332,6 +345,34 @@ class MainActivity : ComponentActivity(), SurfaceLayerController {
         }
 
         return super.onKeyDown(keyCode, event)
+    }
+
+    private fun handleDirectVideoKey(keyCode: Int, repeatCount: Int): Boolean {
+        when {
+            isSelectKey(keyCode) -> if (repeatCount == 0) webVideoPlayer.togglePlayback()
+            keyCode == KeyEvent.KEYCODE_DPAD_LEFT -> if (repeatCount == 0) seekVideoBy(-10.0)
+            keyCode == KeyEvent.KEYCODE_DPAD_RIGHT -> if (repeatCount == 0) seekVideoBy(10.0)
+            keyCode == KeyEvent.KEYCODE_DPAD_UP || keyCode == KeyEvent.KEYCODE_DPAD_DOWN -> Unit
+            else -> return false
+        }
+        mainHandler.removeCallbacks(hideVideoControls)
+        overlayState = overlayState.copy(videoControls = presentationCoordinator.directTelemetry())
+        closeOverlayOnBack.isEnabled = true
+        mainHandler.postDelayed(hideVideoControls, 4_000L)
+        return true
+    }
+
+    private fun seekVideoBy(deltaSec: Double) {
+        val pos = presentationCoordinator.directTelemetry().positionSec
+        presentationCoordinator.seekDirect((pos + deltaSec).coerceAtLeast(0.0))
+    }
+
+    private fun dismissVideoControls() {
+        mainHandler.removeCallbacks(hideVideoControls)
+        if (overlayState.videoControls != null) {
+            overlayState = overlayState.copy(videoControls = null)
+        }
+        closeOverlayOnBack.isEnabled = overlayState.visible
     }
 
     override fun onKeyUp(keyCode: Int, event: KeyEvent?): Boolean {
@@ -354,7 +395,7 @@ class MainActivity : ComponentActivity(), SurfaceLayerController {
     private fun setOverlayVisible(visible: Boolean) {
         if (overlayState.visible == visible) return
         overlayState = overlayState.copy(visible = visible)
-        closeSettingsOnBack.isEnabled = visible
+        dismissVideoControls()
         updateScreenWake()
     }
 
@@ -404,6 +445,9 @@ class MainActivity : ComponentActivity(), SurfaceLayerController {
 
     private fun syncPresentationState() {
         val state = presentationCoordinator.state
+        if (state != PresentationState.DIRECT_ACTIVE && overlayState.videoControls != null) {
+            dismissVideoControls()
+        }
         if (overlayState.presentationState != state) {
             overlayState = overlayState.copy(presentationState = state)
         }
