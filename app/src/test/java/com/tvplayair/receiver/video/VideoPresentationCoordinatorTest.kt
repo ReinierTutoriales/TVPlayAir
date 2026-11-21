@@ -125,10 +125,12 @@ class VideoPresentationCoordinatorTest {
             FakeSurfaceController(events)
         )
 
+        assertTrue(coordinator.startMirror())
         coordinator.switchToDirectVideo("https://example.com/video.mp4", 0.0)
+        coordinator.switchToDirectVideo("https://example.com/next.mp4", 0.0)
         events.clear()
 
-        assertTrue(coordinator.switchToMirror())
+        coordinator.stopDirectVideo()
         assertEquals(PresentationState.MIRROR_ACTIVE, coordinator.state)
         assertEquals(
             listOf(
@@ -137,6 +139,50 @@ class VideoPresentationCoordinatorTest {
                 "mirror.start",
                 "audio.pausedForExternal(false)"
             ),
+            events
+        )
+    }
+
+    @Test
+    fun stoppingDirectOnlyPlaybackReturnsToStandbyWithoutStartingMirror() {
+        val events = mutableListOf<String>()
+        val coordinator = VideoPresentationCoordinator(
+            FakeMirrorEngine(events),
+            FakeDirectEngine(events),
+            FakeAudioController(events),
+            FakeSurfaceController(events)
+        )
+
+        coordinator.switchToDirectVideo("https://example.com/video.mp4")
+        events.clear()
+        coordinator.stopDirectVideo()
+        coordinator.stopDirectVideo()
+
+        assertEquals(PresentationState.IDLE, coordinator.state)
+        assertEquals(
+            listOf("direct.stopAndClear", "audio.pausedForExternal(false)", "surface.hideAll"),
+            events
+        )
+    }
+
+    @Test
+    fun losingDirectSurfaceDoesNotRestartMirrorOnAHiddenWindow() {
+        val events = mutableListOf<String>()
+        val coordinator = VideoPresentationCoordinator(
+            FakeMirrorEngine(events),
+            FakeDirectEngine(events),
+            FakeAudioController(events),
+            FakeSurfaceController(events)
+        )
+
+        assertTrue(coordinator.startMirror())
+        assertTrue(coordinator.switchToDirectVideo("https://example.com/video.mp4"))
+        events.clear()
+        coordinator.onSurfaceDestroyed(isDirectSurface = true)
+
+        assertEquals(PresentationState.IDLE, coordinator.state)
+        assertEquals(
+            listOf("direct.stopAndClear", "audio.pausedForExternal(false)", "surface.hideAll"),
             events
         )
     }

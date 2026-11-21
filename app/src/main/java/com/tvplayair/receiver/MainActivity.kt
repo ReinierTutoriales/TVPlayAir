@@ -161,7 +161,7 @@ class MainActivity : ComponentActivity(), SurfaceLayerController {
                         "play" -> presentationCoordinator.playDirect()
                         "pause" -> presentationCoordinator.pauseDirect()
                         "seek" -> presentationCoordinator.seekDirect(value)
-                        "stop" -> presentationCoordinator.switchToMirror()
+                        "stop" -> presentationCoordinator.stopDirectVideo()
                     }
                     syncPresentationState()
                 }
@@ -229,7 +229,7 @@ class MainActivity : ComponentActivity(), SurfaceLayerController {
             }
             KeyEvent.KEYCODE_MEDIA_STOP -> {
                 if (inDirectMode) {
-                    presentationCoordinator.switchToMirror()
+                    presentationCoordinator.stopDirectVideo()
                     syncPresentationState()
                 } else {
                     sessionConnection.sendDacpCommand(DacpCommand.STOP.wirePath)
