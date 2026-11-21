@@ -1,5 +1,6 @@
 package com.tvplayair.receiver
 
+import android.content.Intent
 import android.graphics.Color
 import android.os.Bundle
 import android.view.KeyEvent
@@ -22,6 +23,7 @@ import com.tvplayair.receiver.control.TvRemoteHidBridge
 import com.tvplayair.receiver.network.ReceiverIdentityHelper
 import com.tvplayair.receiver.network.ReceiverIdentityStore
 import com.tvplayair.receiver.session.SessionConnection
+import com.tvplayair.receiver.session.RaopNowPlaying
 import com.tvplayair.receiver.session.SessionEventListener
 import com.tvplayair.receiver.ui.TvOverlayMenu
 import com.tvplayair.receiver.ui.TvOverlayState
@@ -54,10 +56,14 @@ class MainActivity : ComponentActivity(), SurfaceLayerController {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         onBackPressedDispatcher.addCallback(this, closeSettingsOnBack)
-        window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
         identityStore = ReceiverIdentityStore(this)
         val initialIdentity = identityStore.loadOrCreate()
-        overlayState = overlayState.copy(receiverName = initialIdentity.serviceName)
+        overlayState = overlayState.copy(
+            receiverName = initialIdentity.serviceName,
+            projectionHome = intent.hasCategory(Intent.CATEGORY_HOME) ||
+                intent.component?.className == "${packageName}.ProjectionHome"
+        )
+        updateScreenWake()
 
         // Two native SurfaceViews managed by SurfaceFlinger (zero OpenGL ES in v1.0)
         // to preserve direct Hardware Composer HDR10 / HLG / Dolby Vision passthrough.
@@ -86,6 +92,7 @@ class MainActivity : ComponentActivity(), SurfaceLayerController {
                         onToggleResolution = ::toggleResolutionPreset,
                         onToggleHevc = ::toggleHevcSetting,
                         onAdjustAudioOffset = ::adjustAudioOffset,
+                        onAudioCommand = { sessionConnection.sendDacpCommand(it.wirePath) },
                         onDismiss = { setOverlayVisible(false) }
                     )
                 }
@@ -147,8 +154,11 @@ class MainActivity : ComponentActivity(), SurfaceLayerController {
                     presentationCoordinator.onSessionDied()
                     overlayState = overlayState.copy(
                         connectedClient = null,
+                        audioProjectionActive = false,
+                        nowPlaying = null,
                         presentationState = presentationCoordinator.state
                     )
+                    updateScreenWake()
                 }
 
                 override fun onVideoConfigChanged(
@@ -195,11 +205,16 @@ class MainActivity : ComponentActivity(), SurfaceLayerController {
 
                 override fun onClientDisconnected() {
                     mirrorRequested = false
-                    overlayState = overlayState.copy(connectedClient = null)
+                    overlayState = overlayState.copy(
+                        connectedClient = null, audioProjectionActive = false, nowPlaying = null
+                    )
                     audioConsumer.stop()
+                    updateScreenWake()
                 }
 
                 override fun onAudioStreamStarted(generationId: Int) {
+                    overlayState = overlayState.copy(audioProjectionActive = true)
+                    updateScreenWake()
                     mirrorDecoder.setGeneration(generationId)
                     audioConsumer.setGeneration(generationId)
                     if (sharedMemoryReady &&
@@ -208,16 +223,36 @@ class MainActivity : ComponentActivity(), SurfaceLayerController {
                         audioConsumer.start(generationId)
                     }
                 }
+
+                override fun onNowPlaying(metadata: RaopNowPlaying?) {
+                    overlayState = overlayState.copy(
+                        nowPlaying = metadata,
+                        audioProjectionActive = metadata != null
+                    )
+                    updateScreenWake()
+                }
             }
         )
         sessionConnection.connect()
+    }
+
+    override fun onStart() {
+        super.onStart()
+        sessionConnection.setProjectionVisible(true)
+    }
+
+    override fun onStop() {
+        sessionConnection.setProjectionVisible(false)
+        super.onStop()
     }
 
     override fun onKeyDown(keyCode: Int, event: KeyEvent?): Boolean {
         val openDuringVideo = isSelectKey(keyCode) && !overlayState.visible &&
             !overlayState.showStandby &&
             (presentationCoordinator.state != PresentationState.MIRROR_ACTIVE || !hidBridge.isConnected())
-        if (isSettingsKey(keyCode) || openDuringVideo) {
+        val openFromProjectionHome = isSelectKey(keyCode) && overlayState.projectionHome &&
+            !overlayState.visible && overlayState.showStandby && !overlayState.showingAudio
+        if (isSettingsKey(keyCode) || openDuringVideo || openFromProjectionHome) {
             if (event?.repeatCount == 0) event.startTracking()
             return true
         }
@@ -322,6 +357,7 @@ class MainActivity : ComponentActivity(), SurfaceLayerController {
         if (overlayState.visible == visible) return
         overlayState = overlayState.copy(visible = visible)
         closeSettingsOnBack.isEnabled = visible
+        updateScreenWake()
     }
 
     private fun cycleReceiverName() {
@@ -373,6 +409,14 @@ class MainActivity : ComponentActivity(), SurfaceLayerController {
         if (overlayState.presentationState != state) {
             overlayState = overlayState.copy(presentationState = state)
         }
+        updateScreenWake()
+    }
+
+    private fun updateScreenWake() {
+        val state = overlayState
+        val keepScreenOn = !state.projectionHome || state.visible || state.showingAudio || !state.showStandby
+        val flag = WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON
+        if (keepScreenOn) window.addFlags(flag) else window.clearFlags(flag)
     }
 
     override fun showMirrorSurface() {

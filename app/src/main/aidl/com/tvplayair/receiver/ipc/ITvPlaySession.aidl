@@ -6,6 +6,7 @@ import com.tvplayair.receiver.ipc.ITvPlayCallback;
 interface ITvPlaySession {
     void registerCallback(ITvPlayCallback callback);
     void unregisterCallback(ITvPlayCallback callback);
+    oneway void setProjectionVisible(boolean visible);
     void startServer();
     void stopServer();
     void updatePlaybackTelemetry(double durationSec, double positionSec,

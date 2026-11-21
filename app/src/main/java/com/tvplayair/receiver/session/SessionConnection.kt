@@ -21,6 +21,7 @@ interface SessionEventListener {
     fun onClientConnected(clientName: String, dacpId: String, activeRemote: String) = Unit
     fun onClientDisconnected() = Unit
     fun onAudioStreamStarted(generationId: Int) = Unit
+    fun onNowPlaying(metadata: RaopNowPlaying?) = Unit
 }
 
 class SessionConnection(
@@ -34,6 +35,7 @@ class SessionConnection(
     private var bound = false
     private var retryDelayMs = 250L
     private var lastGenerationId = 0
+    private var projectionVisible = false
 
     private val callback = object : ITvPlayCallback.Stub() {
         override fun onSharedMemoryReady(
@@ -100,6 +102,16 @@ class SessionConnection(
                 if (bound) listener.onAudioStreamStarted(generationId)
             }
         }
+
+        override fun onNowPlaying(
+            available: Boolean, title: String, artist: String, album: String, artwork: ByteArray
+        ) {
+            val metadata = if (available) RaopNowPlaying(
+                RaopTrack(title.ifBlank { null }, artist.ifBlank { null }, album.ifBlank { null }),
+                artwork.takeIf { it.isNotEmpty() }
+            ) else null
+            handler.post { if (bound) listener.onNowPlaying(metadata) }
+        }
     }
 
     private val deathRecipient = IBinder.DeathRecipient {
@@ -117,6 +129,7 @@ class SessionConnection(
                 remoteBinder = binder
                 service = ITvPlaySession.Stub.asInterface(binder)
                 service?.registerCallback(callback)
+                service?.setProjectionVisible(projectionVisible)
                 service?.startServer()
                 retryDelayMs = 250L
             } catch (_: Exception) {
@@ -140,6 +153,11 @@ class SessionConnection(
 
     fun sendDacpCommand(command: String) {
         runCatching { service?.sendDacpCommand(command) }
+    }
+
+    fun setProjectionVisible(visible: Boolean) {
+        projectionVisible = visible
+        runCatching { service?.setProjectionVisible(visible) }
     }
 
     fun updatePlaybackTelemetry(telemetry: DirectPlaybackTelemetry) {

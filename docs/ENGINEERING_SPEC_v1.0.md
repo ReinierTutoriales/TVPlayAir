@@ -6,6 +6,15 @@
 
 La experiencia objetivo es conectar el iPhone una vez y manejar la sesión desde la TV. En espejo, cambiar de app o girar el iPhone debe mantener la conexión. En video directo, la TV reproduce el contenido compatible en ExoPlayer mientras el iPhone puede pasar a otra app. Abrir los ajustes o cambiar el tema de la TV debe dejar la sesión y la reproducción activas. Estas transiciones se verifican de extremo a extremo con iPhone, TV y mando.
 
+### Modo de proyección del televisor
+
+La pantalla de espera cede el espacio al video, al espejo o a **Ahora suena** cuando llega contenido. En audio, la sesión RTSP propietaria aporta título, artista, álbum y destino DACP. Los metadatos y la carátula se asocian por `rtptime` cuando el emisor lo incluye. Cambiar de canción retira la carátula anterior y una respuesta atrasada de otra conexión no puede reemplazarla. Los controles de pista de la TV usan DACP y requieren que el emisor publique un destino válido.
+
+- **Instalación normal.** El receptor solicita abrir la proyección cuando empieza el contenido si su ventana está oculta. Android decide si admite la apertura desde segundo plano. La notificación del receptor ofrece una entrada manual. Android 15 y superior impiden iniciar este servicio de reproducción desde `BOOT_COMPLETED` con el SDK objetivo actual. [Límites de apertura](https://developer.android.com/guide/components/activities/secure-bal) · [Inicio de servicios en Android 15](https://developer.android.com/about/versions/15/changes/foreground-service-types)
+- **Equipo dedicado.** El componente opcional `com.tvplayair.receiver/.ProjectionHome` está deshabilitado de fábrica. En equipos de desarrollo o administrados puede habilitarse con `adb shell pm enable com.tvplayair.receiver/.ProjectionHome` y elegirse como aplicación Inicio donde el firmware lo permita. Inicio espera en negro y entra directo a la proyección. En espera, OK abre Ajustes. Para volver, selecciona el lanzador anterior y deshabilita el componente con `adb shell pm disable com.tvplayair.receiver/.ProjectionHome`. [Contrato de Android para Inicio](https://developer.android.com/reference/android/content/Intent#CATEGORY_HOME)
+
+El arranque directo depende de que el equipo permita seleccionar Inicio y de que el iPhone inicie AirPlay. Los fabricantes pueden integrar el receptor en su propia imagen del sistema. [Conexión automática en el iPhone](https://support.apple.com/guide/iphone/stream-video-and-audio-from-your-iphone-iphd668e80e6/ios)
+
 | Incluido en v1.0 (Producción) | Excluido de v1.0 (Diferido a v2.0) |
 |----------------------------------|-------------------------------------|
 | Proceso aislado `:session` + SharedMemory SPSC | Reemplazo del motor C por Rust/Kotlin puro |
@@ -119,5 +128,5 @@ TVPlay/app/src/main/
 |------|----------------------|-----------------------------------------------|
 | **Hito 1: Tubería Base** | Proceso `:session` + SharedRingBuffer + MirrorDecoder (1 SurfaceView) + Oboe. | Conexión estable desde iOS en 4K/HEVC a 60fps durante 30 min continuos sin crash, sin fuga de memoria y con audio PCM sincronizado. Prueba de estrés matando `:session` (`adb shell am crash`) con recuperación automática de la UI. |
 | **Hito 2: Salto Web 4K HDR** | Segundo SurfaceView + WebVideoPlayer (ExoPlayer) + liberación de MediaCodec + compuerta IDR. | Maximizar un video web en Safari dispara ExoPlayer en máxima resolución/HDR sin saturar la VPU. Al salir de pantalla completa, el espejo regresa limpio sin pantalla verde ni congelamientos. |
-| **Hito 3: Control y UI v1.0** | DacpController + TvRemoteHidBridge (opcional) + TvOverlayMenu (Compose TV). | Play/Pausa/Seek funcionan desde el mando en cualquier Android TV. Si el TV soporta BT HID, el D-Pad navega por Safari. El menú permite ajustar offset de audio (± ms) en caliente. |
+| **Hito 3: Control y UI v1.0** | Inicio dedicado opcional, Ahora suena, DACP y ajustes de Compose TV. | Arrancar en Inicio en un equipo compatible, iniciar audio desde el iPhone, cambiar de app y avanzar con el mando. Confirmar que la carátula anterior desaparece, que una respuesta atrasada no la recupera y que video y espejo ocupan la pantalla sin pasar por Ajustes. |
 | **v2.0 (Post-estabilidad)** | GLSurfaceView (PiP/Split con espejo a 1080p), USB CDC-NCM y evaluación de motor Rust. | Solo se inicia tras cerrar los 3 hitos anteriores sin regresiones. |

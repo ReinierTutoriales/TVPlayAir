@@ -1,5 +1,7 @@
 package com.tvplayair.receiver.session
 
+import android.graphics.Bitmap
+import android.graphics.BitmapFactory
 import android.util.Log
 import java.io.BufferedInputStream
 import java.io.ByteArrayOutputStream
@@ -39,6 +41,7 @@ class RaopRtspServer(
     private val running = AtomicBoolean(false)
     private val generationId = sharedGenerationId
     private val activeSessions = AtomicInteger(0)
+    private val nowPlaying = RaopNowPlayingSession(listener::onNowPlaying)
     private val audioReceiver = RaopAudioRtpReceiver { generationId.get() }
     private val timingAndEventServers = AirPlayTimingAndEventServers()
 
@@ -82,6 +85,7 @@ class RaopRtspServer(
 
     fun stop() {
         running.set(false)
+        nowPlaying.clear()
         timingAndEventServers.stop()
         audioReceiver.stop()
         runCatching { serverSocket?.close() }
@@ -115,6 +119,7 @@ class RaopRtspServer(
         firstHeader: String? = null
     ) {
         val peer = socket.inetAddress?.hostAddress ?: "unknown"
+        val source = Any()
         activeSessions.incrementAndGet()
         try {
             socket.soTimeout = CLIENT_SO_TIMEOUT_MS
@@ -151,16 +156,17 @@ class RaopRtspServer(
                     listener.onClientConnected(userAgent, dacpId, activeRemote)
                 }
 
-                if (!dispatchRtsp(request, output)) break
+                if (!dispatchRtsp(request, output, source)) break
             }
         } catch (error: IOException) {
             Log.i(TAG, "RTSP connection ended for $peer (${error.javaClass.simpleName})")
         } finally {
+            nowPlaying.clear(source)
             activeSessions.decrementAndGet()
         }
     }
 
-    private fun dispatchRtsp(request: RtspRequest, output: OutputStream): Boolean {
+    private fun dispatchRtsp(request: RtspRequest, output: OutputStream, source: Any): Boolean {
         val cseq = request.cseq()
         when (request.method) {
             "OPTIONS" -> {
@@ -251,10 +257,12 @@ class RaopRtspServer(
             }
             "SETUP" -> {
                 if (BinaryPlistParser.isBinaryPlist(request.body)) {
-                    handleBinaryPlistSetup(request.body, cseq, output)
+                    handleBinaryPlistSetup(request, output, source)
                 } else {
                     val transport = RtspMessageParser.parseTransport(request.header("transport"))
-                    audioReceiver.start(RaopAudioRtpReceiver.DEFAULT_AUDIO_PORT)
+                    if (audioReceiver.start(RaopAudioRtpReceiver.DEFAULT_AUDIO_PORT)) {
+                        nowPlaying.activate(source, remoteFor(request))
+                    }
                     listener.onAudioStreamStarted(generationId.get())
                     val responseTransport = buildString {
                         append("RTP/AVP/UDP;unicast;mode=record")
@@ -271,6 +279,7 @@ class RaopRtspServer(
                 }
             }
             "RECORD" -> {
+                remoteFor(request)?.let { nowPlaying.updateRemote(source, it) }
                 listener.onAudioStreamStarted(generationId.get())
                 Log.i(TAG, "-> RECORD 200 OK (cseq=$cseq gen=${generationId.get()})")
                 output.write(
@@ -297,15 +306,15 @@ class RaopRtspServer(
                 }
             }
             "SET_PARAMETER" -> {
-                val bodyText = String(request.body, StandardCharsets.UTF_8)
-                for (line in bodyText.lineSequence()) {
-                    val idx = line.indexOf(':')
-                    if (idx > 0 && line.substring(0, idx).trim().equals("volume", ignoreCase = true)) {
-                        line.substring(idx + 1).trim().toFloatOrNull()?.let { currentVolumeDb = it }
+                val timestamp = RaopMetadataParser.timestamp(request.header("rtp-info"))
+                when (request.header("content-type")?.substringBefore(';')?.trim()?.lowercase(Locale.US)) {
+                    "application/x-dmap-tagged" -> RaopMetadataParser.track(request.body)?.let {
+                        nowPlaying.track(source, timestamp, it, remoteFor(request))
                     }
-                }
-                RtspMessageParser.parseVolumeLinear(bodyText)?.let { gain ->
-                    Log.i(TAG, "RAOP volume update: linear=$gain (db=$currentVolumeDb)")
+                    "image/jpeg", "image/png" -> {
+                        nowPlaying.artwork(source, timestamp, artworkThumbnail(request.body))
+                    }
+                    "text/parameters", null -> updateVolume(request.body)
                 }
                 output.write(RtspMessageParser.formatResponse(200, "OK", cseq))
             }
@@ -336,8 +345,48 @@ class RaopRtspServer(
         return true
     }
 
-    private fun handleBinaryPlistSetup(body: ByteArray, cseq: String, output: OutputStream) {
-        val parsed = BinaryPlistParser.parse(body) as? Map<*, *>
+    private fun updateVolume(body: ByteArray) {
+        val bodyText = String(body, StandardCharsets.UTF_8)
+        for (line in bodyText.lineSequence()) {
+            val idx = line.indexOf(':')
+            if (idx > 0 && line.substring(0, idx).trim().equals("volume", ignoreCase = true)) {
+                line.substring(idx + 1).trim().toFloatOrNull()?.let { currentVolumeDb = it }
+            }
+        }
+        RtspMessageParser.parseVolumeLinear(bodyText)?.let { gain ->
+            Log.i(TAG, "RAOP volume update: linear=$gain (db=$currentVolumeDb)")
+        }
+    }
+
+    private fun artworkThumbnail(bytes: ByteArray): ByteArray? {
+        if (bytes.isEmpty()) return null
+        val bounds = BitmapFactory.Options().apply { inJustDecodeBounds = true }
+        BitmapFactory.decodeByteArray(bytes, 0, bytes.size, bounds)
+        val largestSide = maxOf(bounds.outWidth, bounds.outHeight)
+        if (bounds.outWidth !in 1..8192 || bounds.outHeight !in 1..8192) return null
+        val options = BitmapFactory.Options().apply {
+            inSampleSize = 1
+            while (largestSide / inSampleSize > 384) inSampleSize *= 2
+        }
+        val bitmap = BitmapFactory.decodeByteArray(bytes, 0, bytes.size, options) ?: return null
+        return try {
+            val output = ByteArrayOutputStream()
+            if (!bitmap.compress(Bitmap.CompressFormat.JPEG, 80, output) || output.size() > 128 * 1024) null
+            else output.toByteArray()
+        } finally {
+            bitmap.recycle()
+        }
+    }
+
+    private fun remoteFor(request: RtspRequest): RaopRemote? {
+        val id = request.header("dacp-id")?.takeIf(String::isNotBlank) ?: return null
+        val token = request.header("active-remote")?.takeIf(String::isNotBlank) ?: return null
+        return RaopRemote(id, token)
+    }
+
+    private fun handleBinaryPlistSetup(request: RtspRequest, output: OutputStream, source: Any) {
+        val cseq = request.cseq()
+        val parsed = BinaryPlistParser.parse(request.body) as? Map<*, *>
         Log.i(TAG, "SETUP bplist keys=${parsed?.keys}")
         val ekey = parsed?.get("ekey") as? ByteArray
         val eiv = parsed?.get("eiv") as? ByteArray
@@ -400,7 +449,9 @@ class RaopRtspServer(
                     sessionAesIv = sessionEiv,
                     samplesPerFrame = spf
                 )
-                audioReceiver.start(RaopAudioRtpReceiver.DEFAULT_AUDIO_PORT)
+                if (audioReceiver.start(RaopAudioRtpReceiver.DEFAULT_AUDIO_PORT)) {
+                    nowPlaying.activate(source, remoteFor(request))
+                }
                 listener.onAudioStreamStarted(generationId.get())
                 linkedMapOf(
                     "streams" to listOf(

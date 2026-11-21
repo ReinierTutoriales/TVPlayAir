@@ -1,5 +1,7 @@
 package com.tvplayair.receiver.ui
 
+import android.graphics.BitmapFactory
+import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -10,6 +12,7 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
@@ -22,6 +25,8 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.focus.FocusRequester
 import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.asImageBitmap
+import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
@@ -29,6 +34,8 @@ import androidx.tv.material3.Button
 import androidx.tv.material3.ButtonDefaults
 import androidx.tv.material3.MaterialTheme
 import androidx.tv.material3.Text
+import com.tvplayair.receiver.control.DacpCommand
+import com.tvplayair.receiver.session.RaopNowPlaying
 
 private val ControlSurface = Color(0xFF151515)
 private val PrimaryText = Color(0xFFF2F2F2)
@@ -43,10 +50,17 @@ fun TvOverlayMenu(
     onToggleResolution: () -> Unit,
     onToggleHevc: () -> Unit,
     onAdjustAudioOffset: (Int) -> Unit,
+    onAudioCommand: (DacpCommand) -> Unit,
     onDismiss: () -> Unit
 ) {
     if (!state.visible) {
-        if (state.showStandby) TvStandbyScreen(state, onOpenMenu)
+        if (state.showStandby) {
+            if (state.showingAudio) {
+                TvNowPlayingScreen(state.nowPlaying, onAudioCommand)
+            } else if (!state.projectionHome) {
+                TvStandbyScreen(state, onOpenMenu)
+            }
+        }
         return
     }
 
@@ -98,6 +112,47 @@ fun TvOverlayMenu(
             }
             TvControl(onClick = onDismiss, modifier = Modifier.fillMaxWidth()) {
                 Text("Cerrar ajustes")
+            }
+        }
+    }
+}
+
+@Composable
+private fun TvNowPlayingScreen(metadata: RaopNowPlaying?, onAudioCommand: (DacpCommand) -> Unit) {
+    val playFocus = remember { FocusRequester() }
+    LaunchedEffect(Unit) { playFocus.requestFocus() }
+    val artwork = metadata?.artwork
+    val cover = remember(artwork) {
+        artwork?.let { BitmapFactory.decodeByteArray(it, 0, it.size)?.asImageBitmap() }
+    }
+
+    Box(
+        modifier = Modifier.fillMaxSize().background(Color.Black).padding(28.dp),
+        contentAlignment = Alignment.Center
+    ) {
+        Column(
+            horizontalAlignment = Alignment.CenterHorizontally,
+            verticalArrangement = Arrangement.spacedBy(12.dp)
+        ) {
+            if (cover != null) {
+                Image(cover, contentDescription = null, Modifier.size(152.dp), contentScale = ContentScale.Fit)
+            }
+            Text(
+                text = metadata?.track?.title ?: "Audio de AirPlay",
+                style = MaterialTheme.typography.headlineLarge,
+                color = PrimaryText, maxLines = 1, overflow = TextOverflow.Ellipsis
+            )
+            val details = listOfNotNull(metadata?.track?.artist, metadata?.track?.album)
+            if (details.isNotEmpty()) {
+                Text(details.joinToString(" · "), color = SecondaryText, maxLines = 1, overflow = TextOverflow.Ellipsis)
+            }
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                TvControl(onClick = { onAudioCommand(DacpCommand.PREVIOUS) }) { Text("Anterior") }
+                TvControl(
+                    onClick = { onAudioCommand(DacpCommand.PLAY_PAUSE) },
+                    modifier = Modifier.focusRequester(playFocus)
+                ) { Text("Reproducir / Pausar") }
+                TvControl(onClick = { onAudioCommand(DacpCommand.NEXT) }) { Text("Siguiente") }
             }
         }
     }

@@ -3,6 +3,7 @@ package com.tvplayair.receiver.session
 import android.app.Notification
 import android.app.NotificationChannel
 import android.app.NotificationManager
+import android.app.PendingIntent
 import android.app.Service
 import android.content.Context
 import android.content.Intent
@@ -13,6 +14,7 @@ import android.os.ParcelFileDescriptor
 import android.util.Log
 import com.tvplayair.receiver.MainActivity
 import com.tvplayair.receiver.control.DacpController
+import com.tvplayair.receiver.control.DacpRequestBuilder
 import com.tvplayair.receiver.ipc.ITvPlayCallback
 import com.tvplayair.receiver.ipc.ITvPlaySession
 import com.tvplayair.receiver.network.AirPlayAdvertiseConfig
@@ -51,6 +53,10 @@ class SessionService : Service() {
 
     private val callbackLock = Any()
     private var latestMirrorConfig: MirrorConfig? = null
+    private var latestNowPlaying: RaopNowPlaying? = null
+    private var activeAudioGeneration: Int? = null
+    @Volatile
+    private var projectionVisible = false
 
     @Volatile
     private var callback: ITvPlayCallback? = null
@@ -98,21 +104,44 @@ class SessionService : Service() {
         }
 
         override fun onClientConnected(clientName: String, dacpId: String, activeRemote: String) {
-            dacpController.onClientConnected(dacpId, activeRemote)
-            ensureUiForeground()
-            runCatching { callback?.onClientConnected(clientName, dacpId, activeRemote) }
+            synchronized(callbackLock) {
+                if (latestNowPlaying == null) {
+                    dacpController.onClientConnected(dacpId, activeRemote)
+                    runCatching { callback?.onClientConnected(clientName, dacpId, activeRemote) }
+                }
+            }
         }
 
         override fun onClientDisconnected() {
-            dacpController.onClientDisconnected()
             synchronized(callbackLock) {
+                dacpController.onClientDisconnected()
                 latestMirrorConfig = null
+                latestNowPlaying = null
+                activeAudioGeneration = null
                 runCatching { callback?.onClientDisconnected() }
+            }
+        }
+
+        override fun onNowPlaying(metadata: RaopNowPlaying?) {
+            synchronized(callbackLock) {
+                val remote = metadata?.remote
+                if (remote != latestNowPlaying?.remote ||
+                    (metadata != null) != (latestNowPlaying != null)
+                ) {
+                    if (remote == null || DacpRequestBuilder.expectedServiceName(remote.dacpId) == null) {
+                        dacpController.onClientDisconnected()
+                    } else {
+                        dacpController.onClientConnected(remote.dacpId, remote.activeRemote)
+                    }
+                }
+                latestNowPlaying = metadata
+                callback?.let { sendNowPlaying(it, metadata) }
             }
         }
 
         override fun onAudioStreamStarted(generationId: Int) {
             synchronized(callbackLock) {
+                activeAudioGeneration = generationId
                 latestMirrorConfig = latestMirrorConfig?.copy(generationId = generationId)
                 runCatching { callback?.onAudioStreamStarted(generationId) }
             }
@@ -147,6 +176,8 @@ class SessionService : Service() {
                     videoCopy.close()
                 }
                 callback = cb
+                sendNowPlaying(cb, latestNowPlaying)
+                activeAudioGeneration?.let { runCatching { cb.onAudioStreamStarted(it) } }
                 latestMirrorConfig?.let { config -> runCatching { config.sendTo(cb) } }
                 pendingDirectUrl?.let { (url, position) ->
                     pendingDirectUrl = null
@@ -157,8 +188,15 @@ class SessionService : Service() {
 
         override fun unregisterCallback(cb: ITvPlayCallback) {
             synchronized(callbackLock) {
-                if (callback?.asBinder() == cb.asBinder()) callback = null
+                if (callback?.asBinder() == cb.asBinder()) {
+                    callback = null
+                    projectionVisible = false
+                }
             }
+        }
+
+        override fun setProjectionVisible(visible: Boolean) {
+            projectionVisible = visible
         }
 
         override fun startServer() {
@@ -231,6 +269,18 @@ class SessionService : Service() {
         return START_STICKY
     }
 
+    private fun sendNowPlaying(target: ITvPlayCallback, metadata: RaopNowPlaying?) {
+        runCatching {
+            target.onNowPlaying(
+                metadata != null,
+                metadata?.track?.title.orEmpty(),
+                metadata?.track?.artist.orEmpty(),
+                metadata?.track?.album.orEmpty(),
+                metadata?.artwork ?: ByteArray(0)
+            )
+        }
+    }
+
     private fun promoteToForeground() {
         val manager = getSystemService(NotificationManager::class.java)
         val channel = NotificationChannel(
@@ -244,6 +294,11 @@ class SessionService : Service() {
             .setContentTitle(advertiseConfig.serviceName)
             .setContentText("AirPlay receiver active in background")
             .setSmallIcon(android.R.drawable.stat_sys_data_bluetooth)
+            .setContentIntent(
+                PendingIntent.getActivity(
+                    this, 0, projectionIntent(), PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT
+                )
+            )
             .setOngoing(true)
             .build()
 
@@ -263,19 +318,16 @@ class SessionService : Service() {
     }
 
     private fun ensureUiForeground() {
-        if (callback != null) return
+        if (projectionVisible) return
         runCatching {
-            val intent = Intent(this, MainActivity::class.java).apply {
-                addFlags(
-                    Intent.FLAG_ACTIVITY_NEW_TASK or
-                        Intent.FLAG_ACTIVITY_SINGLE_TOP or
-                        Intent.FLAG_ACTIVITY_REORDER_TO_FRONT
-                )
-            }
-            startActivity(intent)
+            startActivity(projectionIntent())
         }.onFailure {
             Log.w(TAG, "Unable to auto-launch MainActivity from background", it)
         }
+    }
+
+    private fun projectionIntent() = Intent(this, MainActivity::class.java).apply {
+        addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_SINGLE_TOP or Intent.FLAG_ACTIVITY_REORDER_TO_FRONT)
     }
 
     @Synchronized
@@ -306,7 +358,11 @@ class SessionService : Service() {
         serverRunning = false
         mdnsAdvertiser.stop()
         protocolEngine.stop()
-        synchronized(callbackLock) { latestMirrorConfig = null }
+        synchronized(callbackLock) {
+            latestMirrorConfig = null
+            latestNowPlaying = null
+            activeAudioGeneration = null
+        }
         dacpController.onClientDisconnected()
     }
 

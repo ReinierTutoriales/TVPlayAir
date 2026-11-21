@@ -7,11 +7,63 @@ import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
+import java.nio.ByteBuffer
 import javax.crypto.Cipher
 import javax.crypto.spec.IvParameterSpec
 import javax.crypto.spec.SecretKeySpec
 
 class RtspAndRtpParserTest {
+
+    @Test
+    fun parsesTrackFieldsAndRejectsTruncatedDmapRecords() {
+        fun record(key: String, value: ByteArray) = ByteBuffer.allocate(8 + value.size)
+            .put(key.toByteArray()).putInt(value.size).put(value).array()
+        val record = record("mlit", record("minm", "Canción".toByteArray()) +
+            record("asar", "Artista".toByteArray()) + record("asal", "Álbum".toByteArray()))
+        assertEquals(RaopTrack("Canción", "Artista", "Álbum"), RaopMetadataParser.track(record))
+        assertEquals(42L, RaopMetadataParser.timestamp("seq=10; rtptime=42"))
+        assertNull(RaopMetadataParser.track(record.copyOf(record.size - 1)))
+    }
+
+    @Test
+    fun rejectsLateArtworkFromAnEarlierTrackOrSource() {
+        var visible: RaopNowPlaying? = null
+        val playback = RaopNowPlayingSession { visible = it }
+        val source1 = Any()
+        val source2 = Any()
+        val track1 = RaopTrack("Primera", null, null)
+        val track2 = RaopTrack("Segunda", null, null)
+        val art1 = byteArrayOf(1)
+        val art2 = byteArrayOf(2)
+        val remote1 = RaopRemote("AAAA", "1")
+        val remote2 = RaopRemote("BBBB", "2")
+        playback.activate(source1, remote1)
+        playback.track(source1, 0xFFFF_FF00L, track1)
+        playback.artwork(source1, 0xFFFF_FF00L, art1)
+        assertArrayEquals(art1, visible?.artwork)
+
+        playback.track(source1, null, track2)
+        playback.artwork(source1, 0xFFFF_FF00L, art1)
+        assertNull(visible?.artwork)
+        playback.track(source1, 100L, track2)
+        playback.artwork(source1, 0xFFFF_FF00L, art1)
+        assertEquals(track2, visible?.track)
+        assertNull(visible?.artwork)
+
+        playback.activate(source2, remote2)
+        assertEquals(remote2, visible?.remote)
+        assertNull(visible?.track)
+        assertNull(visible?.artwork)
+        playback.artwork(source2, 10L, art2)
+        playback.track(source2, 10L, track2)
+        playback.artwork(source1, 100L, art1)
+        playback.updateRemote(source1, remote1)
+        playback.clear(source1)
+        assertArrayEquals(art2, visible?.artwork)
+        assertEquals(remote2, visible?.remote)
+        playback.clear(source2)
+        assertNull(visible)
+    }
 
     @Test
     fun identifiesRtspFromVersionInsteadOfMethodOrPath() {
