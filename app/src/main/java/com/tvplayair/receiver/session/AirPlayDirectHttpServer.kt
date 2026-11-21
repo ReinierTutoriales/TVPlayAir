@@ -344,21 +344,32 @@ class AirPlayDirectHttpServer(
         }.getOrDefault("binary(${dataBytes.size}B)")
         Log.i(TAG, "<- FCUP response id=$reqId url=$respUrl len=${dataBytes.size} preview=$preview")
 
+        var matched = false
         if (!respUrl.isNullOrEmpty()) {
             fcupCache[respUrl] = dataBytes
-            pendingFcupByUrl.remove(respUrl)?.complete(dataBytes)
+            val byUrl = pendingFcupByUrl.remove(respUrl)
+            if (byUrl != null) {
+                byUrl.complete(dataBytes)
+                matched = true
+            }
         }
         if (reqId != null) {
-            pendingFcupById.remove(reqId)?.complete(dataBytes)
+            val byId = pendingFcupById.remove(reqId)
+            if (byId != null) {
+                byId.complete(dataBytes)
+                matched = true
+            }
         }
-        if (pendingFcupById.size == 1) {
-            val onlyKey = pendingFcupById.keys().nextElement()
-            pendingFcupById.remove(onlyKey)?.complete(dataBytes)
-        }
-        if (pendingFcupByUrl.size == 1) {
-            val onlyUrl = pendingFcupByUrl.keys().nextElement()
-            fcupCache[onlyUrl] = dataBytes
-            pendingFcupByUrl.remove(onlyUrl)?.complete(dataBytes)
+        if (!matched) {
+            if (pendingFcupById.size == 1) {
+                val onlyKey = pendingFcupById.keys().nextElement()
+                pendingFcupById.remove(onlyKey)?.complete(dataBytes)
+            }
+            if (pendingFcupByUrl.size == 1) {
+                val onlyUrl = pendingFcupByUrl.keys().nextElement()
+                fcupCache[onlyUrl] = dataBytes
+                pendingFcupByUrl.remove(onlyUrl)?.complete(dataBytes)
+            }
         }
         return true
     }
