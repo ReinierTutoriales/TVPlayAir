@@ -17,7 +17,7 @@ interface SessionEventListener {
     fun onSharedMemoryDetached() = Unit
     fun onVideoConfigChanged(mimeType: String, width: Int, height: Int, generationId: Int) = Unit
     fun onDirectVideoUrl(url: String, startPosition: Double, playbackId: Long) = Unit
-    fun onDirectVideoCommand(command: String, value: Double) = Unit
+    fun onDirectVideoCommand(command: String, value: Double, playbackId: Long) = Unit
     fun onClientConnected(clientName: String, dacpId: String, activeRemote: String) = Unit
     fun onClientDisconnected() = Unit
     fun onAudioStreamStarted(generationId: Int) = Unit
