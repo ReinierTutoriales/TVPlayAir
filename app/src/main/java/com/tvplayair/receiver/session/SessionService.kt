@@ -90,11 +90,10 @@ class SessionService : Service() {
 
         override fun onDirectVideoUrl(url: String, startPosition: Double, playbackId: Long) {
             synchronized(callbackLock) {
+                // Retain the active source for Activity recreation, even if a UI is bound.
+                pendingDirectUrl = PendingDirectVideo(url, startPosition, playbackId)
                 val cb = callback
-                if (cb == null) {
-                    pendingDirectUrl = PendingDirectVideo(url, startPosition, playbackId)
-                } else {
-                    pendingDirectUrl = null
+                if (cb != null) {
                     runCatching { cb.onDirectVideoUrl(url, startPosition, playbackId) }
                 }
             }
@@ -188,7 +187,6 @@ class SessionService : Service() {
                 activeAudioGeneration?.let { runCatching { cb.onAudioStreamStarted(it) } }
                 latestMirrorConfig?.let { config -> runCatching { config.sendTo(cb) } }
                 pendingDirectUrl?.let { (url, position, playbackId) ->
-                    pendingDirectUrl = null
                     runCatching { cb.onDirectVideoUrl(url, position, playbackId) }
                 }
             }
