@@ -205,6 +205,7 @@ class MainActivity : ComponentActivity(), SurfaceLayerController {
                     dismissVideoControls()
                     directPlaybackId = playbackId
                     if (!presentationCoordinator.switchToDirectVideo(url, startPosition)) {
+                        sessionConnection.finishDirectPlayback(playbackId)
                         directPlaybackId = 0L
                     }
                     syncPresentationState()
