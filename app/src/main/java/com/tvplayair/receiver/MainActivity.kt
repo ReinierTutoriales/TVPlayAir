@@ -44,6 +44,7 @@ class MainActivity : ComponentActivity(), SurfaceLayerController {
     private lateinit var identityStore: ReceiverIdentityStore
 
     private var sharedMemoryReady = false
+    private var mirrorRequested = false
     private var overlayState by mutableStateOf(TvOverlayState())
 
     private val closeSettingsOnBack = object : OnBackPressedCallback(false) {
@@ -125,10 +126,20 @@ class MainActivity : ComponentActivity(), SurfaceLayerController {
                     sharedMemoryReady = true
                     mirrorDecoder.setGeneration(generationId)
                     audioConsumer.setGeneration(generationId)
+                    if (mirrorRequested) {
+                        presentationCoordinator.startMirror()
+                        syncPresentationState()
+                    }
+                    if (overlayState.connectedClient != null &&
+                        presentationCoordinator.state != PresentationState.DIRECT_ACTIVE
+                    ) {
+                        audioConsumer.start(generationId)
+                    }
                 }
 
                 override fun onSharedMemoryDetached() {
                     sharedMemoryReady = false
+                    mirrorRequested = false
                     presentationCoordinator.onSessionDied()
                     overlayState = overlayState.copy(
                         connectedClient = null,
@@ -145,7 +156,8 @@ class MainActivity : ComponentActivity(), SurfaceLayerController {
                     mirrorDecoder.setGeneration(generationId)
                     audioConsumer.setGeneration(generationId)
                     mirrorDecoder.updateConfig(MirrorVideoConfig(mimeType, width, height))
-                    if (mirrorSurfaceView.holder.surface?.isValid == true) {
+                    mirrorRequested = true
+                    if (sharedMemoryReady) {
                         presentationCoordinator.startMirror()
                     }
                     syncPresentationState()
@@ -178,8 +190,19 @@ class MainActivity : ComponentActivity(), SurfaceLayerController {
                 }
 
                 override fun onClientDisconnected() {
+                    mirrorRequested = false
                     overlayState = overlayState.copy(connectedClient = null)
                     audioConsumer.stop()
+                }
+
+                override fun onAudioStreamStarted(generationId: Int) {
+                    mirrorDecoder.setGeneration(generationId)
+                    audioConsumer.setGeneration(generationId)
+                    if (sharedMemoryReady &&
+                        presentationCoordinator.state != PresentationState.DIRECT_ACTIVE
+                    ) {
+                        audioConsumer.start(generationId)
+                    }
                 }
             }
         )
@@ -365,7 +388,7 @@ class MainActivity : ComponentActivity(), SurfaceLayerController {
 
     private fun surfaceCallback(isDirectSurface: Boolean) = object : SurfaceHolder.Callback {
         override fun surfaceCreated(holder: SurfaceHolder) {
-            if (!isDirectSurface && sharedMemoryReady && overlayState.connectedClient != null) {
+            if (!isDirectSurface && sharedMemoryReady && mirrorRequested) {
                 presentationCoordinator.startMirror()
                 syncPresentationState()
             }

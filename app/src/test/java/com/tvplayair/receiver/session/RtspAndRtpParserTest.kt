@@ -108,4 +108,20 @@ class RtspAndRtpParserTest {
         assertEquals(1000.toShort(), dst[0])
         assertEquals(1000.toShort(), dst[(outFrames - 1) * 2])
     }
+
+    @Test
+    fun buildsAirPlayTimingResponseAndVolumeGetParameterBody() {
+        val req = ByteArray(AirPlayTimingPacket.PACKET_BYTES)
+        req[0] = 0x80.toByte()
+        req[1] = AirPlayTimingPacket.PT_TIMING_REQUEST.toByte()
+        for (i in 24..31) req[i] = (i - 20).toByte()
+
+        val resp = AirPlayTimingPacket.buildResponse(req, req.size, 1_700_000_000_000L)
+        assertNotNull(resp)
+        assertEquals(AirPlayTimingPacket.PT_TIMING_RESPONSE, resp!![1].toInt() and 0xFF)
+        assertArrayEquals(req.copyOfRange(24, 32), resp.copyOfRange(8, 16))
+
+        val vol = String(RtspMessageParser.formatVolumeBody(-12.5f), Charsets.US_ASCII)
+        assertEquals("volume: -12.500000\r\n", vol)
+    }
 }

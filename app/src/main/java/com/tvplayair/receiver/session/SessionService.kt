@@ -89,6 +89,11 @@ class SessionService : Service() {
             dacpController.onClientDisconnected()
             runCatching { callback?.onClientDisconnected() }
         }
+
+        override fun onAudioStreamStarted(generationId: Int) {
+            ensureUiForeground()
+            runCatching { callback?.onAudioStreamStarted(generationId) }
+        }
     }
 
     private val binder = object : ITvPlaySession.Stub() {

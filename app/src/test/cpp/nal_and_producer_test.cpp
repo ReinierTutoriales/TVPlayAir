@@ -107,9 +107,33 @@ static void testAudioPcmProducerToConsumerEndToEnd() {
     assert(consumer.underrunCount() == 0);
 }
 
+static void testAvccDecoderConfigToAnnexB() {
+    // avcC: version=1, profile=0x64, compat=0x00, level=0x28, lenMinus1=0xFF, numSps=0xE1 (1)
+    // SPS len=3 {0x67, 0x64, 0x00}, numPps=1, PPS len=2 {0x68, 0xEE}
+    const std::array<uint8_t, 14> avcc = {
+        0x01, 0x64, 0x00, 0x28, 0xFF, 0xE1,
+        0x00, 0x03, 0x67, 0x64, 0x00,
+        0x01, 0x00, 0x02
+    };
+    std::array<uint8_t, 16> avccFull{};
+    std::memcpy(avccFull.data(), avcc.data(), avcc.size());
+    avccFull[14] = 0x68;
+    avccFull[15] = 0xEE;
+
+    std::array<uint8_t, 64> out{};
+    const size_t written = tvplayair::convertDecoderConfigToAnnexB(
+        avccFull.data(), avccFull.size(), out.data(), out.size(), false);
+    assert(written == 13); // 4 + 3 + 4 + 2
+    assert(out[0] == 0x00 && out[1] == 0x00 && out[2] == 0x00 && out[3] == 0x01);
+    assert(out[4] == 0x67 && out[5] == 0x64 && out[6] == 0x00);
+    assert(out[7] == 0x00 && out[8] == 0x00 && out[9] == 0x00 && out[10] == 0x01);
+    assert(out[11] == 0x68 && out[12] == 0xEE);
+}
+
 int main() {
     testHevcAndAvcClassification();
     testHvccLengthPrefixedToAnnexBRoundTrip();
     testAudioPcmProducerToConsumerEndToEnd();
-    std::puts("NAL parser and SessionProducer host tests passed: HEVC/AVC, HVCC->Annex-B, and audio PCM end-to-end.");
+    testAvccDecoderConfigToAnnexB();
+    std::puts("NAL parser and SessionProducer host tests passed: HEVC/AVC, HVCC/avcC->Annex-B, and audio PCM end-to-end.");
 }

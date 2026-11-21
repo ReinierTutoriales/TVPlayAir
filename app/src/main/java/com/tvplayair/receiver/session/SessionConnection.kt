@@ -20,6 +20,7 @@ interface SessionEventListener {
     fun onDirectVideoCommand(command: String, value: Double) = Unit
     fun onClientConnected(clientName: String, dacpId: String, activeRemote: String) = Unit
     fun onClientDisconnected() = Unit
+    fun onAudioStreamStarted(generationId: Int) = Unit
 }
 
 class SessionConnection(
@@ -91,6 +92,12 @@ class SessionConnection(
         override fun onClientDisconnected() {
             handler.post {
                 if (bound) listener.onClientDisconnected()
+            }
+        }
+
+        override fun onAudioStreamStarted(generationId: Int) {
+            handler.post {
+                if (bound) listener.onAudioStreamStarted(generationId)
             }
         }
     }

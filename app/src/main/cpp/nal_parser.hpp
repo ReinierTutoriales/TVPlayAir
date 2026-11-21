@@ -116,4 +116,70 @@ inline size_t convertLengthPrefixedToAnnexB(
     return dstPos;
 }
 
+// Converts AVCDecoderConfigurationRecord (avcC) or HEVCDecoderConfigurationRecord (hvcC)
+// received in AirPlay Mirroring payloadType=1 into Annex-B (00 00 00 01) SPS/PPS/VPS.
+inline size_t convertDecoderConfigToAnnexB(
+    const uint8_t* src,
+    size_t srcSize,
+    uint8_t* dst,
+    size_t dstCapacity,
+    bool isHevc) {
+    if (!src || !dst || srcSize < 7) return 0;
+
+    size_t dstPos = 0;
+    auto appendNal = [&](const uint8_t* nal, size_t nalLen) -> bool {
+        if (nalLen == 0 || dstPos + 4 + nalLen > dstCapacity) return false;
+        dst[dstPos] = 0x00;
+        dst[dstPos + 1] = 0x00;
+        dst[dstPos + 2] = 0x00;
+        dst[dstPos + 3] = 0x01;
+        std::memcpy(dst + dstPos + 4, nal, nalLen);
+        dstPos += 4 + nalLen;
+        return true;
+    };
+
+    if (!isHevc) {
+        // avcC: version(1) profile(1) compat(1) level(1) lenSizeMinus1(1) numSps(1)
+        if (src[0] != 0x01) return 0;
+        size_t pos = 5;
+        const uint8_t numSps = src[pos++] & 0x1Fu;
+        for (uint8_t i = 0; i < numSps; ++i) {
+            if (pos + 2 > srcSize) return 0;
+            const uint16_t len = (static_cast<uint16_t>(src[pos]) << 8) | src[pos + 1];
+            pos += 2;
+            if (pos + len > srcSize || !appendNal(src + pos, len)) return 0;
+            pos += len;
+        }
+        if (pos >= srcSize) return dstPos;
+        const uint8_t numPps = src[pos++];
+        for (uint8_t i = 0; i < numPps; ++i) {
+            if (pos + 2 > srcSize) return 0;
+            const uint16_t len = (static_cast<uint16_t>(src[pos]) << 8) | src[pos + 1];
+            pos += 2;
+            if (pos + len > srcSize || !appendNal(src + pos, len)) return 0;
+            pos += len;
+        }
+        return dstPos;
+    }
+
+    // hvcC: 22-byte header + numOfArrays(1)
+    if (srcSize < 23 || src[0] != 0x01) return 0;
+    size_t pos = 22;
+    const uint8_t numArrays = src[pos++];
+    for (uint8_t a = 0; a < numArrays; ++a) {
+        if (pos + 3 > srcSize) return 0;
+        pos += 1; // array_completeness + NAL_unit_type
+        const uint16_t numNalus = (static_cast<uint16_t>(src[pos]) << 8) | src[pos + 1];
+        pos += 2;
+        for (uint16_t n = 0; n < numNalus; ++n) {
+            if (pos + 2 > srcSize) return 0;
+            const uint16_t len = (static_cast<uint16_t>(src[pos]) << 8) | src[pos + 1];
+            pos += 2;
+            if (pos + len > srcSize || !appendNal(src + pos, len)) return 0;
+            pos += len;
+        }
+    }
+    return dstPos;
+}
+
 } // namespace tvplayair

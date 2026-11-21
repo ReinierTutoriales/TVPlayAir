@@ -99,11 +99,12 @@ class RaopAudioRtpReceiver(
         sampleRate: Int,
         csd0: ByteArray? = null,
         sessionAesKey: ByteArray? = null,
-        sessionAesIv: ByteArray? = null
+        sessionAesIv: ByteArray? = null,
+        samplesPerFrame: Int = 480
     ) {
         aesKey = sessionAesKey?.takeIf { it.size == 16 }?.copyOf()
         aesIv = sessionAesIv?.takeIf { it.size == 16 }?.copyOf()
-        decoder.configure(codec, sampleRate, csd0)
+        decoder.configure(codec, sampleRate, csd0, samplesPerFrame)
     }
 
     fun start(port: Int = DEFAULT_AUDIO_PORT): Boolean {
@@ -141,6 +142,7 @@ class RaopAudioRtpReceiver(
 
     private fun receiveLoop(udp: DatagramSocket) {
         val packet = DatagramPacket(rxBuf, rxBuf.size)
+        var rxPackets = 0L
         while (running.get()) {
             val ok = runCatching { udp.receive(packet); true }.getOrDefault(false)
             if (!ok) continue
@@ -148,6 +150,14 @@ class RaopAudioRtpReceiver(
             val key = aesKey
             val iv = aesIv
             val generation = generationProvider()
+            rxPackets++
+            if (rxPackets == 1L || rxPackets % 200L == 0L) {
+                Log.i(
+                    TAG,
+                    "RAOP audio rx: pkts=$rxPackets len=${parsed.payloadLength} gen=$generation " +
+                        "encrypted=${key != null} pcmFrames=${decoder.decodedFramesTotal} pcmBytes=${decoder.pcmBytesTotal}"
+                )
+            }
             if (key != null && iv != null) {
                 val plain = SessionCrypto.decryptRaopAudioCbc(
                     key, iv, rxBuf, parsed.payloadOffset, parsed.payloadLength

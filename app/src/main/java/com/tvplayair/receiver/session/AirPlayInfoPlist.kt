@@ -21,17 +21,26 @@ object AirPlayInfoPlist {
         val height = maxHeight.coerceAtLeast(720).toLong()
         return linkedMapOf(
             "deviceID" to deviceId,
+            "macAddress" to deviceId,
             "features" to FEATURES_64BIT,
             "model" to MdnsTxtRecords.AIRPLAY_MODEL,
             "sourceVersion" to "220.68",
             "statusFlags" to STATUS_FLAGS.toLong(),
+            "keepAliveLowPower" to true,
+            "keepAliveSendStatsAsBody" to true,
             "vv" to 2L,
             "preferredCodec" to if (hevcEnabled) "HEVC" else "H264",
             "displays" to listOf(
                 linkedMapOf<String, Any>(
+                    "uuid" to "e5f7a68d-7b0f-4305-984b-974f677a150b",
                     "widthPixels" to width,
                     "heightPixels" to height,
+                    "width" to width,
+                    "height" to height,
+                    "widthPhysical" to 0L,
+                    "heightPhysical" to 0L,
                     "maxFPS" to 60L,
+                    "features" to 14L,
                     "overscanned" to false,
                     "refreshRate" to 60.0,
                     "rotation" to true
@@ -42,6 +51,11 @@ object AirPlayInfoPlist {
                     "audioInputFormats" to 67108860L,
                     "audioOutputFormats" to 67108860L,
                     "type" to 100L
+                ),
+                linkedMapOf<String, Any>(
+                    "audioInputFormats" to 67108860L,
+                    "audioOutputFormats" to 67108860L,
+                    "type" to 101L
                 )
             )
         )

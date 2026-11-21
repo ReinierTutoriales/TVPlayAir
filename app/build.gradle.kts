@@ -5,7 +5,7 @@ plugins {
 android {
     namespace = "com.tvplayair.receiver"
     compileSdk = 36
-    ndkVersion = "28.2.13676358"
+    ndkVersion = "30.0.16248370"
 
     defaultConfig {
         applicationId = "com.tvplayair.receiver"
@@ -35,7 +35,7 @@ android {
     externalNativeBuild {
         cmake {
             path = file("src/main/cpp/CMakeLists.txt")
-            version = "3.22.1"
+            version = "4.1.2"
         }
     }
 }

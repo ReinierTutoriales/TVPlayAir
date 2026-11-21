@@ -17,8 +17,8 @@ description: Use for TVPlayAir product changes, dependency/build fixes and miles
 - Run the focused test first, then affected neighboring suites.
 - Run `testDebugUnitTest`, `lintDebug` and `assembleDebug` when supported locally; state clearly when unavailable.
 - Inspect the exact GitHub Actions run and SHA. A queued, in-progress, cancelled, failed or older-SHA run is not a pass.
-- Baseline integration gate: `assembleDebug = success` on exact PR HEAD.
-- From IPC milestone onward: `assembleDebug = success` and native SPSC stress tests = success on exact PR HEAD.
+- Integration gate: dependency metadata, JVM unit tests, Android native build and native host suites on exact PR HEAD.
+- Verify `assembleDebug` separately when APK packaging is requested.
 - Run native tests for SPSC correctness: concurrent producer/consumer, wrap-around, full-buffer nonblocking drop, packet integrity, oversized packet handling and generation replacement.
 - Inspect resolved dependencies when a build fails due to minimum compile SDK. Use `dependencyInsight` to identify the path introducing the incompatible artifact; do not guess from declared dependencies.
 

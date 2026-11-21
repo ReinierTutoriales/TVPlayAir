@@ -4,6 +4,7 @@ import android.util.Log
 import com.tvplayair.receiver.video.DirectPlaybackTelemetry
 import java.io.BufferedInputStream
 import java.io.ByteArrayOutputStream
+import java.io.IOException
 import java.io.OutputStream
 import java.net.InetSocketAddress
 import java.net.ServerSocket
@@ -27,7 +28,7 @@ class AirPlayDirectHttpServer(
         private const val TAG = "AirPlayDirectHttpServer"
         private const val MAX_HEADER_BYTES = 16 * 1024
         private const val MAX_BODY_BYTES = 64 * 1024
-        private const val CLIENT_SO_TIMEOUT_MS = 5_000
+        private const val CLIENT_SO_TIMEOUT_MS = 30_000
     }
 
     private val running = AtomicBoolean(false)
@@ -50,7 +51,8 @@ class AirPlayDirectHttpServer(
         listener = listener,
         configProvider = { activeConfig },
         mirrorReceiver = mirrorReceiver,
-        pairingSession = pairingSession
+        pairingSession = pairingSession,
+        sharedGenerationId = generationId
     )
 
     override fun start(config: AirPlayServerConfig): Boolean {
@@ -108,7 +110,13 @@ class AirPlayDirectHttpServer(
     private fun acceptLoop(socket: ServerSocket) {
         while (running.get()) {
             val client = runCatching { socket.accept() }.getOrNull() ?: continue
-            Thread({ handleClient(client) }, "TVPlayAir-AirPlayClient").apply {
+            Thread({
+                try {
+                    handleClient(client)
+                } catch (error: IOException) {
+                    Log.i(TAG, "AirPlay connection ended (${error.javaClass.simpleName})")
+                }
+            }, "TVPlayAir-AirPlayClient").apply {
                 isDaemon = true
                 start()
             }
@@ -118,48 +126,53 @@ class AirPlayDirectHttpServer(
     private fun handleClient(client: Socket) {
         client.use { sock ->
             sock.soTimeout = CLIENT_SO_TIMEOUT_MS
+            sock.tcpNoDelay = true
             val input = BufferedInputStream(sock.getInputStream())
             val output = sock.getOutputStream()
-
-            val headerBytes = readUntilHeaderEnd(input) ?: return
-            val headerText = String(headerBytes, StandardCharsets.UTF_8)
-            if (RtspMessageParser.isRtspRequestLine(headerText.substringBefore("\r\n"))) {
-                raopRtspServer.handleConnection(sock, input, headerText)
-                return
-            }
-            val lines = headerText.split("\r\n")
-            if (lines.isEmpty()) return
-
-            val requestParts = lines[0].split(' ')
-            if (requestParts.size < 2) return
-            val method = requestParts[0].uppercase(Locale.US)
-            val fullPath = requestParts[1]
-            val path = fullPath.substringBefore('?')
-
-            val headers = mutableMapOf<String, String>()
-            for (i in 1 until lines.size) {
-                val line = lines[i]
-                val colon = line.indexOf(':')
-                if (colon > 0) {
-                    headers[line.substring(0, colon).trim().lowercase(Locale.US)] =
-                        line.substring(colon + 1).trim()
-                }
-            }
-
-            val dacpId = headers["dacp-id"].orEmpty()
-            val activeRemote = headers["active-remote"].orEmpty()
-            val userAgent = headers["user-agent"].orEmpty().ifBlank { "Apple Device" }
-            if (dacpId.isNotEmpty() && activeRemote.isNotEmpty()) {
-                listener.onClientConnected(userAgent, dacpId, activeRemote)
-            }
-
-            val contentLength = headers["content-length"]?.toIntOrNull()?.coerceIn(0, MAX_BODY_BYTES) ?: 0
-            val body = if (contentLength > 0) readExactBytes(input, contentLength) else ByteArray(0)
             val peer = sock.inetAddress?.hostAddress ?: "unknown"
-            val contentType = headers["content-type"].orEmpty()
-            Log.i(TAG, "<- $peer $method $fullPath (ct=$contentType len=${body.size})")
 
-            dispatchRequest(method, path, fullPath, body, output)
+            while (running.get()) {
+                val headerBytes = readUntilHeaderEnd(input) ?: break
+                val headerText = String(headerBytes, StandardCharsets.UTF_8)
+                if (RtspMessageParser.isRtspRequestLine(headerText.substringBefore("\r\n"))) {
+                    raopRtspServer.handleConnection(sock, input, headerText)
+                    return
+                }
+                val lines = headerText.split("\r\n")
+                if (lines.isEmpty()) break
+
+                val requestParts = lines[0].split(' ')
+                if (requestParts.size < 2) break
+                val method = requestParts[0].uppercase(Locale.US)
+                val fullPath = requestParts[1]
+                val path = fullPath.substringBefore('?')
+
+                val headers = mutableMapOf<String, String>()
+                for (i in 1 until lines.size) {
+                    val line = lines[i]
+                    val colon = line.indexOf(':')
+                    if (colon > 0) {
+                        headers[line.substring(0, colon).trim().lowercase(Locale.US)] =
+                            line.substring(colon + 1).trim()
+                    }
+                }
+
+                val dacpId = headers["dacp-id"].orEmpty()
+                val activeRemote = headers["active-remote"].orEmpty()
+                val userAgent = headers["user-agent"].orEmpty().ifBlank { "Apple Device" }
+                if (dacpId.isNotEmpty() && activeRemote.isNotEmpty()) {
+                    listener.onClientConnected(userAgent, dacpId, activeRemote)
+                }
+
+                val contentLength = headers["content-length"]?.toIntOrNull()?.coerceIn(0, MAX_BODY_BYTES) ?: 0
+                val body = if (contentLength > 0) readExactBytes(input, contentLength) else ByteArray(0)
+                val contentType = headers["content-type"].orEmpty()
+                Log.i(TAG, "<- $peer $method $fullPath (ct=$contentType len=${body.size})")
+
+                val keepAlive = !headers["connection"].equals("close", ignoreCase = true)
+                dispatchRequest(method, path, fullPath, body, output)
+                if (!keepAlive) break
+            }
         }
     }
 
@@ -192,13 +205,18 @@ class AirPlayDirectHttpServer(
                 }
             }
             method == "POST" && path == "/fp-setup" -> {
-                Log.w(TAG, "-> /fp-setup received (${bodyBytes.size}B) - FairPlay SAP requested by iOS")
-                writeResponse(output, 200, "OK")
+                val reply = FairPlayNative.handleFpSetup(bodyBytes)
+                if (reply != null) {
+                    Log.i(TAG, "-> /fp-setup 200 OK (${reply.size}B)")
+                    writeBinaryResponse(output, 200, "OK", "application/octet-stream", reply)
+                } else {
+                    Log.w(TAG, "-> /fp-setup 400 Bad Request (len=${bodyBytes.size})")
+                    writeResponse(output, 400, "Bad Request")
+                }
             }
             method == "POST" && path == "/play" -> {
                 val parsed = AirPlayHttpRequestParser.parsePlayBody(bodyBytes)
                 if (parsed != null) {
-                    generationId.incrementAndGet()
                     listener.onDirectVideoUrl(parsed.url, parsed.startPosition)
                     Log.i(TAG, "-> /play 200 OK startPosition=${parsed.startPosition}")
                     writeResponse(output, 200, "OK")
@@ -253,6 +271,16 @@ class AirPlayDirectHttpServer(
             method == "GET" && path == "/playback-info" -> {
                 val plist = AirPlayPlaybackInfoFormatter.formatPlist(latestTelemetry.get())
                 writeResponse(output, 200, "OK", "text/x-apple-plist+xml", plist)
+            }
+            method == "PUT" && path == "/setProperty" -> {
+                val reply = BinaryPlistWriter.encode(mapOf("errorCode" to 0L))
+                Log.i(TAG, "-> PUT /setProperty 200 OK")
+                writeBinaryResponse(output, 200, "OK", "application/x-apple-binary-plist", reply)
+            }
+            method == "GET" && path == "/getProperty" -> {
+                val reply = BinaryPlistWriter.encode(mapOf("errorCode" to 0L))
+                Log.i(TAG, "-> GET /getProperty 200 OK")
+                writeBinaryResponse(output, 200, "OK", "application/x-apple-binary-plist", reply)
             }
             else -> {
                 Log.w(TAG, "-> $method $path 404 Not Found")
@@ -316,8 +344,7 @@ class AirPlayDirectHttpServer(
         val headers = buildString {
             append("HTTP/1.1 ").append(statusCode).append(' ').append(reason).append("\r\n")
             append("Content-Type: ").append(contentType).append("\r\n")
-            append("Content-Length: ").append(bodyBytes.size).append("\r\n")
-            append("Connection: close\r\n\r\n")
+            append("Content-Length: ").append(bodyBytes.size).append("\r\n\r\n")
         }
         output.write(headers.toByteArray(StandardCharsets.US_ASCII))
         if (bodyBytes.isNotEmpty()) output.write(bodyBytes)

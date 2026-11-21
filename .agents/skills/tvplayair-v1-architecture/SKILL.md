@@ -54,8 +54,8 @@ These are product targets. Hardware support varies by SoC, firmware, Android rel
 ## Deterministic build pins
 
 - minSdk 29; compileSdk 36; targetSdk 35.
-- NDK 28.2.13676358; CMake 3.22.1.
-- Oboe 1.11.0; Compose BOM 2026.04.01.
+- NDK 30.0.16248370; CMake 4.1.2.
+- Oboe 1.11.0; Compose BOM 2026.06.01.
 - No floating versions or dependencies requiring API 37+. Resolve and inspect the complete dependency graph; use Gradle dependencyInsight for unexpected Compose/AndroidX artifacts.
 - Change pins only with explicit compatibility evidence and CI proof. Do not upgrade compileSdk as a workaround for a dependency mismatch.
 

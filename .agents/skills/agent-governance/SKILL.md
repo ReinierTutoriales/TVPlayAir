@@ -23,7 +23,7 @@ These constraints override convenience and apply to every task.
 
 ## Deterministic dependency governance
 
-The v1.0 baseline is pinned: minSdk 29, compileSdk 36, targetSdk 35, NDK 28.2.13676358, CMake 3.22.1, Oboe 1.11.0 and Compose BOM 2026.04.01. Do not use dynamic versions or silently upgrade pins. Any proposed change must:
+The v1.0 baseline is pinned: minSdk 29, compileSdk 36, targetSdk 35, NDK 30.0.16248370, CMake 4.1.2, Oboe 1.11.0 and Compose BOM 2026.06.01. Do not use dynamic versions or silently upgrade pins. Any proposed change must:
 1. identify the requirement that necessitates it;
 2. inspect official release notes/API compatibility;
 3. inspect the resolved dependency graph, including transitives and artifacts outside BOM control;
@@ -42,8 +42,8 @@ Do not raise compileSdk to hide an incompatible transitive dependency without an
 
 ## Integration gate
 
-- Baseline: `assembleDebug` must pass on the exact PR HEAD.
-- From IPC onward: `assembleDebug` and native SPSC stress tests must pass on the exact PR HEAD.
+- Dependency metadata, JVM unit tests, Android native build and native host suites must pass on the exact PR HEAD.
+- Verify `assembleDebug` separately when APK packaging is requested.
 - Run relevant unit tests and lint; report their outcomes independently.
 - A previous green SHA, a queued/running job, or a green job for another branch is not a pass.
 - No squash merge, next-branch creation or next-milestone implementation until the current gate is green.

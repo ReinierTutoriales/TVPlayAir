@@ -11,7 +11,7 @@
 
 namespace tvplayair {
 
-constexpr size_t kMaxVideoPacketBytes = 64 * 1024;
+constexpr size_t kMaxVideoPacketBytes = 480 * 1024;
 constexpr size_t kMaxVideoPayloadBytes = kMaxVideoPacketBytes - sizeof(VideoFramePacketHeader);
 
 SharedRingBuffer& producerVideoRing();
@@ -41,6 +41,13 @@ public:
             if (annexBSize == 0) {
                 return size > kMaxVideoPayloadBytes ? RingResult::Oversized : RingResult::Invalid;
             }
+        } else if ((extraFlags & kVideoFlagCodecConfig) != 0 && data[0] == 0x01) {
+            annexBSize = convertDecoderConfigToAnnexB(
+                data, size, payloadDst, kMaxVideoPayloadBytes, isHevc);
+            if (annexBSize == 0) {
+                return size > kMaxVideoPayloadBytes ? RingResult::Oversized : RingResult::Invalid;
+            }
+            detectedFlags = kVideoFlagCodecConfig;
         } else {
             if (size > kMaxVideoPayloadBytes) {
                 return RingResult::Oversized;

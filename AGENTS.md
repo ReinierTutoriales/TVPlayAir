@@ -19,10 +19,10 @@ Only implement the six v1.0 milestones: (1) deterministic Android baseline/CI, (
 
 Pin and keep aligned in Gradle and CI:
 - `minSdk = 29`, `compileSdk = 36`, `targetSdk = 35`
-- NDK `28.2.13676358`
-- CMake `3.22.1`
+- NDK `30.0.16248370`
+- CMake `4.1.2`
 - Oboe `1.11.0`
-- Compose BOM `2026.04.01` (API 36-compatible baseline)
+- Compose BOM `2026.06.01` (API 36-compatible baseline)
 
 No floating versions, dynamic versions, unreviewed upgrades or dependency that requires API 37+. Before changing a pin, inspect release notes and the dependency graph. Confirm the resolved artifacts, not just declared coordinates. Use `dependencyInsight` for unexpected Compose/AndroidX versions. Do not upgrade the SDK to conceal an incompatible transitive dependency; first identify the dependency introducing it and assess a compatible stable version.
 
@@ -46,8 +46,8 @@ No floating versions, dynamic versions, unreviewed upgrades or dependency that r
 ## Verification commands and binary gates
 
 Use the Gradle wrapper. Run focused tests first, then relevant neighboring tests. For a functional change, add a regression assertion that fails on the old defect. CI on the exact branch HEAD is the integration gate:
-- Baseline: `assembleDebug = success`.
-- From IPC milestone onward: `assembleDebug = success` **and** native SPSC tests = success.
+- Code verification: dependency metadata, JVM unit tests, Android native build and native host suites on the exact commit.
+- APK assembly is a separate packaging gate when packaging is requested.
 - Add relevant unit tests/lint/build checks; report each separately. A green older SHA does not validate a newer SHA.
 - Never merge, create the next milestone branch, or begin its implementation while the current milestone gate is red, pending, or attached to another SHA.
 

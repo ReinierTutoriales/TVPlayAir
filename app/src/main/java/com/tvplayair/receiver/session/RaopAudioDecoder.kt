@@ -68,11 +68,52 @@ class RaopAudioDecoder {
         private const val TAG = "RaopAudioDecoder"
         private const val MAX_PCM_FRAMES = 4096
         private const val DEQUEUE_TIMEOUT_US = 2_000L
+
+        fun defaultAudioSpecificConfig(
+            codec: RaopAudioCodec,
+            sampleRate: Int,
+            samplesPerFrame: Int = 480
+        ): ByteArray? {
+            val freqIdx = when (sampleRate) {
+                96000 -> 0
+                88200 -> 1
+                64000 -> 2
+                48000 -> 3
+                44100 -> 4
+                32000 -> 5
+                24000 -> 6
+                22050 -> 7
+                16000 -> 8
+                else -> 4
+            }
+            return when (codec) {
+                RaopAudioCodec.AAC_LC -> byteArrayOf(
+                    ((2 shl 3) or (freqIdx ushr 1)).toByte(),
+                    (((freqIdx and 1) shl 7) or (PcmResampler.CHANNELS shl 3)).toByte()
+                )
+                RaopAudioCodec.AAC_ELD -> {
+                    // objectType=39 (11111 + 000111), freqIdx (4 bits), ch=2 (4 bits),
+                    // frameLengthFlag (1 bit: 1 for 480 spf, 0 for 512 spf), 4 zero flags + eldExtType=0
+                    val b0 = 0xF8.toByte()
+                    val b1 = (0xE0 or ((freqIdx and 0x0F) shl 1) or ((PcmResampler.CHANNELS ushr 3) and 0x01)).toByte()
+                    val frameFlag = if (samplesPerFrame == 480) 0x10 else 0x00
+                    val b2 = (((PcmResampler.CHANNELS and 0x07) shl 5) or frameFlag).toByte()
+                    byteArrayOf(b0, b1, b2, 0x00)
+                }
+                else -> null
+            }
+        }
     }
 
     private var codecType: RaopAudioCodec = RaopAudioCodec.PCM_L16_48K
     private var inputSampleRate: Int = PcmResampler.TARGET_SAMPLE_RATE
     private var mediaCodec: MediaCodec? = null
+    @Volatile
+    var decodedFramesTotal: Long = 0L
+        private set
+    @Volatile
+    var pcmBytesTotal: Long = 0L
+        private set
 
     private val srcSamples = ShortArray(MAX_PCM_FRAMES * PcmResampler.CHANNELS)
     private val resampledSamples = ShortArray(MAX_PCM_FRAMES * PcmResampler.CHANNELS)
@@ -81,14 +122,25 @@ class RaopAudioDecoder {
         .order(ByteOrder.LITTLE_ENDIAN)
 
     @Synchronized
-    fun configure(codec: RaopAudioCodec, sampleRate: Int, csd0: ByteArray? = null): Boolean {
+    fun configure(
+        codec: RaopAudioCodec,
+        sampleRate: Int,
+        csd0: ByteArray? = null,
+        samplesPerFrame: Int = 480
+    ): Boolean {
         release()
         codecType = codec
         inputSampleRate = sampleRate.coerceAtLeast(8000)
+        decodedFramesTotal = 0L
+        pcmBytesTotal = 0L
 
         if (codec == RaopAudioCodec.PCM_L16_48K || codec == RaopAudioCodec.PCM_L16_44K1) {
+            Log.i(TAG, "Configured PCM decoder ($codec @ $inputSampleRate Hz)")
             return true
         }
+
+        val effectiveCsd0 = csd0?.takeIf { it.isNotEmpty() }
+            ?: defaultAudioSpecificConfig(codec, inputSampleRate, samplesPerFrame)
 
         val format = MediaFormat.createAudioFormat(
             MediaFormat.MIMETYPE_AUDIO_AAC,
@@ -103,8 +155,8 @@ class RaopAudioDecoder {
                     MediaCodecInfo.CodecProfileLevel.AACObjectLC
                 }
             )
-            if (csd0 != null && csd0.isNotEmpty()) {
-                setByteBuffer("csd-0", ByteBuffer.wrap(csd0))
+            if (effectiveCsd0 != null && effectiveCsd0.isNotEmpty()) {
+                setByteBuffer("csd-0", ByteBuffer.wrap(effectiveCsd0))
             }
         }
 
@@ -117,6 +169,11 @@ class RaopAudioDecoder {
             Log.e(TAG, "Failed to configure AAC decoder ($codec @ $inputSampleRate Hz)", it)
         }.getOrNull()
 
+        Log.i(
+            TAG,
+            "Configured AAC decoder ($codec @ $inputSampleRate Hz, spf=$samplesPerFrame, " +
+                "csd0Len=${effectiveCsd0?.size ?: 0}, ok=${mediaCodec != null})"
+        )
         return mediaCodec != null
     }
 
@@ -180,7 +237,11 @@ class RaopAudioDecoder {
         directOut.clear()
         directOut.asShortBuffer().put(resampledSamples, 0, outFrames * 2)
         directOut.limit(byteCount)
-        NativeSharedMemory.nativeWriteAudioPcm(directOut, byteCount, generationId)
+        val written = NativeSharedMemory.nativeWriteAudioPcm(directOut, byteCount, generationId)
+        if (written > 0) {
+            decodedFramesTotal += outFrames
+            pcmBytesTotal += byteCount
+        }
     }
 
     @Synchronized

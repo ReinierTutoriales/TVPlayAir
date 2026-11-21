@@ -1,5 +1,6 @@
 package com.tvplayair.receiver.session
 
+import android.media.MediaFormat
 import android.util.Log
 import java.io.BufferedInputStream
 import java.io.ByteArrayOutputStream
@@ -22,24 +23,34 @@ class RaopRtspServer(
     private val listener: AirPlayProtocolListener,
     private val configProvider: () -> AirPlayServerConfig,
     private val mirrorReceiver: AirPlayMirrorStreamReceiver? = null,
-    private val pairingSession: AirPlayPairingSession = AirPlayPairingSession()
+    private val pairingSession: AirPlayPairingSession = AirPlayPairingSession(),
+    private val sharedGenerationId: AtomicInteger = AtomicInteger(1)
 ) {
     companion object {
         private const val TAG = "RaopRtspServer"
         const val DEFAULT_RAOP_PORT = 5000
         private const val MAX_HEADER_BYTES = 16 * 1024
-        private const val MAX_BODY_BYTES = 64 * 1024
+        private const val MAX_BUFFERED_BODY_BYTES = 512 * 1024
+        private const val MAX_DRAIN_BODY_BYTES = 16 * 1024 * 1024
         private const val CLIENT_SO_TIMEOUT_MS = 30_000
         private const val PUBLIC_METHODS =
             "ANNOUNCE, SETUP, RECORD, PAUSE, FLUSH, TEARDOWN, OPTIONS, GET_PARAMETER, SET_PARAMETER, POST, GET"
     }
 
     private val running = AtomicBoolean(false)
-    private val generationId = AtomicInteger(1)
+    private val generationId = sharedGenerationId
+    private val activeSessions = AtomicInteger(0)
     private val audioReceiver = RaopAudioRtpReceiver { generationId.get() }
+    private val timingAndEventServers = AirPlayTimingAndEventServers()
 
     @Volatile
     private var serverSocket: ServerSocket? = null
+    @Volatile
+    private var fairplayAesKey: ByteArray? = null
+    @Volatile
+    private var sessionEiv: ByteArray? = null
+    @Volatile
+    private var currentVolumeDb: Float = 0.0f
     private var acceptThread: Thread? = null
 
     fun currentGenerationId(): Int = generationId.get()
@@ -56,6 +67,10 @@ class RaopRtspServer(
             Log.e(TAG, "Failed to bind RAOP RTSP port $port", it)
         }.getOrNull() ?: return false
 
+        if (!timingAndEventServers.start()) {
+            runCatching { socket.close() }
+            return false
+        }
         serverSocket = socket
         running.set(true)
         acceptThread = Thread({ acceptLoop(socket) }, "TVPlayAir-RaopRtsp").apply {
@@ -68,6 +83,7 @@ class RaopRtspServer(
 
     fun stop() {
         running.set(false)
+        timingAndEventServers.stop()
         audioReceiver.stop()
         runCatching { serverSocket?.close() }
         serverSocket = null
@@ -89,8 +105,8 @@ class RaopRtspServer(
     }
 
     private fun handleSession(client: Socket) {
-        client.use { sock ->
-            handleConnection(sock, BufferedInputStream(sock.getInputStream()))
+        client.use { socket ->
+            handleConnection(socket, BufferedInputStream(socket.getInputStream()))
         }
     }
 
@@ -100,6 +116,7 @@ class RaopRtspServer(
         firstHeader: String? = null
     ) {
         val peer = socket.inetAddress?.hostAddress ?: "unknown"
+        activeSessions.incrementAndGet()
         try {
             socket.soTimeout = CLIENT_SO_TIMEOUT_MS
             val output = socket.getOutputStream()
@@ -111,10 +128,16 @@ class RaopRtspServer(
                 pendingHeader = null
 
                 val preliminary = RtspMessageParser.parseRequest(headerText) ?: break
-                val contentLength = preliminary.header("content-length")
-                    ?.toIntOrNull()?.coerceIn(0, MAX_BODY_BYTES) ?: 0
-                val body = if (contentLength > 0) readExact(input, contentLength) else ByteArray(0)
-                if (body.size != contentLength) break
+                val lengthHeader = preliminary.header("content-length")
+                val contentLength = if (lengthHeader == null) 0 else {
+                    lengthHeader.toIntOrNull()?.takeIf { it in 0..MAX_DRAIN_BODY_BYTES } ?: break
+                }
+                val body = if (contentLength <= MAX_BUFFERED_BODY_BYTES) {
+                    readExact(input, contentLength).also { if (it.size != contentLength) return }
+                } else {
+                    if (!drainExact(input, contentLength)) break
+                    ByteArray(0)
+                }
                 val request = preliminary.copy(body = body)
                 Log.i(
                     TAG,
@@ -133,6 +156,8 @@ class RaopRtspServer(
             }
         } catch (error: IOException) {
             Log.i(TAG, "RTSP connection ended for $peer (${error.javaClass.simpleName})")
+        } finally {
+            activeSessions.decrementAndGet()
         }
     }
 
@@ -204,8 +229,20 @@ class RaopRtspServer(
                         }
                     }
                     request.uri.endsWith("/fp-setup") -> {
-                        Log.w(TAG, "-> /fp-setup received (${request.body.size}B) - FairPlay SAP requested by iOS")
-                        output.write(RtspMessageParser.formatResponse(200, "OK", cseq))
+                        val reply = FairPlayNative.handleFpSetup(request.body)
+                        if (reply != null) {
+                            Log.i(TAG, "-> /fp-setup 200 OK (${reply.size}B)")
+                            output.write(
+                                RtspMessageParser.formatResponse(
+                                    200, "OK", cseq,
+                                    mapOf("Content-Type" to "application/octet-stream"),
+                                    reply
+                                )
+                            )
+                        } else {
+                            Log.w(TAG, "-> /fp-setup 400 Bad Request (len=${request.body.size})")
+                            output.write(RtspMessageParser.formatResponse(400, "Bad Request", cseq))
+                        }
                     }
                     else -> {
                         Log.i(TAG, "-> POST ${request.uri} 200 OK")
@@ -219,6 +256,7 @@ class RaopRtspServer(
                 } else {
                     val transport = RtspMessageParser.parseTransport(request.header("transport"))
                     audioReceiver.start(RaopAudioRtpReceiver.DEFAULT_AUDIO_PORT)
+                    listener.onAudioStreamStarted(generationId.get())
                     val responseTransport = buildString {
                         append("RTP/AVP/UDP;unicast;mode=record")
                         append(";server_port=").append(RaopAudioRtpReceiver.DEFAULT_AUDIO_PORT)
@@ -234,27 +272,59 @@ class RaopRtspServer(
                 }
             }
             "RECORD" -> {
+                listener.onAudioStreamStarted(generationId.get())
+                Log.i(TAG, "-> RECORD 200 OK (cseq=$cseq gen=${generationId.get()})")
                 output.write(
                     RtspMessageParser.formatResponse(
                         200, "OK", cseq, mapOf("Audio-Latency" to "2205")
                     )
                 )
             }
-            "GET_PARAMETER", "SET_PARAMETER" -> {
+            "GET_PARAMETER" -> {
                 val bodyText = String(request.body, StandardCharsets.UTF_8)
+                if (bodyText.contains("volume", ignoreCase = true)) {
+                    val volBody = RtspMessageParser.formatVolumeBody(currentVolumeDb)
+                    Log.i(TAG, "-> GET_PARAMETER 200 OK volume=$currentVolumeDb")
+                    output.write(
+                        RtspMessageParser.formatResponse(
+                            200, "OK", cseq,
+                            mapOf("Content-Type" to "text/parameters"),
+                            volBody
+                        )
+                    )
+                } else {
+                    Log.i(TAG, "-> GET_PARAMETER 200 OK")
+                    output.write(RtspMessageParser.formatResponse(200, "OK", cseq))
+                }
+            }
+            "SET_PARAMETER" -> {
+                val bodyText = String(request.body, StandardCharsets.UTF_8)
+                for (line in bodyText.lineSequence()) {
+                    val idx = line.indexOf(':')
+                    if (idx > 0 && line.substring(0, idx).trim().equals("volume", ignoreCase = true)) {
+                        line.substring(idx + 1).trim().toFloatOrNull()?.let { currentVolumeDb = it }
+                    }
+                }
                 RtspMessageParser.parseVolumeLinear(bodyText)?.let { gain ->
-                    Log.i(TAG, "RAOP volume update: linear=$gain")
+                    Log.i(TAG, "RAOP volume update: linear=$gain (db=$currentVolumeDb)")
                 }
                 output.write(RtspMessageParser.formatResponse(200, "OK", cseq))
             }
             "FLUSH" -> {
-                generationId.incrementAndGet()
+                val newGen = generationId.incrementAndGet()
+                listener.onAudioStreamStarted(newGen)
+                Log.i(TAG, "-> FLUSH 200 OK (cseq=$cseq gen=$newGen)")
                 output.write(RtspMessageParser.formatResponse(200, "OK", cseq))
             }
             "TEARDOWN" -> {
-                audioReceiver.stop()
-                mirrorReceiver?.clearStreamCipher()
-                listener.onClientDisconnected()
+                if (activeSessions.get() <= 1) {
+                    audioReceiver.stop()
+                    mirrorReceiver?.clearStreamCipher()
+                    fairplayAesKey = null
+                    sessionEiv = null
+                    FairPlayNative.nativeReset()
+                    listener.onClientDisconnected()
+                }
                 output.write(RtspMessageParser.formatResponse(200, "OK", cseq))
                 output.flush()
                 return false
@@ -269,6 +339,22 @@ class RaopRtspServer(
 
     private fun handleBinaryPlistSetup(body: ByteArray, cseq: String, output: OutputStream) {
         val parsed = BinaryPlistParser.parse(body) as? Map<*, *>
+        Log.i(TAG, "SETUP bplist keys=${parsed?.keys}")
+        val ekey = parsed?.get("ekey") as? ByteArray
+        val eiv = parsed?.get("eiv") as? ByteArray
+        if (ekey != null && ekey.size == 72) {
+            val decrypted = FairPlayNative.nativeDecryptKey(ekey)
+            if (decrypted != null && decrypted.size == 16) {
+                fairplayAesKey = decrypted
+                Log.i(TAG, "SETUP decrypted FairPlay ekey (16B)")
+            } else {
+                Log.w(TAG, "SETUP failed to decrypt FairPlay ekey")
+            }
+        }
+        if (eiv != null && eiv.size == 16) {
+            sessionEiv = eiv.copyOf()
+        }
+
         val streams = parsed?.get("streams") as? List<*>
         val firstStream = streams?.firstOrNull() as? Map<*, *>
         val streamType = (firstStream?.get("type") as? Long)?.toInt()
@@ -276,13 +362,15 @@ class RaopRtspServer(
         val responseMap: Map<String, Any> = when (streamType) {
             110 -> { // AirPlay Screen Mirroring video stream
                 val connId = (firstStream["streamConnectionID"] as? Long) ?: 0L
-                val shared = pairingSession.sharedSecret
-                if (shared != null && shared.size >= 16 && connId != 0L) {
-                    val key16 = shared.copyOfRange(0, 16)
+                val key16 = fairplayAesKey ?: pairingSession.sharedSecret?.takeIf { it.size >= 16 }?.copyOfRange(0, 16)
+                if (key16 != null && connId != 0L) {
                     val streamKey = AirPlayPairingSession.deriveMirrorStreamKey(key16, connId)
                     val streamIv = AirPlayPairingSession.deriveMirrorStreamIv(key16, connId)
                     mirrorReceiver?.configureStreamCipher(streamKey, streamIv)
+                    Log.i(TAG, "Configured mirror AES-CTR stream cipher (connId=$connId)")
                 }
+                val cfg = configProvider()
+                listener.onVideoConfigChanged(MediaFormat.MIMETYPE_VIDEO_AVC, cfg.maxWidth, cfg.maxHeight, generationId.get())
                 linkedMapOf(
                     "streams" to listOf(
                         linkedMapOf<String, Any>(
@@ -295,13 +383,28 @@ class RaopRtspServer(
             96 -> { // AirPlay Audio stream
                 val sampleRate = (firstStream["sr"] as? Long)?.toInt() ?: PcmResampler.TARGET_SAMPLE_RATE
                 val ct = (firstStream["ct"] as? Long)?.toInt() ?: 8
+                val spf = (firstStream["spf"] as? Long)?.toInt() ?: 480
+                val shk = (firstStream["shk"] as? ByteArray)?.takeIf { it.size >= 16 }?.copyOfRange(0, 16)
+                val effectiveKey = fairplayAesKey ?: shk
                 val codec = when (ct) {
                     8 -> RaopAudioCodec.AAC_ELD
                     4 -> RaopAudioCodec.AAC_LC
-                    else -> RaopAudioCodec.PCM_L16_48K
+                    else -> if (sampleRate == 44100) RaopAudioCodec.PCM_L16_44K1 else RaopAudioCodec.PCM_L16_48K
                 }
-                audioReceiver.configureSession(codec = codec, sampleRate = sampleRate)
+                Log.i(
+                    TAG,
+                    "SETUP audio stream: ct=$ct sr=$sampleRate spf=$spf codec=$codec " +
+                        "hasKey=${effectiveKey != null} hasIv=${sessionEiv != null}"
+                )
+                audioReceiver.configureSession(
+                    codec = codec,
+                    sampleRate = sampleRate,
+                    sessionAesKey = effectiveKey,
+                    sessionAesIv = sessionEiv,
+                    samplesPerFrame = spf
+                )
                 audioReceiver.start(RaopAudioRtpReceiver.DEFAULT_AUDIO_PORT)
+                listener.onAudioStreamStarted(generationId.get())
                 linkedMapOf(
                     "streams" to listOf(
                         linkedMapOf<String, Any>(
@@ -314,7 +417,7 @@ class RaopRtspServer(
             }
             else -> { // Initial session SETUP (eiv/ekey + eventPort/timingPort)
                 linkedMapOf(
-                    "eventPort" to configProvider().airPlayPort.toLong(),
+                    "eventPort" to AirPlayTimingAndEventServers.DEFAULT_EVENT_PORT.toLong(),
                     "timingPort" to RaopAudioRtpReceiver.DEFAULT_TIMING_PORT.toLong()
                 )
             }
@@ -368,5 +471,16 @@ class RaopRtspServer(
             offset += n
         }
         return if (offset == length) buf else buf.copyOf(offset)
+    }
+
+    private fun drainExact(input: BufferedInputStream, length: Int): Boolean {
+        val scratch = ByteArray(8192)
+        var remaining = length
+        while (remaining > 0) {
+            val n = input.read(scratch, 0, remaining.coerceAtMost(scratch.size))
+            if (n <= 0) return false
+            remaining -= n
+        }
+        return true
     }
 }
