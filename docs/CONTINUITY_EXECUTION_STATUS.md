@@ -87,3 +87,6 @@ Registrar: **hipótesis → evidencia oficial/código → alternativa más simpl
 - `a15fea5c`–`bcf736f4`: AIDL incorpora `finishDirectPlayback(playbackId)`; el servicio invalida exclusivamente la referencia del ID coincidente; Activity avisa en fin natural, stop y fallo de preparación. El servicio registra posición a partir de telemetría del mismo ID (`dfaf229c`).
 - **Pendiente crítico**: el callback `onPlaybackFinished` del reproductor no incluye ID de origen; si llega tarde podría afectar una reproducción posterior. Los comandos AirPlay tampoco transportan ID de origen de extremo a extremo. La posición inicial AirPlay usa semántica mixta (fracción/segundos): validar checkpoint para valores ≤1 segundo. Falta restauración de pausa y propiedad persistente del motor.
 - **Verificación**: commits publicados; compilación, pruebas de integración, CI y latencias no verificadas. No declarar terminado ni fusionar a main sin estas evidencias.
+
+- `87721c18`: checkpoint solo con telemetría lista y posición >1 s; evita que estado inicial cero borre la posición AirPlay y evita ambigüedad fracción/segundos por debajo de 1 s. Pendiente modelar explícitamente unidad de posición.
+- `5810fcff`: reenvío duplicado de la misma reproducción activa no reinicia Media3. Requiere prueba de registro de callback duplicado.
