@@ -60,7 +60,10 @@ class SessionService : Service() {
 
     @Volatile
     private var callback: ITvPlayCallback? = null
-    private data class PendingDirectVideo(val url: String, val position: Double, val playbackId: Long)
+    private data class PendingDirectVideo(
+        val url: String, val position: Double, val playbackId: Long,
+        val paused: Boolean = false
+    )
 
     private var pendingDirectUrl: PendingDirectVideo? = null
 
@@ -103,7 +106,11 @@ class SessionService : Service() {
         override fun onDirectVideoCommand(command: String, value: Double, playbackId: Long) {
             synchronized(callbackLock) {
                 if (pendingDirectUrl?.playbackId != playbackId) return
-                if (command == "stop") pendingDirectUrl = null
+                when (command) {
+                    "stop" -> pendingDirectUrl = null
+                    "pause" -> pendingDirectUrl = pendingDirectUrl?.copy(paused = true)
+                    "play" -> pendingDirectUrl = pendingDirectUrl?.copy(paused = false)
+                }
                 runCatching { callback?.onDirectVideoCommand(command, value, playbackId) }
             }
         }
@@ -187,8 +194,11 @@ class SessionService : Service() {
                 sendNowPlaying(cb, latestNowPlaying)
                 activeAudioGeneration?.let { runCatching { cb.onAudioStreamStarted(it) } }
                 latestMirrorConfig?.let { config -> runCatching { config.sendTo(cb) } }
-                pendingDirectUrl?.let { (url, position, playbackId) ->
-                    runCatching { cb.onDirectVideoUrl(url, position, playbackId) }
+                pendingDirectUrl?.let { video ->
+                    runCatching {
+                        cb.onDirectVideoUrl(video.url, video.position, video.playbackId)
+                        if (video.paused) cb.onDirectVideoCommand("pause", 0.0, video.playbackId)
+                    }
                 }
             }
         }
