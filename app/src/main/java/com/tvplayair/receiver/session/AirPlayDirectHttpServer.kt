@@ -255,6 +255,16 @@ class AirPlayDirectHttpServer(
                 val plist = AirPlayPlaybackInfoFormatter.formatPlist(latestTelemetry.get())
                 writeResponse(output, 200, "OK", "text/x-apple-plist+xml", plist)
             }
+            method == "PUT" && path == "/setProperty" -> {
+                val reply = BinaryPlistWriter.encode(mapOf("errorCode" to 0L))
+                Log.i(TAG, "-> PUT /setProperty 200 OK")
+                writeBinaryResponse(output, 200, "OK", "application/x-apple-binary-plist", reply)
+            }
+            method == "GET" && path == "/getProperty" -> {
+                val reply = BinaryPlistWriter.encode(mapOf("errorCode" to 0L))
+                Log.i(TAG, "-> GET /getProperty 200 OK")
+                writeBinaryResponse(output, 200, "OK", "application/x-apple-binary-plist", reply)
+            }
             else -> {
                 Log.w(TAG, "-> $method $path 404 Not Found")
                 writeResponse(output, 404, "Not Found")

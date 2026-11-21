@@ -48,7 +48,7 @@ object MdnsTxtRecords {
     fun buildRaopTxt(config: AirPlayAdvertiseConfig): Map<String, String> = linkedMapOf(
         "am" to AIRPLAY_MODEL,
         "ch" to "2",
-        "cn" to "0,1,2,3",
+        "cn" to "0,2,3",
         "da" to "true",
         "et" to "0,3,5",
         "ft" to AIRPLAY_FEATURES,

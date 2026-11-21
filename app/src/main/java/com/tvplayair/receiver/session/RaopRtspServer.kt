@@ -374,16 +374,25 @@ class RaopRtspServer(
             96 -> { // AirPlay Audio stream
                 val sampleRate = (firstStream["sr"] as? Long)?.toInt() ?: PcmResampler.TARGET_SAMPLE_RATE
                 val ct = (firstStream["ct"] as? Long)?.toInt() ?: 8
+                val spf = (firstStream["spf"] as? Long)?.toInt() ?: 480
+                val shk = (firstStream["shk"] as? ByteArray)?.takeIf { it.size >= 16 }?.copyOfRange(0, 16)
+                val effectiveKey = fairplayAesKey ?: shk
                 val codec = when (ct) {
                     8 -> RaopAudioCodec.AAC_ELD
                     4 -> RaopAudioCodec.AAC_LC
-                    else -> RaopAudioCodec.PCM_L16_48K
+                    else -> if (sampleRate == 44100) RaopAudioCodec.PCM_L16_44K1 else RaopAudioCodec.PCM_L16_48K
                 }
+                Log.i(
+                    TAG,
+                    "SETUP audio stream: ct=$ct sr=$sampleRate spf=$spf codec=$codec " +
+                        "hasKey=${effectiveKey != null} hasIv=${sessionEiv != null}"
+                )
                 audioReceiver.configureSession(
                     codec = codec,
                     sampleRate = sampleRate,
-                    sessionAesKey = fairplayAesKey,
-                    sessionAesIv = sessionEiv
+                    sessionAesKey = effectiveKey,
+                    sessionAesIv = sessionEiv,
+                    samplesPerFrame = spf
                 )
                 audioReceiver.start(RaopAudioRtpReceiver.DEFAULT_AUDIO_PORT)
                 listener.onAudioStreamStarted(generationId.get())
