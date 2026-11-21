@@ -238,12 +238,11 @@ class SessionService : Service() {
                     if (active.playbackId != playbackId || !isReady || isBuffering) {
                         active
                     } else {
-                        // Checkpoint the observed player state, not just remote commands.
-                        // Never replace an AirPlay fractional start with an unready zero.
+                        // A READY player can temporarily report isPlaying=false while
+                        // playWhenReady=true; only explicit /rate commands define pause.
                         active.copy(
                             position = if (positionSec.isFinite() && positionSec > 1.0 &&
-                                durationSec.isFinite()) positionSec else active.position,
-                            paused = !isPlaying
+                                durationSec.isFinite()) positionSec else active.position
                         )
                     }
                 }
