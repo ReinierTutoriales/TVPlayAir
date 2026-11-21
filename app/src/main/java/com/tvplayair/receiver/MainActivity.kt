@@ -153,12 +153,12 @@ class MainActivity : ComponentActivity(), SurfaceLayerController {
                     height: Int,
                     generationId: Int
                 ) {
+                    val reconfigured = mirrorDecoder.updateConfig(MirrorVideoConfig(mimeType, width, height))
                     mirrorDecoder.setGeneration(generationId)
                     audioConsumer.setGeneration(generationId)
-                    mirrorDecoder.updateConfig(MirrorVideoConfig(mimeType, width, height))
                     mirrorRequested = true
                     if (sharedMemoryReady) {
-                        presentationCoordinator.startMirror()
+                        presentationCoordinator.startMirror(reconfigured)
                     }
                     syncPresentationState()
                 }

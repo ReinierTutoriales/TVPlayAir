@@ -26,6 +26,14 @@ object AirPlayMirrorHeaderParser {
     const val PAYLOAD_TYPE_HEARTBEAT = 2
     const val MAX_MIRROR_PAYLOAD_BYTES = 480 * 1024 - MirrorFrameGate.PACKET_HEADER_BYTES
 
+    internal fun isHevcCodecConfig(data: ByteBuffer): Boolean? {
+        if (data.limit() < 7 || data.get(0) != 1.toByte()) return null
+        if ((data.get(4).toInt() and 0xFC) == 0xFC &&
+            (data.get(5).toInt() and 0xE0) == 0xE0
+        ) return false
+        return true.takeIf { data.limit() >= 23 }
+    }
+
     /**
      * Parses the standard 128-byte little-endian AirPlay Mirroring TCP packet header:
      * - bytes 0..3: uint32 payloadSize
@@ -60,7 +68,7 @@ object AirPlayMirrorHeaderParser {
  */
 class AirPlayMirrorStreamReceiver(
     private val generationProvider: () -> Int,
-    private val isHevcProvider: () -> Boolean
+    private val onCodecConfigReady: (isHevc: Boolean, generationId: Int) -> Unit
 ) {
     companion object {
         private const val TAG = "AirPlayMirrorReceiver"
@@ -133,7 +141,7 @@ class AirPlayMirrorStreamReceiver(
 
     private fun handleMirrorClient(client: Socket) {
         var packetCount = 0L
-        var streamIsHevc = false
+        var streamIsHevc: Boolean? = null
         client.use { sock ->
             sock.soTimeout = CLIENT_TIMEOUT_MS
             sock.tcpNoDelay = true
@@ -153,27 +161,21 @@ class AirPlayMirrorStreamReceiver(
                     )
                     break
                 }
-                if (header.payloadSize == 0 ||
-                    header.payloadType == AirPlayMirrorHeaderParser.PAYLOAD_TYPE_HEARTBEAT
-                ) {
-                    continue
-                }
+                if (header.payloadSize == 0) continue
                 val isVideo = header.payloadType == AirPlayMirrorHeaderParser.PAYLOAD_TYPE_VIDEO
+                val isConfig = header.payloadType == AirPlayMirrorHeaderParser.PAYLOAD_TYPE_CODEC_CONFIG
                 if (!readIntoDirectBuffer(input, header.payloadSize, decrypt = isVideo)) {
                     break
                 }
-                if (header.payloadType == AirPlayMirrorHeaderParser.PAYLOAD_TYPE_CODEC_CONFIG) {
-                    // avcC has (byte[4] & 0xFC) == 0xFC and (byte[5] & 0xE0) == 0xE0;
-                    // hvcC is >= 23 bytes with (byte[21] & 0xFC) == 0xFC.
-                    streamIsHevc = isHevcProvider() && header.payloadSize >= 23 &&
-                        (directPayload.get(4).toInt() and 0xFC) != 0xFC
-                    Log.i(TAG, "Mirror codec config: size=${header.payloadSize} streamIsHevc=$streamIsHevc")
-                }
+                val isHevc = if (isConfig) AirPlayMirrorHeaderParser.isHevcCodecConfig(directPayload)
+                    else streamIsHevc.takeIf { isVideo }
+                if (isHevc == null) continue
+                val generationId = generationProvider()
                 packetCount++
                 if (packetCount == 1L || packetCount % 120L == 0L) {
                     Log.i(TAG, "Mirror TCP rx: packets=$packetCount type=${header.payloadType} size=${header.payloadSize} gen=${generationProvider()}")
                 }
-                val extraFlags = if (header.payloadType == AirPlayMirrorHeaderParser.PAYLOAD_TYPE_CODEC_CONFIG) {
+                val extraFlags = if (isConfig) {
                     MirrorFrameGate.FLAG_CODEC_CONFIG
                 } else {
                     0
@@ -182,12 +184,17 @@ class AirPlayMirrorStreamReceiver(
                     directBuffer = directPayload,
                     size = header.payloadSize,
                     ptsUs = header.ptsUs,
-                    isHevc = streamIsHevc,
+                    isHevc = isHevc,
                     isLengthPrefixed = isVideo,
-                    generationId = generationProvider(),
+                    generationId = generationId,
                     extraFlags = extraFlags
                 )
-                if (writeRes < 0 && (packetCount <= 3L || packetCount % 60L == 0L)) {
+                if (writeRes == NativeSharedMemory.VIDEO_WRITE_OK && isConfig && streamIsHevc != isHevc) {
+                    streamIsHevc = isHevc
+                    onCodecConfigReady(isHevc, generationId)
+                } else if (writeRes != NativeSharedMemory.VIDEO_WRITE_OK &&
+                    (packetCount <= 3L || packetCount % 60L == 0L)
+                ) {
                     Log.w(TAG, "nativeWriteVideoFrame failed: res=$writeRes size=${header.payloadSize} type=${header.payloadType}")
                 }
             }

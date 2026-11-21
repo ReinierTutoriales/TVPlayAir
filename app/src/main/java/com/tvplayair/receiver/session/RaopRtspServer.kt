@@ -1,6 +1,5 @@
 package com.tvplayair.receiver.session
 
-import android.media.MediaFormat
 import android.util.Log
 import java.io.BufferedInputStream
 import java.io.ByteArrayOutputStream
@@ -369,8 +368,6 @@ class RaopRtspServer(
                     mirrorReceiver?.configureStreamCipher(streamKey, streamIv)
                     Log.i(TAG, "Configured mirror AES-CTR stream cipher (connId=$connId)")
                 }
-                val cfg = configProvider()
-                listener.onVideoConfigChanged(MediaFormat.MIMETYPE_VIDEO_AVC, cfg.maxWidth, cfg.maxHeight, generationId.get())
                 linkedMapOf(
                     "streams" to listOf(
                         linkedMapOf<String, Any>(

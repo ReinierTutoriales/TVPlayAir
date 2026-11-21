@@ -116,6 +116,27 @@ class VideoPresentationCoordinatorTest {
     }
 
     @Test
+    fun changedCodecRestartsMirrorWithoutActivatingTheDirectEngine() {
+        val events = mutableListOf<String>()
+        val mirror = FakeMirrorEngine(events)
+        val coordinator = VideoPresentationCoordinator(
+            mirror,
+            FakeDirectEngine(events),
+            FakeAudioController(events),
+            FakeSurfaceController(events)
+        )
+
+        assertTrue(coordinator.startMirror())
+        events.clear()
+        assertTrue(coordinator.startMirror(reconfigured = true))
+        assertEquals(listOf("mirror.start"), events)
+
+        mirror.failStart = true
+        assertFalse(coordinator.startMirror(reconfigured = true))
+        assertEquals(PresentationState.RECOVERING, coordinator.state)
+    }
+
+    @Test
     fun switchToMirrorStopsExoPlayerBeforeRestartingMirrorAndAudio() {
         val events = mutableListOf<String>()
         val coordinator = VideoPresentationCoordinator(

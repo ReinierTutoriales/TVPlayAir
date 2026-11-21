@@ -5,6 +5,8 @@ import android.media.MediaCodecInfo
 import android.media.MediaCodecList
 import android.media.MediaFormat
 import android.os.Build
+import android.os.Handler
+import android.os.Looper
 import android.util.Log
 import android.view.Surface
 import com.tvplayair.receiver.session.NativeSharedMemory
@@ -40,6 +42,7 @@ class MirrorDecoder(
         ByteBuffer.allocateDirect(MAX_PACKET_BYTES).order(ByteOrder.LITTLE_ENDIAN)
     private val running = AtomicBoolean(false)
     private val generationId = AtomicInteger(0)
+    private val renderListenerHandler = Handler(Looper.getMainLooper())
 
     @Volatile
     private var config = MirrorVideoConfig()
@@ -50,11 +53,12 @@ class MirrorDecoder(
         generationId.set(generation)
     }
 
-    fun updateConfig(newConfig: MirrorVideoConfig) {
-        if (config != newConfig) {
-            config = newConfig
-            frameGate.clearAll()
-        }
+    fun updateConfig(newConfig: MirrorVideoConfig): Boolean {
+        if (config == newConfig) return false
+        stopAndRelease()
+        config = newConfig
+        frameGate.clearAll()
+        return true
     }
 
     @Synchronized
@@ -69,6 +73,12 @@ class MirrorDecoder(
         frameGate.resetGate()
         val createdCodec = createAndConfigureCodec(surface, config) ?: return false
         codec = createdCodec
+        createdCodec.setOnFrameRenderedListener({ activeCodec, _, _ ->
+            if (codec === activeCodec) {
+                Log.i(TAG, "Mirror first frame rendered (${config.mimeType})")
+                activeCodec.setOnFrameRenderedListener(null, null)
+            }
+        }, renderListenerHandler)
         reinjectCachedCodecConfig(createdCodec)
 
         running.set(true)

@@ -66,9 +66,11 @@ class VideoPresentationCoordinator(
         private set
     private var resumeMirrorAfterDirect = false
 
-    fun startMirror(): Boolean {
+    fun startMirror(reconfigured: Boolean = false): Boolean {
         if (state == PresentationState.MIRROR_ACTIVE) {
-            return true
+            if (!reconfigured || mirrorEngine.start()) return true
+            state = PresentationState.RECOVERING
+            return false
         }
         return switchToMirror()
     }

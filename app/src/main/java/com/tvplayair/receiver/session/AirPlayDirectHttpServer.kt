@@ -1,5 +1,6 @@
 package com.tvplayair.receiver.session
 
+import android.media.MediaFormat
 import android.util.Log
 import com.tvplayair.receiver.video.DirectPlaybackTelemetry
 import java.io.BufferedInputStream
@@ -45,7 +46,11 @@ class AirPlayDirectHttpServer(
     private val pairingSession = AirPlayPairingSession()
     private val mirrorReceiver = AirPlayMirrorStreamReceiver(
         generationProvider = { generationId.get() },
-        isHevcProvider = { activeConfig.hevcEnabled }
+        onCodecConfigReady = { isHevc, generation ->
+            val config = activeConfig
+            val mimeType = if (isHevc) MediaFormat.MIMETYPE_VIDEO_HEVC else MediaFormat.MIMETYPE_VIDEO_AVC
+            listener.onVideoConfigChanged(mimeType, config.maxWidth, config.maxHeight, generation)
+        }
     )
     private val raopRtspServer = RaopRtspServer(
         listener = listener,

@@ -3,6 +3,8 @@ package com.tvplayair.receiver.session
 import java.nio.ByteBuffer
 
 object NativeSharedMemory {
+    const val VIDEO_WRITE_OK = 0 // Native RingResult::Ok.
+
     init {
         System.loadLibrary("tvplayair_native")
     }

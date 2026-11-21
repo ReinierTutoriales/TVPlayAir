@@ -39,9 +39,21 @@ class SessionService : Service() {
     private var videoFd: ParcelFileDescriptor? = null
     private var audioFd: ParcelFileDescriptor? = null
 
+    private data class MirrorConfig(
+        val mimeType: String,
+        val width: Int,
+        val height: Int,
+        val generationId: Int
+    ) {
+        fun sendTo(callback: ITvPlayCallback) =
+            callback.onVideoConfigChanged(mimeType, width, height, generationId)
+    }
+
+    private val callbackLock = Any()
+    private var latestMirrorConfig: MirrorConfig? = null
+
     @Volatile
     private var callback: ITvPlayCallback? = null
-    @Volatile
     private var pendingDirectUrl: Pair<String, Double>? = null
 
     private lateinit var identityStore: ReceiverIdentityStore
@@ -60,19 +72,25 @@ class SessionService : Service() {
             height: Int,
             generationId: Int
         ) {
+            synchronized(callbackLock) {
+                val config = MirrorConfig(mimeType, width, height, generationId)
+                latestMirrorConfig = config
+                runCatching { callback?.let(config::sendTo) }
+            }
             ensureUiForeground()
-            runCatching { callback?.onVideoConfigChanged(mimeType, width, height, generationId) }
         }
 
         override fun onDirectVideoUrl(url: String, startPosition: Double) {
-            val cb = callback
-            if (cb == null) {
-                pendingDirectUrl = url to startPosition
-                ensureUiForeground()
-            } else {
-                pendingDirectUrl = null
-                runCatching { cb.onDirectVideoUrl(url, startPosition) }
+            synchronized(callbackLock) {
+                val cb = callback
+                if (cb == null) {
+                    pendingDirectUrl = url to startPosition
+                } else {
+                    pendingDirectUrl = null
+                    runCatching { cb.onDirectVideoUrl(url, startPosition) }
+                }
             }
+            ensureUiForeground()
         }
 
         override fun onDirectVideoCommand(command: String, value: Double) {
@@ -87,50 +105,59 @@ class SessionService : Service() {
 
         override fun onClientDisconnected() {
             dacpController.onClientDisconnected()
-            runCatching { callback?.onClientDisconnected() }
+            synchronized(callbackLock) {
+                latestMirrorConfig = null
+                runCatching { callback?.onClientDisconnected() }
+            }
         }
 
         override fun onAudioStreamStarted(generationId: Int) {
+            synchronized(callbackLock) {
+                latestMirrorConfig = latestMirrorConfig?.copy(generationId = generationId)
+                runCatching { callback?.onAudioStreamStarted(generationId) }
+            }
             ensureUiForeground()
-            runCatching { callback?.onAudioStreamStarted(generationId) }
         }
     }
 
     private val binder = object : ITvPlaySession.Stub() {
         override fun registerCallback(cb: ITvPlayCallback) {
-            callback = cb
             val video = ensureBuffer(0)
             val audio = ensureBuffer(1)
             if (video == null || audio == null) {
                 cb.onSessionUnavailable()
                 return
             }
-            val videoCopy = ParcelFileDescriptor.dup(video.fileDescriptor)
-            try {
-                val audioCopy = ParcelFileDescriptor.dup(audio.fileDescriptor)
+            synchronized(callbackLock) {
+                val videoCopy = ParcelFileDescriptor.dup(video.fileDescriptor)
                 try {
-                    cb.onSharedMemoryReady(
-                        videoCopy,
-                        16L * 1024 * 1024,
-                        audioCopy,
-                        512L * 1024,
-                        protocolEngine.currentGenerationId()
-                    )
+                    val audioCopy = ParcelFileDescriptor.dup(audio.fileDescriptor)
+                    try {
+                        cb.onSharedMemoryReady(
+                            videoCopy,
+                            16L * 1024 * 1024,
+                            audioCopy,
+                            512L * 1024,
+                            protocolEngine.currentGenerationId()
+                        )
+                    } finally {
+                        audioCopy.close()
+                    }
                 } finally {
-                    audioCopy.close()
+                    videoCopy.close()
                 }
-            } finally {
-                videoCopy.close()
-            }
-            pendingDirectUrl?.let { (url, pos) ->
-                pendingDirectUrl = null
-                runCatching { cb.onDirectVideoUrl(url, pos) }
+                callback = cb
+                latestMirrorConfig?.let { config -> runCatching { config.sendTo(cb) } }
+                pendingDirectUrl?.let { (url, position) ->
+                    pendingDirectUrl = null
+                    runCatching { cb.onDirectVideoUrl(url, position) }
+                }
             }
         }
 
         override fun unregisterCallback(cb: ITvPlayCallback) {
-            if (callback?.asBinder() == cb.asBinder()) {
-                callback = null
+            synchronized(callbackLock) {
+                if (callback?.asBinder() == cb.asBinder()) callback = null
             }
         }
 
@@ -253,6 +280,10 @@ class SessionService : Service() {
     @Synchronized
     private fun startAirPlaySession() {
         if (serverRunning) return
+        if (ensureBuffer(0) == null || ensureBuffer(1) == null) {
+            Log.e(TAG, "AirPlay cannot start without video and audio shared memory")
+            return
+        }
         val started = protocolEngine.start(
             AirPlayServerConfig(
                 airPlayPort = advertiseConfig.airPlayPort,
@@ -274,9 +305,11 @@ class SessionService : Service() {
         serverRunning = false
         mdnsAdvertiser.stop()
         protocolEngine.stop()
+        synchronized(callbackLock) { latestMirrorConfig = null }
         dacpController.onClientDisconnected()
     }
 
+    @Synchronized
     private fun ensureBuffer(kind: Int): ParcelFileDescriptor? {
         val current = if (kind == 0) videoFd else audioFd
         if (current != null) return current

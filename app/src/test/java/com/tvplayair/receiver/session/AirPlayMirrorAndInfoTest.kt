@@ -11,6 +11,16 @@ import java.nio.ByteOrder
 class AirPlayMirrorAndInfoTest {
 
     @Test
+    fun distinguishesCodecConfigurationBeforeStartingTheDecoder() {
+        val avc = byteArrayOf(1, 100, 0, 40, 0xFF.toByte(), 0xE1.toByte(), 0)
+        val hevc = ByteArray(23).apply { this[0] = 1 }
+
+        assertEquals(false, AirPlayMirrorHeaderParser.isHevcCodecConfig(ByteBuffer.wrap(avc)))
+        assertEquals(true, AirPlayMirrorHeaderParser.isHevcCodecConfig(ByteBuffer.wrap(hevc)))
+        assertNull(AirPlayMirrorHeaderParser.isHevcCodecConfig(ByteBuffer.wrap(hevc.copyOf(22))))
+    }
+
+    @Test
     fun formatsInfoPlistWith4kHevcCapabilities() {
         val xml = AirPlayInfoPlist.formatInfoXml(
             deviceId = "AA:BB:CC:DD:EE:FF",
