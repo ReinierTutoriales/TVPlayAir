@@ -33,17 +33,17 @@ import androidx.tv.material3.MaterialTheme
 import androidx.tv.material3.Text
 import com.tvplayair.receiver.video.PresentationState
 
-private val BgTop = Color(0xFF0A101D)
-private val BgMid = Color(0xFF101C30)
-private val BgBottom = Color(0xFF060A12)
-private val CardBg = Color(0xCC131E31)
-private val DrawerBg = Color(0xF00F1726)
-private val CardBorder = Color(0xFF263854)
+private val BgTop = Color(0xFF000000)
+private val BgMid = Color(0xFF050507)
+private val BgBottom = Color(0xFF000000)
+private val CardBg = Color(0xFF151517)
+private val DrawerBg = Color(0xF50E0E10)
+private val CardBorder = Color(0xFF242426)
 private val AccentCyan = Color(0xFF38BDF8)
 private val AccentGreen = Color(0xFF34D399)
 private val TextPrimary = Color(0xFFF8FAFC)
 private val TextSecondary = Color(0xFF94A3B8)
-private val PillBg = Color(0xFF1B2A44)
+private val PillBg = Color(0xFF1C1C1E)
 
 @Composable
 fun TvOverlayMenu(
@@ -172,7 +172,7 @@ fun TvOverlayMenu(
                 modifier = Modifier
                     .fillMaxWidth()
                     .clip(RoundedCornerShape(14.dp))
-                    .background(Color(0x88080E1A))
+                    .background(Color(0xFF0A0A0C))
                     .border(1.dp, CardBorder, RoundedCornerShape(14.dp))
                     .padding(14.dp),
                 verticalArrangement = Arrangement.spacedBy(6.dp)
