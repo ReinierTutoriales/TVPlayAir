@@ -22,6 +22,21 @@ class AirPlayMirrorAndInfoTest {
         assertTrue(xml.contains("<key>widthPixels</key><integer>3840</integer>"))
         assertTrue(xml.contains("<key>heightPixels</key><integer>2160</integer>"))
         assertTrue(xml.contains("<key>preferredCodec</key><string>HEVC</string>"))
+
+        val bplist = AirPlayInfoPlist.formatInfoBinary(
+            deviceId = "AA:BB:CC:DD:EE:FF",
+            maxWidth = 3840,
+            maxHeight = 2160,
+            hevcEnabled = true
+        )
+        val decoded = BinaryPlistParser.parse(bplist) as? Map<*, *>
+        assertNotNull(decoded)
+        assertEquals("AA:BB:CC:DD:EE:FF", decoded!!["macAddress"])
+        val displays = decoded["displays"] as? List<*>
+        val display0 = displays?.firstOrNull() as? Map<*, *>
+        assertNotNull(display0)
+        assertEquals(14L, display0!!["features"])
+        assertNotNull(display0["uuid"])
     }
 
     @Test

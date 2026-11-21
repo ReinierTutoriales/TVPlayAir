@@ -28,7 +28,8 @@ class RaopRtspServer(
         private const val TAG = "RaopRtspServer"
         const val DEFAULT_RAOP_PORT = 5000
         private const val MAX_HEADER_BYTES = 16 * 1024
-        private const val MAX_BODY_BYTES = 64 * 1024
+        private const val MAX_BUFFERED_BODY_BYTES = 512 * 1024
+        private const val MAX_DRAIN_BODY_BYTES = 16 * 1024 * 1024
         private const val CLIENT_SO_TIMEOUT_MS = 30_000
         private const val PUBLIC_METHODS =
             "ANNOUNCE, SETUP, RECORD, PAUSE, FLUSH, TEARDOWN, OPTIONS, GET_PARAMETER, SET_PARAMETER, POST, GET"
@@ -111,8 +112,17 @@ class RaopRtspServer(
                 val headerText = String(headerBytes, StandardCharsets.UTF_8)
                 val preliminary = RtspMessageParser.parseRequest(headerText) ?: break
                 val contentLength = preliminary.header("content-length")
-                    ?.toIntOrNull()?.coerceIn(0, MAX_BODY_BYTES) ?: 0
-                val body = if (contentLength > 0) readExact(input, contentLength) else ByteArray(0)
+                    ?.toIntOrNull()?.coerceIn(0, MAX_DRAIN_BODY_BYTES) ?: 0
+                val body = if (contentLength > 0) {
+                    if (contentLength <= MAX_BUFFERED_BODY_BYTES) {
+                        readExact(input, contentLength)
+                    } else {
+                        drainExact(input, contentLength)
+                        ByteArray(0)
+                    }
+                } else {
+                    ByteArray(0)
+                }
                 val request = preliminary.copy(body = body)
                 val peer = sock.inetAddress?.hostAddress ?: "unknown"
                 Log.i(
@@ -429,5 +439,15 @@ class RaopRtspServer(
             offset += n
         }
         return if (offset == length) buf else buf.copyOf(offset)
+    }
+
+    private fun drainExact(input: BufferedInputStream, length: Int) {
+        val scratch = ByteArray(8192)
+        var remaining = length
+        while (remaining > 0) {
+            val n = input.read(scratch, 0, remaining.coerceAtMost(scratch.size))
+            if (n <= 0) break
+            remaining -= n
+        }
     }
 }
