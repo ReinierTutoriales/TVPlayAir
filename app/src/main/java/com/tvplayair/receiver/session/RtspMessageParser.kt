@@ -84,6 +84,9 @@ object RtspMessageParser {
         return null
     }
 
+    fun formatVolumeBody(volumeDb: Float = 0.0f): ByteArray =
+        String.format(Locale.US, "volume: %.6f\r\n", volumeDb).toByteArray(Charsets.US_ASCII)
+
     fun formatResponse(
         statusCode: Int,
         reason: String,

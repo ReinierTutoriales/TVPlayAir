@@ -37,6 +37,7 @@ class RaopRtspServer(
     private val running = AtomicBoolean(false)
     private val generationId = AtomicInteger(1)
     private val audioReceiver = RaopAudioRtpReceiver { generationId.get() }
+    private val timingAndEventServers = AirPlayTimingAndEventServers()
 
     @Volatile
     private var serverSocket: ServerSocket? = null
@@ -44,6 +45,8 @@ class RaopRtspServer(
     private var fairplayAesKey: ByteArray? = null
     @Volatile
     private var sessionEiv: ByteArray? = null
+    @Volatile
+    private var currentVolumeDb: Float = 0.0f
     private var acceptThread: Thread? = null
 
     fun currentGenerationId(): Int = generationId.get()
@@ -62,6 +65,10 @@ class RaopRtspServer(
 
         serverSocket = socket
         running.set(true)
+        timingAndEventServers.start(
+            timingPort = RaopAudioRtpReceiver.DEFAULT_TIMING_PORT,
+            eventPort = AirPlayTimingAndEventServers.DEFAULT_EVENT_PORT
+        )
         acceptThread = Thread({ acceptLoop(socket) }, "TVPlayAir-RaopRtsp").apply {
             isDaemon = true
             start()
@@ -72,6 +79,7 @@ class RaopRtspServer(
 
     fun stop() {
         running.set(false)
+        timingAndEventServers.stop()
         audioReceiver.stop()
         runCatching { serverSocket?.close() }
         serverSocket = null
@@ -242,10 +250,33 @@ class RaopRtspServer(
                     )
                 )
             }
-            "GET_PARAMETER", "SET_PARAMETER" -> {
+            "GET_PARAMETER" -> {
                 val bodyText = String(request.body, StandardCharsets.UTF_8)
+                if (bodyText.contains("volume", ignoreCase = true)) {
+                    val volBody = RtspMessageParser.formatVolumeBody(currentVolumeDb)
+                    Log.i(TAG, "-> GET_PARAMETER 200 OK volume=$currentVolumeDb")
+                    output.write(
+                        RtspMessageParser.formatResponse(
+                            200, "OK", cseq,
+                            mapOf("Content-Type" to "text/parameters"),
+                            volBody
+                        )
+                    )
+                } else {
+                    Log.i(TAG, "-> GET_PARAMETER 200 OK")
+                    output.write(RtspMessageParser.formatResponse(200, "OK", cseq))
+                }
+            }
+            "SET_PARAMETER" -> {
+                val bodyText = String(request.body, StandardCharsets.UTF_8)
+                for (line in bodyText.lineSequence()) {
+                    val idx = line.indexOf(':')
+                    if (idx > 0 && line.substring(0, idx).trim().equals("volume", ignoreCase = true)) {
+                        line.substring(idx + 1).trim().toFloatOrNull()?.let { currentVolumeDb = it }
+                    }
+                }
                 RtspMessageParser.parseVolumeLinear(bodyText)?.let { gain ->
-                    Log.i(TAG, "RAOP volume update: linear=$gain")
+                    Log.i(TAG, "RAOP volume update: linear=$gain (db=$currentVolumeDb)")
                 }
                 output.write(RtspMessageParser.formatResponse(200, "OK", cseq))
             }
@@ -342,7 +373,7 @@ class RaopRtspServer(
             }
             else -> { // Initial session SETUP (eiv/ekey + eventPort/timingPort)
                 linkedMapOf(
-                    "eventPort" to configProvider().airPlayPort.toLong(),
+                    "eventPort" to AirPlayTimingAndEventServers.DEFAULT_EVENT_PORT.toLong(),
                     "timingPort" to RaopAudioRtpReceiver.DEFAULT_TIMING_PORT.toLong()
                 )
             }
