@@ -1,0 +1,56 @@
+name: iOS Sender CI
+
+on:
+  push:
+    branches: [main, "feat/**"]
+    paths:
+      - "ios/TVPlayAirSender/**"
+      - ".github/workflows/ios-sender-ci.yml"
+  pull_request:
+    branches: [main]
+    paths:
+      - "ios/TVPlayAirSender/**"
+      - ".github/workflows/ios-sender-ci.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build-and-launch:
+    runs-on: macos-15
+    timeout-minutes: 20
+    defaults:
+      run:
+        working-directory: ios/TVPlayAirSender
+    steps:
+      - uses: actions/checkout@v7.0.1
+      - name: Select Xcode
+        run: |
+          sudo xcode-select --switch /Applications/Xcode_26.3.app/Contents/Developer
+          xcodebuild -version
+      - name: Generate Xcode project
+        run: |
+          archive="$RUNNER_TEMP/xcodegen.zip"
+          tool_dir="$RUNNER_TEMP/xcodegen-tools"
+          curl --fail --silent --show-error --location --retry 3 \
+            https://github.com/yonaskolb/XcodeGen/releases/download/2.46.0/xcodegen.zip \
+            --output "$archive"
+          echo "4d9e34b62172d645eed6457cac13fc222569974098ef4ee9c3368bedf0196806  $archive" | shasum -a 256 --check
+          ditto -x -k "$archive" "$tool_dir"
+          xcodegen_binary="$(find "$tool_dir" -type f -name xcodegen -print -quit)"
+          test -x "$xcodegen_binary"
+          "$xcodegen_binary" generate
+      - name: Compile unsigned iOS app
+        run: |
+          xcodebuild -project TVPlayAirSender.xcodeproj -scheme TVPlayAirSender \
+            -configuration Debug -destination 'generic/platform=iOS Simulator' \
+            -derivedDataPath "$RUNNER_TEMP/tvplayair-ios" CODE_SIGNING_ALLOWED=NO build
+      - name: Launch on the iPhone simulator
+        run: |
+          udid="$(xcrun simctl list devices available -j | jq -er '[.devices[][] | select(.name | startswith("iPhone"))][0].udid')"
+          xcrun simctl boot "$udid"
+          xcrun simctl bootstatus "$udid" -b
+          app="$RUNNER_TEMP/tvplayair-ios/Build/Products/Debug-iphonesimulator/TVPlayAirSender.app"
+          xcrun simctl install "$udid" "$app"
+          xcrun simctl launch "$udid" com.tvplayair.sender
