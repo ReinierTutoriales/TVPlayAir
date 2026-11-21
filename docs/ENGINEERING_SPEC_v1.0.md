@@ -4,6 +4,8 @@
 
 **Objetivo**: Construir un receptor AirPlay independiente, libre y modular para Android TV que entregue calidad nativa 4K/HEVC/HDR, transición limpia entre espejo de pantalla y reproducción directa de video web, audio estable sin cortes y control desde el mando de la TV, respetando las limitaciones reales de hardware (VPU, Binder, fragmentación Bluetooth).
 
+La experiencia objetivo es conectar el iPhone una vez y manejar la sesión desde la TV. En espejo, cambiar de app o girar el iPhone debe mantener la conexión. En video directo, la TV reproduce el contenido compatible en ExoPlayer mientras el iPhone puede pasar a otra app. Abrir los ajustes o cambiar el tema de la TV debe dejar la sesión y la reproducción activas. Estas transiciones se verifican de extremo a extremo con iPhone, TV y mando.
+
 | Incluido en v1.0 (Producción) | Excluido de v1.0 (Diferido a v2.0) |
 |----------------------------------|-------------------------------------|
 | Proceso aislado `:session` + SharedMemory SPSC | Reemplazo del motor C por Rust/Kotlin puro |
@@ -54,13 +56,13 @@ El sistema separa estrictamente la red/protocolo del renderizado y la UI mediant
 - **Video (Cero OpenGL en v1.0)**: Dos `SurfaceView` nativos superpuestos gestionados por SurfaceFlinger. Garantiza paso directo al Hardware Composer y preserva metadatos HDR10 / HLG / Dolby Vision en ExoPlayer.
 - **Gestión de VPU (Límite de Hardware)**: Los SoCs de Android TV (Amlogic/MediaTek) no soportan doble decodificación 4K HEVC simultánea.
   - Al entrar `POST /play` (video web maximizado), ExoPlayer prepara el stream con User-Agent de Safari iOS y `setForceHighestSupportedBitrate(true)`.
-  - Al dispararse `onRenderedFirstFrame` en ExoPlayer, se sube su SurfaceView al frente y se libera MediaCodec del espejo.
+  - Se libera MediaCodec del espejo antes de preparar ExoPlayer. `onRenderedFirstFrame` registra cuándo ExoPlayer muestra imagen.
 - **Retorno limpio al Espejo (Caché SPS/PPS + Compuerta IDR)**: Al detener ExoPlayer, se recrea MediaCodec (`KEY_LOW_LATENCY = 1`), se inyectan los últimos headers SPS/PPS/VPS cacheados y se descartan todos los paquetes entrantes hasta recibir el primer frame IDR limpio (evita corrupción/pantalla verde).
 - **Audio**: Google Oboe (C++) lee directamente del SharedRingBuffer de audio con ajuste manual de sincronización (-200 ms a +200 ms). AudioFocus nativo arbitra la transición con ExoPlayer.
 
 ### Capa 3: Capa de Interacción (Proceso Principal)
 
-- **DACP (Obligatorio)**: Captura DACP-ID y Active-Remote al conectar. Traduce las teclas multimedia del mando a comandos HTTP `GET /ctrl-int/1/...` hacia el dispositivo Apple y reporta el progreso de ExoPlayer en `GET /playback-info`.
+- **DACP (Obligatorio)**: Captura DACP-ID y Active-Remote al conectar. Traduce las teclas multimedia del mando a comandos HTTP `GET /ctrl-int/1/...` hacia el dispositivo Apple. El video directo informa el progreso en `GET /playback-info` y envía cambios de estado a la misma sesión AirPlay por `/reverse`.
 - **Bluetooth HID (Opcional)**: Implementado con `BluetoothHidDevice` (perfil teclado estándar). Al iniciar la app, verifica soporte del stack Bluetooth del televisor; si falla o no existe, se desactiva silenciosamente sin afectar el resto del sistema.
 - **UI (Jetpack Compose for TV)**: Overlay lateral mínimo (invocado con tecla Menú) para cambiar resolución anunciada, activar/desactivar HEVC, ajustar offset de audio (ms) y mostrar HUD de telemetría (FPS, códec, drops).
 

@@ -25,7 +25,8 @@ import androidx.media3.exoplayer.trackselection.DefaultTrackSelector
 class WebVideoPlayer(
     context: Context,
     private val surfaceView: SurfaceView,
-    private val onTelemetryChanged: (DirectPlaybackTelemetry) -> Unit = {}
+    private val onTelemetryChanged: (DirectPlaybackTelemetry) -> Unit = {},
+    private val onPlaybackFinished: () -> Unit = {}
 ) : DirectVideoEngine {
 
     companion object {
@@ -72,6 +73,7 @@ class WebVideoPlayer(
             if (playbackState == Player.STATE_READY || playbackState == Player.STATE_BUFFERING) {
                 mainHandler.postDelayed(telemetryTicker, TELEMETRY_INTERVAL_MS)
             }
+            if (playbackState == Player.STATE_ENDED) notifyPlaybackFinished()
         }
 
         override fun onIsPlayingChanged(isPlaying: Boolean) {
@@ -83,6 +85,19 @@ class WebVideoPlayer(
             pendingStartFraction = null
             Log.e(TAG, "ExoPlayer error (${error.errorCodeName})")
             onTelemetryChanged(currentTelemetry())
+            notifyPlaybackFinished()
+        }
+    }
+
+    private fun notifyPlaybackFinished() {
+        val exo = player ?: return
+        val item = exo.currentMediaItem ?: return
+        mainHandler.post {
+            if (player === exo && exo.currentMediaItem === item &&
+                (exo.playbackState == Player.STATE_ENDED || exo.playbackState == Player.STATE_IDLE)
+            ) {
+                onPlaybackFinished()
+            }
         }
     }
 
@@ -181,7 +196,8 @@ class WebVideoPlayer(
             positionSec = positionSec,
             rate = if (playing) exo.playbackParameters.speed else 0f,
             isPlaying = playing,
-            isBuffering = exo.playbackState == Player.STATE_BUFFERING
+            isBuffering = exo.playbackState == Player.STATE_BUFFERING,
+            isReady = exo.playbackState == Player.STATE_READY
         )
     }
 

@@ -109,6 +109,10 @@ class MainActivity : ComponentActivity(), SurfaceLayerController {
                 if (::sessionConnection.isInitialized) {
                     sessionConnection.updatePlaybackTelemetry(telemetry)
                 }
+            },
+            onPlaybackFinished = {
+                presentationCoordinator.stopDirectVideo()
+                syncPresentationState()
             }
         )
         presentationCoordinator = VideoPresentationCoordinator(

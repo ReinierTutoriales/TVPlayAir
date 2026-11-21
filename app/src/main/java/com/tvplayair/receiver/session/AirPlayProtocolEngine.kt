@@ -110,7 +110,7 @@ object AirPlayPlaybackInfoFormatter {
         val duration = telemetry.durationSec.coerceAtLeast(0.0)
         val position = telemetry.positionSec.coerceIn(0.0, if (duration > 0.0) duration else Double.MAX_VALUE)
         val rate = telemetry.rate.coerceAtLeast(0f)
-        val readyToPlay = duration > 0.0 || telemetry.isPlaying
+        val readyToPlay = telemetry.isReady
         val bufferEmpty = telemetry.isBuffering
         val likelyToKeepUp = readyToPlay && !bufferEmpty
 

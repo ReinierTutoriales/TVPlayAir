@@ -149,7 +149,8 @@ class SessionConnection(
                 telemetry.positionSec,
                 telemetry.rate,
                 telemetry.isPlaying,
-                telemetry.isBuffering
+                telemetry.isBuffering,
+                telemetry.isReady
             )
         }
     }

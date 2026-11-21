@@ -12,6 +12,7 @@ import java.net.ServerSocket
 import java.net.Socket
 import java.nio.charset.StandardCharsets
 import java.util.Locale
+import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicInteger
 import java.util.concurrent.atomic.AtomicReference
@@ -30,10 +31,12 @@ class AirPlayDirectHttpServer(
         private const val MAX_HEADER_BYTES = 16 * 1024
         private const val MAX_BODY_BYTES = 64 * 1024
         private const val CLIENT_SO_TIMEOUT_MS = 30_000
+        private const val EVENT_ACK_TIMEOUT_MS = 5_000
     }
 
     private val running = AtomicBoolean(false)
     private val generationId = AtomicInteger(1)
+    private val playbackEvents = AirPlayPlaybackEvents()
     private val latestTelemetry = AtomicReference(
         DirectPlaybackTelemetry(0.0, 0.0, 0f, isPlaying = false, isBuffering = false)
     )
@@ -100,6 +103,7 @@ class AirPlayDirectHttpServer(
 
     override fun stop() {
         running.set(false)
+        playbackEvents.clear()
         raopRtspServer.stop()
         mirrorReceiver.stop()
         runCatching { serverSocket?.close() }
@@ -113,6 +117,7 @@ class AirPlayDirectHttpServer(
 
     override fun updatePlaybackTelemetry(telemetry: DirectPlaybackTelemetry) {
         latestTelemetry.set(telemetry)
+        playbackEvents.update(telemetry)
     }
 
     override fun currentGenerationId(): Int = generationId.get()
@@ -176,13 +181,55 @@ class AirPlayDirectHttpServer(
 
                 val contentLength = headers["content-length"]?.toIntOrNull()?.coerceIn(0, MAX_BODY_BYTES) ?: 0
                 val body = if (contentLength > 0) readExactBytes(input, contentLength) else ByteArray(0)
+                if (body.size != contentLength) break
                 val contentType = headers["content-type"].orEmpty()
                 Log.i(TAG, "<- $peer $method $fullPath (ct=$contentType len=${body.size})")
 
+                val sessionId = headers["x-apple-session-id"]?.takeIf { value ->
+                    value.length in 1..128 && value.all { it in '!'..'~' }
+                }
+                val sessionKey = AirPlayPlaybackEvents.SessionKey(peer, sessionId)
+                if (method == "POST" && path == "/reverse") {
+                    handleReverseChannel(sock, input, output, sessionKey)
+                    return
+                }
                 val keepAlive = !headers["connection"].equals("close", ignoreCase = true)
-                dispatchRequest(method, path, fullPath, body, output)
+                dispatchRequest(method, path, fullPath, body, output, sessionKey)
                 if (!keepAlive) break
             }
+        }
+    }
+
+    private fun handleReverseChannel(
+        socket: Socket,
+        input: BufferedInputStream,
+        output: OutputStream,
+        key: AirPlayPlaybackEvents.SessionKey
+    ) {
+        val channel = AirPlayPlaybackEvents.Channel(key, socket)
+        if (!playbackEvents.attach(channel)) {
+            writeResponse(output, 409, "Conflict")
+            return
+        }
+        try {
+            socket.soTimeout = EVENT_ACK_TIMEOUT_MS
+            output.write(
+                ("HTTP/1.1 101 Switching Protocols\r\n" +
+                    "Upgrade: PTTH/1.0\r\nConnection: Upgrade\r\n\r\n")
+                    .toByteArray(StandardCharsets.US_ASCII)
+            )
+            output.flush()
+            while (running.get() && !socket.isClosed) {
+                val event = channel.events.poll(1, TimeUnit.SECONDS) ?: continue
+                output.write(event.request(key.appleSessionId))
+                output.flush()
+                val acknowledgement = readUntilHeaderEnd(input)?.toString(StandardCharsets.US_ASCII)
+                    ?: break
+                val status = acknowledgement.substringBefore("\r\n").split(' ')
+                if (status.getOrNull(0) != "HTTP/1.1" || status.getOrNull(1) != "200") break
+            }
+        } finally {
+            playbackEvents.detach(channel)
         }
     }
 
@@ -191,7 +238,8 @@ class AirPlayDirectHttpServer(
         path: String,
         fullPath: String,
         bodyBytes: ByteArray,
-        output: OutputStream
+        output: OutputStream,
+        sessionKey: AirPlayPlaybackEvents.SessionKey
     ) {
         when {
             method == "POST" && path == "/pair-setup" -> {
@@ -227,6 +275,7 @@ class AirPlayDirectHttpServer(
             method == "POST" && path == "/play" -> {
                 val parsed = AirPlayHttpRequestParser.parsePlayBody(bodyBytes)
                 if (parsed != null) {
+                    playbackEvents.start(sessionKey)
                     listener.onDirectVideoUrl(parsed.url, parsed.startPosition)
                     Log.i(TAG, "-> /play 200 OK startPosition=${parsed.startPosition}")
                     writeResponse(output, 200, "OK")
@@ -270,13 +319,6 @@ class AirPlayDirectHttpServer(
             method == "GET" && path == "/server-info" -> {
                 val info = AirPlayInfoPlist.formatServerInfoXml(activeConfig.deviceId)
                 writeResponse(output, 200, "OK", "text/x-apple-plist+xml", info)
-            }
-            method == "POST" && path == "/reverse" -> {
-                val resp = "HTTP/1.1 101 Switching Protocols\r\n" +
-                    "Upgrade: PTTH/1.0\r\n" +
-                    "Connection: Upgrade\r\n\r\n"
-                output.write(resp.toByteArray(StandardCharsets.US_ASCII))
-                output.flush()
             }
             method == "GET" && path == "/playback-info" -> {
                 val plist = AirPlayPlaybackInfoFormatter.formatPlist(latestTelemetry.get())

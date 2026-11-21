@@ -9,7 +9,7 @@ interface ITvPlaySession {
     void startServer();
     void stopServer();
     void updatePlaybackTelemetry(double durationSec, double positionSec,
-                                 float rate, boolean isPlaying, boolean isBuffering);
+                                 float rate, boolean isPlaying, boolean isBuffering, boolean isReady);
     void sendDacpCommand(String command);
     oneway void configureAdvertising(int maxWidth, int maxHeight, boolean hevcEnabled, String serviceName);
 }

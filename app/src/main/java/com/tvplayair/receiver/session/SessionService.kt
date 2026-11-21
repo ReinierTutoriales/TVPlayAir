@@ -174,10 +174,11 @@ class SessionService : Service() {
             positionSec: Double,
             rate: Float,
             isPlaying: Boolean,
-            isBuffering: Boolean
+            isBuffering: Boolean,
+            isReady: Boolean
         ) {
             protocolEngine.updatePlaybackTelemetry(
-                DirectPlaybackTelemetry(durationSec, positionSec, rate, isPlaying, isBuffering)
+                DirectPlaybackTelemetry(durationSec, positionSec, rate, isPlaying, isBuffering, isReady)
             )
         }
 

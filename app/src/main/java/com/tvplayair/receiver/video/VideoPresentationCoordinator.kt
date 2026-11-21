@@ -14,7 +14,8 @@ data class DirectPlaybackTelemetry(
     val positionSec: Double,
     val rate: Float,
     val isPlaying: Boolean,
-    val isBuffering: Boolean
+    val isBuffering: Boolean,
+    val isReady: Boolean = isPlaying || durationSec > 0.0
 )
 
 interface AudioHandoffController {

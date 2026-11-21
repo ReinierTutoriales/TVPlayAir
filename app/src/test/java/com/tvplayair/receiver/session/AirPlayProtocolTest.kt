@@ -6,8 +6,34 @@ import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
+import java.net.Socket
 
 class AirPlayProtocolTest {
+
+    @Test
+    fun reverseChannelReportsLoadingPlayingPausedAndStoppedToTheSameSession() {
+        val events = AirPlayPlaybackEvents()
+        val key = AirPlayPlaybackEvents.SessionKey("127.0.0.1", "tvplayair-test")
+        Socket().use { socket ->
+            val channel = AirPlayPlaybackEvents.Channel(key, socket)
+            assertTrue(events.attach(channel))
+            events.start(key)
+            events.update(DirectPlaybackTelemetry(0.0, 0.0, 1f, true, false))
+            events.update(DirectPlaybackTelemetry(0.0, 1.0, 1f, true, false))
+            events.update(DirectPlaybackTelemetry(0.0, 1.0, 0f, false, false, isReady = true))
+            events.update(DirectPlaybackTelemetry(120.0, 120.0, 0f, false, false, isReady = false))
+
+            assertEquals(
+                listOf("loading", "playing", "paused", "stopped"),
+                channel.events.map { it.state.value }
+            )
+            val request = channel.events.first().request(key.appleSessionId).decodeToString()
+            val body = request.substringAfter("\r\n\r\n")
+            assertTrue(request.startsWith("POST /event HTTP/1.1\r\n"))
+            assertTrue(request.contains("X-Apple-Session-ID: tvplayair-test\r\n"))
+            assertTrue(request.contains("Content-Length: ${body.toByteArray().size}\r\n"))
+        }
+    }
 
     @Test
     fun parsesBinaryPlistDirectPlayBodyFromItsOriginalBytes() {
