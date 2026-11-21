@@ -301,4 +301,27 @@ class VideoPresentationCoordinatorTest {
             events
         )
     }
+    @Test
+    fun stopDuringDirectPreparationDoesNotLeaveDirectActive() {
+        val events = mutableListOf<String>()
+        lateinit var coordinator: VideoPresentationCoordinator
+        val direct = object : DirectVideoEngine {
+            override fun prepareAndPlay(url: String, startPosition: Double): Boolean {
+                coordinator.stopDirectVideo()
+                return true
+            }
+            override fun play() = Unit
+            override fun pause() = Unit
+            override fun seekTo(positionSec: Double) = Unit
+            override fun stopAndClear() { events += "direct.stopAndClear" }
+            override fun currentTelemetry() = DirectPlaybackTelemetry(0.0, 0.0, 0f, false, false)
+        }
+        coordinator = VideoPresentationCoordinator(
+            FakeMirrorEngine(events), direct,
+            FakeAudioController(events), FakeSurfaceController(events)
+        )
+        coordinator.switchToDirectVideo("https://example.com/movie.mp4")
+        assertEquals(PresentationState.IDLE, coordinator.state)
+    }
+
 }
