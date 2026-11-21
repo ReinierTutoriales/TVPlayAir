@@ -222,6 +222,14 @@ class SessionService : Service() {
             isBuffering: Boolean,
             isReady: Boolean
         ) {
+            synchronized(callbackLock) {
+                pendingDirectUrl = pendingDirectUrl?.let { active ->
+                    if (active.playbackId == playbackId && positionSec.isFinite() &&
+                        positionSec >= 0.0 && durationSec.isFinite()) {
+                        active.copy(position = positionSec)
+                    } else active
+                }
+            }
             protocolEngine.updatePlaybackTelemetry(
                 playbackId,
                 DirectPlaybackTelemetry(durationSec, positionSec, rate, isPlaying, isBuffering, isReady)
