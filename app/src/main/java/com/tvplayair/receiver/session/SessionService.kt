@@ -235,10 +235,17 @@ class SessionService : Service() {
         ) {
             synchronized(callbackLock) {
                 pendingDirectUrl = pendingDirectUrl?.let { active ->
-                    if (active.playbackId == playbackId && isReady &&
-                        positionSec.isFinite() && positionSec > 1.0 && durationSec.isFinite()) {
-                        active.copy(position = positionSec)
-                    } else active
+                    if (active.playbackId != playbackId || !isReady || isBuffering) {
+                        active
+                    } else {
+                        // Checkpoint the observed player state, not just remote commands.
+                        // Never replace an AirPlay fractional start with an unready zero.
+                        active.copy(
+                            position = if (positionSec.isFinite() && positionSec > 1.0 &&
+                                durationSec.isFinite()) positionSec else active.position,
+                            paused = !isPlaying
+                        )
+                    }
                 }
             }
             protocolEngine.updatePlaybackTelemetry(
