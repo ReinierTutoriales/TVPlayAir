@@ -27,7 +27,7 @@ class AirPlayDirectHttpServer(
         private const val TAG = "AirPlayDirectHttpServer"
         private const val MAX_HEADER_BYTES = 16 * 1024
         private const val MAX_BODY_BYTES = 64 * 1024
-        private const val CLIENT_SO_TIMEOUT_MS = 5_000
+        private const val CLIENT_SO_TIMEOUT_MS = 30_000
     }
 
     private val running = AtomicBoolean(false)
@@ -110,44 +110,49 @@ class AirPlayDirectHttpServer(
     private fun handleClient(client: Socket) {
         client.use { sock ->
             sock.soTimeout = CLIENT_SO_TIMEOUT_MS
+            sock.tcpNoDelay = true
             val input = BufferedInputStream(sock.getInputStream())
             val output = sock.getOutputStream()
-
-            val headerBytes = readUntilHeaderEnd(input) ?: return
-            val headerText = String(headerBytes, StandardCharsets.UTF_8)
-            val lines = headerText.split("\r\n")
-            if (lines.isEmpty()) return
-
-            val requestParts = lines[0].split(' ')
-            if (requestParts.size < 2) return
-            val method = requestParts[0].uppercase(Locale.US)
-            val fullPath = requestParts[1]
-            val path = fullPath.substringBefore('?')
-
-            val headers = mutableMapOf<String, String>()
-            for (i in 1 until lines.size) {
-                val line = lines[i]
-                val colon = line.indexOf(':')
-                if (colon > 0) {
-                    headers[line.substring(0, colon).trim().lowercase(Locale.US)] =
-                        line.substring(colon + 1).trim()
-                }
-            }
-
-            val dacpId = headers["dacp-id"].orEmpty()
-            val activeRemote = headers["active-remote"].orEmpty()
-            val userAgent = headers["user-agent"].orEmpty().ifBlank { "Apple Device" }
-            if (dacpId.isNotEmpty() && activeRemote.isNotEmpty()) {
-                listener.onClientConnected(userAgent, dacpId, activeRemote)
-            }
-
-            val contentLength = headers["content-length"]?.toIntOrNull()?.coerceIn(0, MAX_BODY_BYTES) ?: 0
-            val body = if (contentLength > 0) readExactBytes(input, contentLength) else ByteArray(0)
             val peer = sock.inetAddress?.hostAddress ?: "unknown"
-            val contentType = headers["content-type"].orEmpty()
-            Log.i(TAG, "<- $peer $method $fullPath (ct=$contentType len=${body.size})")
 
-            dispatchRequest(method, path, fullPath, body, output)
+            while (running.get()) {
+                val headerBytes = readUntilHeaderEnd(input) ?: break
+                val headerText = String(headerBytes, StandardCharsets.UTF_8)
+                val lines = headerText.split("\r\n")
+                if (lines.isEmpty()) break
+
+                val requestParts = lines[0].split(' ')
+                if (requestParts.size < 2) break
+                val method = requestParts[0].uppercase(Locale.US)
+                val fullPath = requestParts[1]
+                val path = fullPath.substringBefore('?')
+
+                val headers = mutableMapOf<String, String>()
+                for (i in 1 until lines.size) {
+                    val line = lines[i]
+                    val colon = line.indexOf(':')
+                    if (colon > 0) {
+                        headers[line.substring(0, colon).trim().lowercase(Locale.US)] =
+                            line.substring(colon + 1).trim()
+                    }
+                }
+
+                val dacpId = headers["dacp-id"].orEmpty()
+                val activeRemote = headers["active-remote"].orEmpty()
+                val userAgent = headers["user-agent"].orEmpty().ifBlank { "Apple Device" }
+                if (dacpId.isNotEmpty() && activeRemote.isNotEmpty()) {
+                    listener.onClientConnected(userAgent, dacpId, activeRemote)
+                }
+
+                val contentLength = headers["content-length"]?.toIntOrNull()?.coerceIn(0, MAX_BODY_BYTES) ?: 0
+                val body = if (contentLength > 0) readExactBytes(input, contentLength) else ByteArray(0)
+                val contentType = headers["content-type"].orEmpty()
+                Log.i(TAG, "<- $peer $method $fullPath (ct=$contentType len=${body.size})")
+
+                val keepAlive = !headers["connection"].equals("close", ignoreCase = true)
+                dispatchRequest(method, path, fullPath, body, output)
+                if (!keepAlive) break
+            }
         }
     }
 
@@ -311,8 +316,7 @@ class AirPlayDirectHttpServer(
         val headers = buildString {
             append("HTTP/1.1 ").append(statusCode).append(' ').append(reason).append("\r\n")
             append("Content-Type: ").append(contentType).append("\r\n")
-            append("Content-Length: ").append(bodyBytes.size).append("\r\n")
-            append("Connection: close\r\n\r\n")
+            append("Content-Length: ").append(bodyBytes.size).append("\r\n\r\n")
         }
         output.write(headers.toByteArray(StandardCharsets.US_ASCII))
         if (bodyBytes.isNotEmpty()) output.write(bodyBytes)

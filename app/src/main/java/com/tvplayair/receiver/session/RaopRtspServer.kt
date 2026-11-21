@@ -244,6 +244,7 @@ class RaopRtspServer(
                 }
             }
             "RECORD" -> {
+                Log.i(TAG, "-> RECORD 200 OK (cseq=$cseq)")
                 output.write(
                     RtspMessageParser.formatResponse(
                         200, "OK", cseq, mapOf("Audio-Latency" to "2205")
@@ -305,6 +306,7 @@ class RaopRtspServer(
 
     private fun handleBinaryPlistSetup(body: ByteArray, cseq: String, output: OutputStream) {
         val parsed = BinaryPlistParser.parse(body) as? Map<*, *>
+        Log.i(TAG, "SETUP bplist keys=${parsed?.keys}")
         val ekey = parsed?.get("ekey") as? ByteArray
         val eiv = parsed?.get("eiv") as? ByteArray
         if (ekey != null && ekey.size == 72) {
