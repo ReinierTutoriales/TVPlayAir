@@ -11,6 +11,14 @@ Build an independent AirPlay multimedia receiver for Android TV. The iPhone is t
 
 These are product requirements, not claims that every Android TV device supports every codec, HDR format, bitrate or input feature. Prove each capability on representative hardware before claiming it.
 
+## Non-negotiable continuity-first mandate
+
+The product is a CarPlay-inspired **TV multimedia continuity experience**, not a CarPlay implementation or a collection of separate AirPlay screens. The iPhone drives content and TVPlayAir must track the current supported AirPlay session and media item across rapid audio/video/mirror and app transitions, without stale artwork, metadata, last frames, controls or indefinite black screens. Never infer universal access to third-party iOS app state. The **highest-priority skill** for any protocol, playback, UI, metadata, performance or testing change is `.agents/skills/media-continuity/SKILL.md`; also read `docs/TVPLAYAIR_CONTINUITY_ARCHITECTURE_2026.md`.
+
+A single serialized coordinator must own active transport session, media item identity, generation and presentation state. Every asynchronous callback (artwork fetch, player, binder, reverse channel, decoder, timeout) must be generation-checked. Distinguish transport connection from media item; use explicit preparing/first-frame/playing/recovering states and bounded recovery. Tests must reproduce rapid app/media switches, delayed and reordered events, stale commands and binder death before claiming continuity.
+
+**Update policy supersedes old fixed-version constraints:** follow `docs/DEPENDENCY_UPDATE_POLICY.md`. Evaluate latest published stable and relevant prereleases using official release notes, SDK/AGP/Kotlin/Compose compatibility and exact-HEAD CI. Do not let historical compileSdk/BOM pins block verified migrations; update compatible groups atomically. Never invent versions or checksums.
+
 ## v1.0 scope firewall
 
 Only implement the six v1.0 milestones: (1) deterministic Android baseline/CI, (2) AIDL + SharedMemory IPC and native stress tests, (3) Oboe audio pipeline, (4) MediaCodec/ExoPlayer video and VPU handoff, (5) AirPlay/mDNS/DACP session, (6) TV UI/HID and device validation. Do not start v2.0 work until all six are closed: GLSurfaceView/OpenGL PiP or split-screen, USB CDC-NCM, PTP multiroom, persistent HomeKit pairing, or protocol-engine rewrite. Reject unrelated scope creep; record it for later instead of implementing it.
@@ -71,4 +79,4 @@ Hardware validation is a separate gate for claims CI cannot prove: codec/VPU tra
 
 ## Skills
 
-Read the relevant `.agents/skills/` file before work: `tvplayair-v1-architecture` for product boundaries/media architecture; `precise-coding` for implementation; `testing-discipline` for tests and CI; `tv-ui` for focus/layout; `code-quality` for optimization/refactors; `agent-governance` before Git mutations; `no-ai-slop` for prose only.
+Read `.agents/skills/media-continuity/SKILL.md` first for any multimedia work; then the relevant `.agents/skills/` file before work: `tvplayair-v1-architecture` for product boundaries/media architecture; `precise-coding` for implementation; `testing-discipline` for tests and CI; `tv-ui` for focus/layout; `code-quality` for optimization/refactors; `agent-governance` before Git mutations; `no-ai-slop` for prose only.
