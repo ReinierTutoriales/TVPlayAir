@@ -215,7 +215,7 @@ class MainActivity : ComponentActivity(), SurfaceLayerController {
                 }
 
                 override fun onDirectVideoCommand(command: String, value: Double, playbackId: Long) {
-                    if (directPlaybackId == 0L) return
+                    if (directPlaybackId == 0L || directPlaybackId != playbackId) return
                     if (command != "stop" &&
                         presentationCoordinator.state != PresentationState.DIRECT_ACTIVE) return
                     when (command) {
