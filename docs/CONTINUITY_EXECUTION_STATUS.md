@@ -92,3 +92,6 @@ Registrar: **hipótesis → evidencia oficial/código → alternativa más simpl
 - `5810fcff`: reenvío duplicado de la misma reproducción activa no reinicia Media3. Requiere prueba de registro de callback duplicado.
 
 - `b4870978`–`058d7242` (2026-11-21): `/scrub`, `/rate`, `/stop` capturan `playbackId` desde `AirPlayPlaybackEvents.control` y lo propagan por `AirPlayProtocolListener`, `SessionService`, AIDL y `SessionConnection` hasta `MainActivity`. Servicio y Activity descartan comandos para un ID distinto del vigente. **Pendiente**: prueba compilada de todas las firmas AIDL, regresión de cambios rápidos, confirmación CI y sincronización de estado de pausa.
+
+- `76a4a7fc`: servicio guarda `paused` por reproducción, actualiza con `/rate` y reenvía pausa al registrar Activity después de URL. Solo restaura pausas explícitas de protocolo; no es persistencia completa del reproductor ni elimina el reinicio del decodificador.
+- `a62312e7`: prueba nueva de correlación de `playbackId` de controles tras transición. **Prueba añadida, no ejecutada**. Pendientes: compilación AIDL, pruebas CI, cambio de Activity y reproducción sin reinicio.
