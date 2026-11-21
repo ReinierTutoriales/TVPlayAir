@@ -10,6 +10,7 @@ import android.view.ViewGroup
 import android.view.WindowManager
 import android.widget.FrameLayout
 import androidx.activity.ComponentActivity
+import androidx.activity.OnBackPressedCallback
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
@@ -30,13 +31,10 @@ import com.tvplayair.receiver.video.PresentationState
 import com.tvplayair.receiver.video.SurfaceLayerController
 import com.tvplayair.receiver.video.VideoPresentationCoordinator
 import com.tvplayair.receiver.video.WebVideoPlayer
-import java.net.Inet4Address
-import java.net.NetworkInterface
 
 class MainActivity : ComponentActivity(), SurfaceLayerController {
     private lateinit var mirrorSurfaceView: SurfaceView
     private lateinit var directSurfaceView: SurfaceView
-    private lateinit var overlayComposeView: ComposeView
     private lateinit var audioConsumer: OboeAudioConsumer
     private lateinit var mirrorDecoder: MirrorDecoder
     private lateinit var webVideoPlayer: WebVideoPlayer
@@ -48,8 +46,13 @@ class MainActivity : ComponentActivity(), SurfaceLayerController {
     private var sharedMemoryReady = false
     private var overlayState by mutableStateOf(TvOverlayState())
 
+    private val closeSettingsOnBack = object : OnBackPressedCallback(false) {
+        override fun handleOnBackPressed() = setOverlayVisible(false)
+    }
+
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        onBackPressedDispatcher.addCallback(this, closeSettingsOnBack)
         window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
         identityStore = ReceiverIdentityStore(this)
         val initialIdentity = identityStore.loadOrCreate()
@@ -72,7 +75,7 @@ class MainActivity : ComponentActivity(), SurfaceLayerController {
             visibility = View.INVISIBLE
             holder.addCallback(surfaceCallback(isDirectSurface = true))
         }
-        overlayComposeView = ComposeView(this).apply {
+        val overlayComposeView = ComposeView(this).apply {
             setContent {
                 MaterialTheme {
                     TvOverlayMenu(
@@ -122,7 +125,6 @@ class MainActivity : ComponentActivity(), SurfaceLayerController {
                     sharedMemoryReady = true
                     mirrorDecoder.setGeneration(generationId)
                     audioConsumer.setGeneration(generationId)
-                    refreshOverlayTelemetry()
                 }
 
                 override fun onSharedMemoryDetached() {
@@ -146,12 +148,12 @@ class MainActivity : ComponentActivity(), SurfaceLayerController {
                     if (mirrorSurfaceView.holder.surface?.isValid == true) {
                         presentationCoordinator.startMirror()
                     }
-                    refreshOverlayTelemetry()
+                    syncPresentationState()
                 }
 
                 override fun onDirectVideoUrl(url: String, startPosition: Double) {
                     presentationCoordinator.switchToDirectVideo(url, startPosition)
-                    refreshOverlayTelemetry()
+                    syncPresentationState()
                 }
 
                 override fun onDirectVideoCommand(command: String, value: Double) {
@@ -161,7 +163,7 @@ class MainActivity : ComponentActivity(), SurfaceLayerController {
                         "seek" -> presentationCoordinator.seekDirect(value)
                         "stop" -> presentationCoordinator.switchToMirror()
                     }
-                    refreshOverlayTelemetry()
+                    syncPresentationState()
                 }
 
                 override fun onClientConnected(
@@ -173,46 +175,27 @@ class MainActivity : ComponentActivity(), SurfaceLayerController {
                     if (presentationCoordinator.state != PresentationState.DIRECT_ACTIVE) {
                         audioConsumer.start()
                     }
-                    refreshOverlayTelemetry()
                 }
 
                 override fun onClientDisconnected() {
                     overlayState = overlayState.copy(connectedClient = null)
                     audioConsumer.stop()
-                    refreshOverlayTelemetry()
                 }
             }
         )
         sessionConnection.connect()
-        refreshOverlayTelemetry()
     }
 
     override fun onKeyDown(keyCode: Int, event: KeyEvent?): Boolean {
-        if ((keyCode == KeyEvent.KEYCODE_MENU ||
-                keyCode == KeyEvent.KEYCODE_SETTINGS ||
-                keyCode == KeyEvent.KEYCODE_INFO) &&
-            (event == null || event.repeatCount == 0)
-        ) {
-            setOverlayVisible(!overlayState.visible)
+        val openDuringVideo = isSelectKey(keyCode) && !overlayState.visible &&
+            !overlayState.showStandby &&
+            (presentationCoordinator.state != PresentationState.MIRROR_ACTIVE || !hidBridge.isConnected())
+        if (isSettingsKey(keyCode) || openDuringVideo) {
+            if (event?.repeatCount == 0) event.startTracking()
             return true
         }
 
-        if (overlayState.visible) {
-            if (keyCode == KeyEvent.KEYCODE_BACK) {
-                setOverlayVisible(false)
-                return true
-            }
-            return super.onKeyDown(keyCode, event)
-        }
-
-        if ((keyCode == KeyEvent.KEYCODE_DPAD_CENTER || keyCode == KeyEvent.KEYCODE_ENTER) &&
-            (event == null || event.repeatCount == 0) &&
-            presentationCoordinator.state != PresentationState.IDLE &&
-            !hidBridge.isConnected()
-        ) {
-            setOverlayVisible(true)
-            return true
-        }
+        if (overlayState.visible) return super.onKeyDown(keyCode, event)
 
         val inDirectMode = presentationCoordinator.state == PresentationState.DIRECT_ACTIVE
         when (keyCode) {
@@ -247,6 +230,7 @@ class MainActivity : ComponentActivity(), SurfaceLayerController {
             KeyEvent.KEYCODE_MEDIA_STOP -> {
                 if (inDirectMode) {
                     presentationCoordinator.switchToMirror()
+                    syncPresentationState()
                 } else {
                     sessionConnection.sendDacpCommand(DacpCommand.STOP.wirePath)
                 }
@@ -290,12 +274,27 @@ class MainActivity : ComponentActivity(), SurfaceLayerController {
         return super.onKeyDown(keyCode, event)
     }
 
-    private fun setOverlayVisible(visible: Boolean) {
-        if (visible) refreshOverlayTelemetry()
-        overlayState = overlayState.copy(visible = visible)
-        if (visible) {
-            overlayComposeView.bringToFront()
+    override fun onKeyUp(keyCode: Int, event: KeyEvent?): Boolean {
+        if (event?.isTracking == true && (isSettingsKey(keyCode) || isSelectKey(keyCode))) {
+            if (!event.isCanceled) {
+                setOverlayVisible(!isSettingsKey(keyCode) || !overlayState.visible)
+            }
+            return true
         }
+        return super.onKeyUp(keyCode, event)
+    }
+
+    private fun isSettingsKey(keyCode: Int): Boolean =
+        keyCode == KeyEvent.KEYCODE_MENU || keyCode == KeyEvent.KEYCODE_SETTINGS ||
+            keyCode == KeyEvent.KEYCODE_INFO
+
+    private fun isSelectKey(keyCode: Int): Boolean =
+        keyCode == KeyEvent.KEYCODE_DPAD_CENTER || keyCode == KeyEvent.KEYCODE_ENTER
+
+    private fun setOverlayVisible(visible: Boolean) {
+        if (overlayState.visible == visible) return
+        overlayState = overlayState.copy(visible = visible)
+        closeSettingsOnBack.isEnabled = visible
     }
 
     private fun cycleReceiverName() {
@@ -337,48 +336,26 @@ class MainActivity : ComponentActivity(), SurfaceLayerController {
 
     private fun adjustAudioOffset(deltaMs: Int) {
         val next = overlayState.stepAudioOffset(deltaMs)
+        if (next == overlayState) return
         overlayState = next
         audioConsumer.setAudioOffsetMs(next.audioOffsetMs)
     }
 
-    private fun refreshOverlayTelemetry() {
-        overlayState = overlayState.copy(
-            presentationState = presentationCoordinator.state,
-            oboeExclusive = audioConsumer.isExclusiveMode(),
-            oboeSampleRate = audioConsumer.getGrantedSampleRate().takeIf { it > 0 } ?: 48000,
-            oboeUnderruns = audioConsumer.getUnderrunCount(),
-            oboeRecoveries = audioConsumer.getRecoveryCount(),
-            mirrorDroppedNonIdr = mirrorDecoder.frameGate.droppedNonIdrFrames,
-            hidAvailable = hidBridge.isAvailable(),
-            localIpAddress = resolveLocalIpv4()
-        )
-    }
-
-    private fun resolveLocalIpv4(): String = runCatching {
-        val interfaces = NetworkInterface.getNetworkInterfaces() ?: return "No network"
-        for (iface in interfaces) {
-            if (!iface.isUp || iface.isLoopback) continue
-            for (addr in iface.inetAddresses) {
-                if (addr is Inet4Address && !addr.isLoopbackAddress) {
-                    return addr.hostAddress ?: continue
-                }
-            }
+    private fun syncPresentationState() {
+        val state = presentationCoordinator.state
+        if (overlayState.presentationState != state) {
+            overlayState = overlayState.copy(presentationState = state)
         }
-        "No network"
-    }.getOrDefault("No network")
+    }
 
     override fun showMirrorSurface() {
         directSurfaceView.visibility = View.INVISIBLE
         mirrorSurfaceView.visibility = View.VISIBLE
-        mirrorSurfaceView.bringToFront()
-        if (overlayState.visible) overlayComposeView.bringToFront()
     }
 
     override fun showDirectSurface() {
         mirrorSurfaceView.visibility = View.INVISIBLE
         directSurfaceView.visibility = View.VISIBLE
-        directSurfaceView.bringToFront()
-        if (overlayState.visible) overlayComposeView.bringToFront()
     }
 
     override fun hideAllSurfaces() {
@@ -390,7 +367,7 @@ class MainActivity : ComponentActivity(), SurfaceLayerController {
         override fun surfaceCreated(holder: SurfaceHolder) {
             if (!isDirectSurface && sharedMemoryReady && overlayState.connectedClient != null) {
                 presentationCoordinator.startMirror()
-                refreshOverlayTelemetry()
+                syncPresentationState()
             }
         }
 
@@ -398,7 +375,7 @@ class MainActivity : ComponentActivity(), SurfaceLayerController {
 
         override fun surfaceDestroyed(holder: SurfaceHolder) {
             presentationCoordinator.onSurfaceDestroyed(isDirectSurface)
-            refreshOverlayTelemetry()
+            syncPresentationState()
         }
     }
 

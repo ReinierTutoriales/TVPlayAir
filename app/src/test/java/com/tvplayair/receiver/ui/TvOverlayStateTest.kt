@@ -1,12 +1,23 @@
 package com.tvplayair.receiver.ui
 
 import com.tvplayair.receiver.audio.OboeAudioConsumer
+import com.tvplayair.receiver.video.PresentationState
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
 class TvOverlayStateTest {
+
+    @Test
+    fun aConnectedClientKeepsStandbyVisibleUntilVideoTakesOver() {
+        val connected = TvOverlayState(connectedClient = "iPhone")
+
+        assertTrue(connected.showStandby)
+        assertTrue(connected.copy(presentationState = PresentationState.RECOVERING).showStandby)
+        assertFalse(connected.copy(presentationState = PresentationState.DIRECT_ACTIVE).showStandby)
+        assertFalse(connected.copy(presentationState = PresentationState.MIRROR_ACTIVE).showStandby)
+    }
 
     @Test
     fun clampsAudioOffsetWithinConfiguredBounds() {
