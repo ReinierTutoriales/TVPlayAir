@@ -125,6 +125,14 @@ internal class AirPlayPlaybackEvents {
         publish(State.from(telemetry))
     }
 
+    @Synchronized
+    fun finish(id: Long, onAccepted: () -> Unit = {}) {
+        if (activeSession == null || id != playbackId || stopRequested) return
+        stopRequested = true
+        onAccepted()
+        publish(State.STOPPED)
+    }
+
     private fun publish(state: State) {
         if (activeSession == null || currentEvent?.state == state) return
         val event = Event(state, playbackId)

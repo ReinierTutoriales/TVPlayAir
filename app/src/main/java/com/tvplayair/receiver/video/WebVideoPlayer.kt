@@ -3,6 +3,7 @@ package com.tvplayair.receiver.video
 import android.content.Context
 import android.os.Handler
 import android.os.Looper
+import android.os.SystemClock
 import android.util.Log
 import android.view.SurfaceView
 import androidx.annotation.OptIn
@@ -15,6 +16,7 @@ import androidx.media3.common.Timeline
 import androidx.media3.common.util.UnstableApi
 import androidx.media3.datasource.DefaultHttpDataSource
 import androidx.media3.exoplayer.ExoPlayer
+import androidx.media3.exoplayer.analytics.AnalyticsListener
 import androidx.media3.exoplayer.source.DefaultMediaSourceFactory
 import androidx.media3.exoplayer.trackselection.DefaultTrackSelector
 
@@ -26,7 +28,8 @@ class WebVideoPlayer(
     context: Context,
     private val surfaceView: SurfaceView,
     private val onTelemetryChanged: (DirectPlaybackTelemetry) -> Unit = {},
-    private val onPlaybackFinished: () -> Unit = {}
+    private val onMediaReady: (Long) -> Unit = {},
+    private val onPlaybackFinished: (Long) -> Unit = {}
 ) : DirectVideoEngine {
 
     companion object {
@@ -41,7 +44,23 @@ class WebVideoPlayer(
     private val mainHandler = Handler(Looper.getMainLooper())
     private var player: ExoPlayer? = null
     private var pendingStartFraction: Double? = null
-    private var playbackGeneration = 0L
+    private var playbackId: Long? = null
+    private var prepareStartedMs = 0L
+    private val eventWindow = Timeline.Window()
+
+    @OptIn(UnstableApi::class)
+    private val videoEvents = object : AnalyticsListener {
+        override fun onRenderedFirstFrame(eventTime: AnalyticsListener.EventTime, output: Any, renderTimeMs: Long) {
+            val id = playbackId ?: return
+            val timeline = eventTime.timeline
+            val index = eventTime.windowIndex
+            if (renderTimeMs < prepareStartedMs || output != surfaceView.holder.surface ||
+                index !in 0 until timeline.windowCount ||
+                timeline.getWindow(index, eventWindow).mediaItem.mediaId != id.toString()
+            ) return
+            onMediaReady(id)
+        }
+    }
 
     private val telemetryTicker = object : Runnable {
         override fun run() {
@@ -63,16 +82,18 @@ class WebVideoPlayer(
             exo.seekTo(positionMs)
         }
 
-        override fun onRenderedFirstFrame() {
-            Log.i(TAG, "Direct video first frame rendered")
-        }
-
         override fun onPlaybackStateChanged(playbackState: Int) {
             Log.i(TAG, "ExoPlayer state=$playbackState")
             onTelemetryChanged(currentTelemetry())
             mainHandler.removeCallbacks(telemetryTicker)
             if (playbackState == Player.STATE_READY || playbackState == Player.STATE_BUFFERING) {
                 mainHandler.postDelayed(telemetryTicker, TELEMETRY_INTERVAL_MS)
+            }
+            if (playbackState == Player.STATE_READY) {
+                val tracks = player?.currentTracks
+                if (tracks != null && tracks.isTypeSelected(C.TRACK_TYPE_AUDIO) &&
+                    !tracks.containsType(C.TRACK_TYPE_VIDEO)
+                ) playbackId?.let(onMediaReady)
             }
             if (playbackState == Player.STATE_ENDED) notifyPlaybackFinished()
         }
@@ -93,12 +114,12 @@ class WebVideoPlayer(
     private fun notifyPlaybackFinished() {
         val exo = player ?: return
         val item = exo.currentMediaItem ?: return
-        val generation = playbackGeneration
+        val id = playbackId ?: return
         mainHandler.post {
-            if (player === exo && playbackGeneration == generation && exo.currentMediaItem === item &&
+            if (player === exo && playbackId == id && exo.currentMediaItem === item &&
                 (exo.playbackState == Player.STATE_ENDED || exo.playbackState == Player.STATE_IDLE)
             ) {
-                onPlaybackFinished()
+                onPlaybackFinished(id)
             }
         }
     }
@@ -116,7 +137,7 @@ class WebVideoPlayer(
 
         val trackSelector = DefaultTrackSelector(appContext).apply {
             parameters = buildUponParameters()
-                    .build()
+                .build()
         }
 
         val audioAttributes = AudioAttributes.Builder()
@@ -132,18 +153,20 @@ class WebVideoPlayer(
             .also { created ->
                 created.setVideoSurfaceView(surfaceView)
                 created.addListener(playerListener)
+                created.addAnalyticsListener(videoEvents)
                 player = created
             }
     }
 
-    override fun prepareAndPlay(url: String, startPosition: Double): Boolean {
+    override fun prepareAndPlay(url: String, startPosition: Double, playbackId: Long): Boolean {
         if (url.isBlank() || !startPosition.isFinite()) return false
-        playbackGeneration++
+        this.playbackId = playbackId
+        prepareStartedMs = SystemClock.elapsedRealtime()
         val exo = ensurePlayer()
         val initialPositionMs = initialDirectPositionMs(startPosition, durationMs = 0L)
         pendingStartFraction = null
         exo.setMediaItem(
-            MediaItem.fromUri(url),
+            MediaItem.Builder().setUri(url).setMediaId(playbackId.toString()).build(),
             initialPositionMs?.takeIf { it > 0L } ?: C.TIME_UNSET
         )
         if (initialPositionMs == null) pendingStartFraction = startPosition
@@ -182,7 +205,7 @@ class WebVideoPlayer(
     override fun stopAndClear() {
         // Keep the player and its SurfaceView binding warm for the next AirPlay video.
         // Stop and remove the old media so stale frames/metadata cannot be reused.
-        playbackGeneration++
+        playbackId = null
         pendingStartFraction = null
         mainHandler.removeCallbacks(telemetryTicker)
         player?.let { exo ->
@@ -219,7 +242,7 @@ class WebVideoPlayer(
     }
 
     fun release() {
-        playbackGeneration++
+        playbackId = null
         pendingStartFraction = null
         mainHandler.removeCallbacks(telemetryTicker)
         player?.let { exo ->

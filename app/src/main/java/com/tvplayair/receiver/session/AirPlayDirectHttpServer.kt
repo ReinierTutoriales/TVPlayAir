@@ -118,6 +118,10 @@ class AirPlayDirectHttpServer(
         playbackEvents.update(playbackId, telemetry) { latestTelemetry.set(telemetry) }
     }
 
+    override fun finishDirectPlayback(playbackId: Long) {
+        playbackEvents.finish(playbackId) { latestTelemetry.set(idleTelemetry) }
+    }
+
     override fun currentGenerationId(): Int = generationId.get()
 
     private fun acceptLoop(socket: ServerSocket) {

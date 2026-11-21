@@ -257,6 +257,7 @@ class SessionService : Service() {
             synchronized(callbackLock) {
                 if (pendingDirectUrl?.playbackId == playbackId) pendingDirectUrl = null
             }
+            protocolEngine.finishDirectPlayback(playbackId)
         }
 
         override fun sendDacpCommand(command: String) {

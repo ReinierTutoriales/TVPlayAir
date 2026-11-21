@@ -28,7 +28,7 @@ Recepción AirPlay en Android TV con presentación automática y minimalista: m�
 | Órdenes de vídeo | `MainActivity` filtra comandos si no hay reproducción directa activa | Implementado; falta ligar comando a playbackId extremo a extremo |
 | Callbacks Binder | Callback y ServiceConnection por epoch; eventos despachados solo si el vínculo sigue vigente | Implementado (`324716c7`); CI y pruebas pendientes |
 | Vida de motores | `MainActivity.onDestroy` libera Media3 y coordinador | Riesgo observado; pendiente diseño y prueba de restauración |
-| Primer frame | `WebVideoPlayer.onRenderedFirstFrame` registra log; no confirma transición al coordinador | Pendiente |
+| Primer fotograma de video directo | Media3 identifica el medio y la superficie del evento. El coordinador solo revela la reproducción vigente y restaura la ruta anterior si supera 15 s | Regresiones JVM ejecutadas. Composición y latencia física pendientes |
 | Interoperabilidad real iOS | Depende de protocolos y política de cada app, DRM y estado de iOS | No certificada |
 
 ## Ruta de ejecución — en este orden
@@ -46,7 +46,7 @@ Recepción AirPlay en Android TV con presentación automática y minimalista: m�
 
 - [x] Conservar referencia del vídeo directo activo en `SessionService` y reenviarla al registrar una Activity nueva (`7becbe52`); recuperación por nueva preparación, no preservación de decoder.
 - [ ] Completar restauración de posición, pausa y controles; invalidar la referencia al finalizar reproducción natural y asegurar no reactivar vídeo antiguo. Contrastar con superficies Android y FGS.
-- [ ] Añadir handshake de primer frame y timeout al cambiar a vídeo; no enseñar frames anteriores.
+- [x] Confirmar el primer fotograma del video directo vigente y acotar la preparación a 15 s. La verificación visual del cambio corresponde a la prueba de integración en TV.
 - [x] Impedir que `prepareAndPlay` reactive vídeo tras `stop` durante `SWITCHING_TO_DIRECT` (`31b6b4c2`, `793d6e31`); añadida prueba de regresión (`94c7de7b`). Ejecución pendiente.
 - [ ] Verificar recuperación audio→vídeo→audio y espejo→vídeo→espejo, sin audio doble ni estado stale.
 - [ ] Controlar metadatos y carátulas con identidad del medio; cancelar resultados asíncronos obsoletos.
@@ -98,3 +98,12 @@ Registrar: **hipótesis → evidencia oficial/código → alternativa más simpl
 
 - `4132f315` (2026-11-21): añadidas pruebas de aislamiento de `stop` entre peers y de comandos para nueva reproducción del mismo peer.
 - `e5534122`: se conserva la pausa explícita del protocolo; no se interpreta `Media3.isPlaying=false` durante transición READY como pausa del usuario. Checkpoint de posición solo si `isReady && !isBuffering` y posición >1 s. **Pendiente**: estado real `playWhenReady`, prueba de restauración, validación CI y arquitectura de reproductor persistente.
+
+
+## Confirmación visual del video directo
+
+La superficie de ExoPlayer permanece conectada bajo una capa negra mientras se prepara el siguiente video. `AnalyticsListener.onRenderedFirstFrame` comprueba el identificador del medio, la superficie y el instante de renderizado antes de revelar la imagen. Una fuente solo de audio recibida por esta ruta se confirma cuando Media3 está listo y selecciona una pista de audio. Si falla el arranque o transcurren 15 s, el receptor vuelve al espejo disponible o a espera, devuelve el control de audio y envía el estado `stopped` por el canal inverso para la reproducción afectada.
+
+`direct_startup` en Logcat registra resultado, identificador y milisegundos desde la recepción de la orden en la Activity. Esa medida incluye el despacho del evento al hilo principal y no incluye la red desde el iPhone. Las pruebas JVM cubren 100 reemplazos consecutivos con fotogramas, finales y temporizadores atrasados, además de restauración tras un timeout. Falta medir percentiles y verificar la composición real del frame en Android TV.
+
+Se conserva Media3 1.11.1 estable. La beta 1.12.0-beta01 mejora el uso de memoria de los segmentos del búfer y contiene ajustes de renderizado entre periodos, pero esta transición puede resolverse con la versión estable y una sola instancia del reproductor. [API del primer fotograma](https://developer.android.com/reference/androidx/media3/exoplayer/analytics/AnalyticsListener#onRenderedFirstFrame(androidx.media3.exoplayer.analytics.AnalyticsListener.EventTime,java.lang.Object,long)) · [Notas de Media3](https://developer.android.com/jetpack/androidx/releases/media3)

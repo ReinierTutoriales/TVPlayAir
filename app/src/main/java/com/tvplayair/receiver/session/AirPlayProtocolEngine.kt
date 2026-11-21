@@ -30,6 +30,7 @@ interface AirPlayProtocolEngine {
     fun start(config: AirPlayServerConfig): Boolean
     fun stop()
     fun updatePlaybackTelemetry(playbackId: Long, telemetry: DirectPlaybackTelemetry)
+    fun finishDirectPlayback(playbackId: Long)
     fun currentGenerationId(): Int
 }
 

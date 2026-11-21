@@ -2,7 +2,9 @@ package com.tvplayair.receiver.session
 
 import com.tvplayair.receiver.video.DirectPlaybackTelemetry
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertTrue
 import org.junit.Test
+import java.net.Socket
 
 class AirPlayPlaybackEventsTest {
     private val peerA = AirPlayPlaybackEvents.SessionKey("192.0.2.1", "session-a")
@@ -110,6 +112,27 @@ class AirPlayPlaybackEventsTest {
             events.update(current, telemetry) { accepted++ }
             assertEquals(1, accepted)
             previous = current
+        }
+    }
+
+    @Test
+    fun receiverFinishOnlyStopsTheMatchingVideoAndRejectsLaterTelemetry() {
+        val events = AirPlayPlaybackEvents()
+        val key = AirPlayPlaybackEvents.SessionKey("peer", "session")
+        Socket().use { socket ->
+            val channel = AirPlayPlaybackEvents.Channel(key, socket)
+            events.attach(channel)
+            var priorId = 0L
+            var currentId = 0L
+            events.start(key) { priorId = it }
+            events.start(key) { currentId = it }
+            channel.events.clear()
+
+            events.finish(priorId)
+            assertTrue(channel.events.isEmpty())
+            events.finish(currentId)
+            events.update(currentId, DirectPlaybackTelemetry(10.0, 2.0, 1f, true, false))
+            assertEquals(listOf(AirPlayPlaybackEvents.State.STOPPED), channel.events.map { it.state })
         }
     }
 }
