@@ -46,6 +46,7 @@ Recepción AirPlay en Android TV con presentación automática y minimalista: m�
 
 - [ ] Decidir propiedad de motores fuera de Activity o restauración de estado al recrearla; contrastar con superficies Android y FGS.
 - [ ] Añadir handshake de primer frame y timeout al cambiar a vídeo; no enseñar frames anteriores.
+- [x] Impedir que `prepareAndPlay` reactive vídeo tras `stop` durante `SWITCHING_TO_DIRECT` (`31b6b4c2`, `793d6e31`); añadida prueba de regresión (`94c7de7b`). Ejecución pendiente.
 - [ ] Verificar recuperación audio→vídeo→audio y espejo→vídeo→espejo, sin audio doble ni estado stale.
 - [ ] Controlar metadatos y carátulas con identidad del medio; cancelar resultados asíncronos obsoletos.
 
@@ -74,3 +75,5 @@ Registrar: **hipótesis → evidencia oficial/código → alternativa más simpl
 
 - `ab043231`: corrige propiedad de ParcelFileDescriptor antes de despacho asíncrono; cierra FDs si epoch inválido. Revisar manejo de error de mapeo nativo y verificar compilación.
 - `1ebe8039`: cuatro pruebas unitarias del árbitro AirPlay, incluida secuencia de 100 cambios. Son pruebas de estado, **no** de latencia ni de interoperabilidad iOS. No ejecutadas en esta sesión.
+
+- `793d6e31`: el coordinador comprueba el estado tras la preparación y no declara `DIRECT_ACTIVE` si una parada ya lo cambió. Prueba añadida; no hay workflow PR asociado a ese commit según consulta, por tanto no certificada.
