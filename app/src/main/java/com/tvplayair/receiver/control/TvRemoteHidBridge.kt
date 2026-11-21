@@ -134,8 +134,8 @@ class TvRemoteHidBridge(context: Context) {
         }
     }
 
-    fun startIfSupported() {
-        if (!hasBluetoothConnectPermission()) {
+    fun startIfSupported(enabled: Boolean = false) {
+        if (!enabled || !hasBluetoothConnectPermission()) {
             available = false
             return
         }
