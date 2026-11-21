@@ -3,6 +3,7 @@ package com.tvplayair.receiver.session
 import android.util.Log
 import java.io.BufferedInputStream
 import java.io.ByteArrayOutputStream
+import java.io.IOException
 import java.io.OutputStream
 import java.net.InetSocketAddress
 import java.net.ServerSocket
@@ -89,19 +90,32 @@ class RaopRtspServer(
 
     private fun handleSession(client: Socket) {
         client.use { sock ->
-            sock.soTimeout = CLIENT_SO_TIMEOUT_MS
-            val input = BufferedInputStream(sock.getInputStream())
-            val output = sock.getOutputStream()
+            handleConnection(sock, BufferedInputStream(sock.getInputStream()))
+        }
+    }
 
+    internal fun handleConnection(
+        socket: Socket,
+        input: BufferedInputStream,
+        firstHeader: String? = null
+    ) {
+        val peer = socket.inetAddress?.hostAddress ?: "unknown"
+        try {
+            socket.soTimeout = CLIENT_SO_TIMEOUT_MS
+            val output = socket.getOutputStream()
+            var pendingHeader = firstHeader
             while (running.get()) {
-                val headerBytes = readUntilHeaderEnd(input) ?: break
-                val headerText = String(headerBytes, StandardCharsets.UTF_8)
+                val headerText = pendingHeader
+                    ?: readUntilHeaderEnd(input)?.toString(StandardCharsets.UTF_8)
+                    ?: break
+                pendingHeader = null
+
                 val preliminary = RtspMessageParser.parseRequest(headerText) ?: break
                 val contentLength = preliminary.header("content-length")
                     ?.toIntOrNull()?.coerceIn(0, MAX_BODY_BYTES) ?: 0
                 val body = if (contentLength > 0) readExact(input, contentLength) else ByteArray(0)
+                if (body.size != contentLength) break
                 val request = preliminary.copy(body = body)
-                val peer = sock.inetAddress?.hostAddress ?: "unknown"
                 Log.i(
                     TAG,
                     "<- $peer ${request.method} ${request.uri} " +
@@ -115,9 +129,10 @@ class RaopRtspServer(
                     listener.onClientConnected(userAgent, dacpId, activeRemote)
                 }
 
-                val keepAlive = dispatchRtsp(request, output)
-                if (!keepAlive) break
+                if (!dispatchRtsp(request, output)) break
             }
+        } catch (error: IOException) {
+            Log.i(TAG, "RTSP connection ended for $peer (${error.javaClass.simpleName})")
         }
     }
 

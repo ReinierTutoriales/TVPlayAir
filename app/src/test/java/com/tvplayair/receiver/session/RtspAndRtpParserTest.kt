@@ -2,6 +2,7 @@ package com.tvplayair.receiver.session
 
 import org.junit.Assert.assertArrayEquals
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
@@ -11,6 +12,14 @@ import javax.crypto.spec.IvParameterSpec
 import javax.crypto.spec.SecretKeySpec
 
 class RtspAndRtpParserTest {
+
+    @Test
+    fun identifiesRtspFromVersionInsteadOfMethodOrPath() {
+        assertTrue(RtspMessageParser.isRtspRequestLine("SETUP rtsp://localhost/stream RTSP/1.0"))
+        assertTrue(RtspMessageParser.isRtspRequestLine("GET /info RTSP/1.0"))
+        assertFalse(RtspMessageParser.isRtspRequestLine("GET /info HTTP/1.1"))
+        assertFalse(RtspMessageParser.isRtspRequestLine("GET /RTSP/1.0 HTTP/1.1"))
+    }
 
     @Test
     fun parsesRtspRequestTransportAndVolume() {

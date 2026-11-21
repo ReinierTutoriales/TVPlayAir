@@ -66,14 +66,22 @@ class AirPlayDirectHttpServer(
             Log.e(TAG, "Failed to bind AirPlay control port ${config.airPlayPort}", it)
         }.getOrNull() ?: return false
 
+        if (!mirrorReceiver.start()) {
+            runCatching { socket.close() }
+            return false
+        }
+        if (!raopRtspServer.start()) {
+            mirrorReceiver.stop()
+            runCatching { socket.close() }
+            return false
+        }
+
         serverSocket = socket
         running.set(true)
         acceptThread = Thread({ acceptLoop(socket) }, "TVPlayAir-AirPlayHttp").apply {
             isDaemon = true
             start()
         }
-        mirrorReceiver.start()
-        raopRtspServer.start()
         Log.i(TAG, "AirPlay control HTTP server listening on port ${config.airPlayPort}")
         return true
     }
@@ -115,6 +123,10 @@ class AirPlayDirectHttpServer(
 
             val headerBytes = readUntilHeaderEnd(input) ?: return
             val headerText = String(headerBytes, StandardCharsets.UTF_8)
+            if (RtspMessageParser.isRtspRequestLine(headerText.substringBefore("\r\n"))) {
+                raopRtspServer.handleConnection(sock, input, headerText)
+                return
+            }
             val lines = headerText.split("\r\n")
             if (lines.isEmpty()) return
 
