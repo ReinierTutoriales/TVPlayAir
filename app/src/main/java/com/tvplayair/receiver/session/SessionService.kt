@@ -100,7 +100,7 @@ class SessionService : Service() {
             ensureUiForeground()
         }
 
-        override fun onDirectVideoCommand(command: String, value: Double) {
+        override fun onDirectVideoCommand(command: String, value: Double, playbackId: Long) {
             synchronized(callbackLock) {
                 if (command == "stop") pendingDirectUrl = null
                 runCatching { callback?.onDirectVideoCommand(command, value) }
