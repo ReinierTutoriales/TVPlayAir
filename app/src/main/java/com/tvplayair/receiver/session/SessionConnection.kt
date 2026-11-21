@@ -33,6 +33,8 @@ class SessionConnection(
     private var service: ITvPlaySession? = null
     private var remoteBinder: IBinder? = null
     private var bound = false
+    @Volatile private var closed = false
+    @Volatile private var bindingEpoch = 0L
     private var retryDelayMs = 250L
     private var lastGenerationId = 0
     private var projectionVisible = false
@@ -54,9 +56,13 @@ class SessionConnection(
             if (!videoMapped || !audioMapped) {
                 handleBinderDeath()
             } else {
-                lastGenerationId = generationId
-                handler.removeCallbacks(notifyReady)
-                handler.post(notifyReady)
+                val epoch = bindingEpoch
+                handler.post {
+                    if (!closed && bound && bindingEpoch == epoch) {
+                        lastGenerationId = generationId
+                        listener.onSharedMemoryReady(generationId)
+                    }
+                }
             }
         }
 
@@ -141,8 +147,9 @@ class SessionConnection(
     }
 
     fun connect() {
-        if (bound) return
+        if (closed || bound) return
         runCatching { SessionService.startInBackground(appContext) }
+        bindingEpoch++
         bound = appContext.bindService(
             Intent(appContext, SessionService::class.java),
             connection,
@@ -188,6 +195,8 @@ class SessionConnection(
             handler.post { handleBinderDeath() }
             return
         }
+        if (closed || (!bound && remoteBinder == null)) return
+        bindingEpoch++
         handler.removeCallbacks(notifyReady)
         listener.onSharedMemoryDetached()
         NativeSharedMemory.nativeDetachConsumerBuffers()
@@ -202,6 +211,7 @@ class SessionConnection(
     }
 
     private fun scheduleReconnect() {
+        if (closed) return
         handler.removeCallbacks(reconnect)
         handler.postDelayed(reconnect, retryDelayMs)
         retryDelayMs = (retryDelayMs * 2).coerceAtMost(2000L)
@@ -214,6 +224,9 @@ class SessionConnection(
     private val reconnect = Runnable { connect() }
 
     fun close() {
+        if (closed) return
+        closed = true
+        bindingEpoch++
         handler.removeCallbacks(reconnect)
         handler.removeCallbacks(notifyReady)
         runCatching {
