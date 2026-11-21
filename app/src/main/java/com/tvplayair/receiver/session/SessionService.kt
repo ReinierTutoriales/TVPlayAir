@@ -140,7 +140,8 @@ class SessionService : Service() {
                     }
                 }
                 latestNowPlaying = metadata
-                if (metadata == null) activeAudioGeneration = null
+                // Metadata can be absent while RAOP audio is still streaming.
+                // Only transport lifecycle events may reset activeAudioGeneration.
                 callback?.let { sendNowPlaying(it, metadata) }
             }
         }
