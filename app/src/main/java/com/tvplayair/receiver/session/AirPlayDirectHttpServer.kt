@@ -293,8 +293,8 @@ class AirPlayDirectHttpServer(
             method == "POST" && path == "/rate" -> {
                 val rate = AirPlayHttpRequestParser.parseQueryDouble(fullPath, "value")
                 if (rate != null) {
-                    playbackEvents.control(sessionKey) {
-                        listener.onDirectVideoCommand(if (rate > 0.0) "play" else "pause", rate)
+                    playbackEvents.control(sessionKey) { id ->
+                        listener.onDirectVideoCommand(if (rate > 0.0) "play" else "pause", rate, id)
                     }
                     writeResponse(output, 200, "OK")
                 } else {
