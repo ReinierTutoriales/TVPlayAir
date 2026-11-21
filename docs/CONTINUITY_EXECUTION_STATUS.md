@@ -26,7 +26,7 @@ Recepción AirPlay en Android TV con presentación automática y minimalista: m�
 | Motor Media3 | `WebVideoPlayer.stopAndClear` conserva instancia y limpia media items | Implementado; coste y frames residuales sin medir |
 | ABR | Se quitó `setForceHighestSupportedBitrate(true)` | Implementado; buffering sin medir |
 | Órdenes de vídeo | `MainActivity` filtra comandos si no hay reproducción directa activa | Implementado; falta ligar comando a playbackId extremo a extremo |
-| Callbacks Binder | `SessionConnection` usa `bound` sin epoch de vínculo | Riesgo observado; pendiente corrección y test |
+| Callbacks Binder | Callback y ServiceConnection por epoch; eventos despachados solo si el vínculo sigue vigente | Implementado (`324716c7`); CI y pruebas pendientes |
 | Vida de motores | `MainActivity.onDestroy` libera Media3 y coordinador | Riesgo observado; pendiente diseño y prueba de restauración |
 | Primer frame | `WebVideoPlayer.onRenderedFirstFrame` registra log; no confirma transición al coordinador | Pendiente |
 | Interoperabilidad real iOS | Depende de protocolos y política de cada app, DRM y estado de iOS | No certificada |
@@ -37,7 +37,8 @@ Recepción AirPlay en Android TV con presentación automática y minimalista: m�
 
 - [ ] Inspeccionar eventos RTSP/RAOP y HTTP y definir qué identificadores son realmente confiables. La IP sola no basta.
 - [x] Añadir cierre terminal y epoch en `SessionConnection` para impedir reconexión tras `close()` y notificaciones `onSharedMemoryReady` encoladas de epochs anteriores (commit `5128f525`).
-- [ ] Completar aislamiento de **todos** los callbacks Binder entre vinculaciones: actualmente el objeto callback sigue siendo compartido y no identifica el origen de cada evento; requiere callback por vínculo y pruebas.
+- [x] Aislar callbacks Binder y ServiceConnection por epoch de vínculo; descartar entregas de vínculos anteriores (`324716c7`).
+- [ ] Incorporar pruebas JVM/Robolectric para callbacks encolados y reconexión; comprobar compilación y CI.
 - [ ] Vincular órdenes directas a `playbackId` y descartar `stop/seek/rate` obsoletos antes de tocar la UI.
 - [ ] Definir señales explícitas de inicio/parada de audio y limpiar estado solo cuando corresponda.
 
@@ -67,3 +68,5 @@ Registrar: **hipótesis → evidencia oficial/código → alternativa más simpl
 ### Registro de ejecución — 2026-11-21
 
 - `5128f525`: `SessionConnection.close()` se vuelve terminal; `connect()` y backoff no reconectan tras cierre; los avisos de memoria compartida encolados comprueban epoch. **No resuelve todavía callbacks generales de vínculos anteriores.** Compilación y pruebas CI aún sin verificar.
+
+- `324716c7`: cada vinculación crea un callback Binder, DeathRecipient y ServiceConnection propios; todas las entregas comprueban epoch al ejecutarse. El mapeo de memoria se serializa en el hilo principal con detach para evitar carreras entre ambos. **No se ha validado todavía por CI**.
