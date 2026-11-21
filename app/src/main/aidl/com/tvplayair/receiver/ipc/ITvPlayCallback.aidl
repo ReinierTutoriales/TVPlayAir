@@ -7,7 +7,7 @@ oneway interface ITvPlayCallback {
                              in ParcelFileDescriptor audioFd, long audioSize,
                              int generationId, long activeDirectPlaybackId);
     void onSessionUnavailable();
-    void onVideoConfigChanged(String mimeType, int width, int height, int generationId);
+    void onVideoConfigChanged(String mimeType, int width, int height, int generationId, boolean isSnapshot);
     void onDirectVideoUrl(String url, double startPosition, long playbackId,
                           long resumePositionMs, boolean playWhenReady);
     void onDirectVideoCommand(String command, double value, long playbackId);

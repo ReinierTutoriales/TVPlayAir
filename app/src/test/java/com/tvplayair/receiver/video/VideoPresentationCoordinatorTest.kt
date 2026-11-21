@@ -423,4 +423,23 @@ class VideoPresentationCoordinatorTest {
         assertEquals(PresentationState.MIRROR_ACTIVE, coordinator.state)
         assertEquals(1, events.count { it == "mirror.start" })
     }
+    @Test
+    fun mirrorSnapshotKeepsCastPlayingAndIsOnlyUsedAsFallback() {
+        val events = mutableListOf<String>()
+        val coordinator = VideoPresentationCoordinator(
+            FakeMirrorEngine(events), FakeDirectEngine(events),
+            FakeAudioController(events), FakeSurfaceController(events)
+        )
+        assertTrue(coordinator.switchToDirectVideo(DirectPlaybackStart("https://example.com/cast.mp4", 0.0, -1)))
+        assertTrue(coordinator.onDirectMediaReady(-1))
+        events.clear()
+
+        coordinator.onCachedMirrorAvailable()
+        assertEquals(PresentationState.DIRECT_ACTIVE, coordinator.state)
+        assertTrue(events.isEmpty())
+
+        assertTrue(coordinator.finishDirectPlayback(-1))
+        assertEquals(PresentationState.MIRROR_ACTIVE, coordinator.state)
+        assertEquals(1, events.count { it == "mirror.start" })
+    }
 }

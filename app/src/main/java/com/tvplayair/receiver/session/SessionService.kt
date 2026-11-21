@@ -49,8 +49,8 @@ class SessionService : Service() {
         val height: Int,
         val generationId: Int
     ) {
-        fun sendTo(callback: ITvPlayCallback) =
-            callback.onVideoConfigChanged(mimeType, width, height, generationId)
+        fun sendTo(callback: ITvPlayCallback, isSnapshot: Boolean = false) =
+            callback.onVideoConfigChanged(mimeType, width, height, generationId, isSnapshot)
     }
 
     private val callbackLock = Any()
@@ -90,7 +90,7 @@ class SessionService : Service() {
             synchronized(callbackLock) {
                 val config = MirrorConfig(mimeType, width, height, generationId)
                 latestMirrorConfig = config
-                runCatching { callback?.let(config::sendTo) }
+                runCatching { callback?.let { config.sendTo(it) } }
             }
             ensureUiForeground()
         }
@@ -195,7 +195,7 @@ class SessionService : Service() {
                 callback = cb
                 sendNowPlaying(cb, latestNowPlaying)
                 activeAudioGeneration?.let { runCatching { cb.onAudioStreamStarted(it) } }
-                latestMirrorConfig?.let { config -> runCatching { config.sendTo(cb) } }
+                latestMirrorConfig?.let { config -> runCatching { config.sendTo(cb, isSnapshot = true) } }
                 directPlayback?.let { video -> runCatching { cb.showDirectVideo(video) } }
             }
         }

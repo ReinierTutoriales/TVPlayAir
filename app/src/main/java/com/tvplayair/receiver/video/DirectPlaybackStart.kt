@@ -28,3 +28,4 @@ data class DirectPlaybackStart(
 }
 
 internal const val NO_DIRECT_CHECKPOINT_MS = -1L
+internal const val DIRECT_STARTUP_TIMEOUT_MS = 15_000L

@@ -23,8 +23,14 @@ class TvCastOptions : ReceiverOptionsProvider {
 
 internal class TvCastReceiver(
     context: Context,
-    private val onLoad: (CastMediaRequest) -> Boolean
+    onLoad: (CastMediaRequest) -> Boolean
 ) {
+    private var loadHandler: ((CastMediaRequest) -> Boolean)? = onLoad
+
+    fun replaceLoadHandler(handler: ((CastMediaRequest) -> Boolean)?) {
+        loadHandler = handler
+    }
+
     private val handler = Handler(Looper.getMainLooper())
     private val receiver = run {
         CastReceiverContext.initInstance(context.applicationContext)
@@ -41,7 +47,7 @@ internal class TvCastReceiver(
                 val request = CastMediaRequest.from(
                     media?.contentUrl ?: media?.contentId, requestData.currentTime, requestData.autoplay != false
                 )
-                if (started && requestData.queueData == null && request != null && onLoad(request)) {
+                if (started && requestData.queueData == null && request != null && loadHandler?.invoke(request) == true) {
                     manager.setDataFromLoad(requestData)
                     manager.broadcastMediaStatus()
                     result.setResult(requestData)

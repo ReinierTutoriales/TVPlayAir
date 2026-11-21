@@ -252,25 +252,34 @@ class WebVideoPlayer(context: Context) : DirectVideoEngine {
     }
 
     override fun prepare(video: DirectPlaybackStart): Boolean {
-        if (finishedPlaybackId == video.playbackId) return false
         val surface = surfaceView ?: return false
+        return prepareVideo(video, surface, keepSession = false)
+    }
+
+    internal fun prepareDetachedCast(video: DirectPlaybackStart): Boolean {
+        if (surfaceView != null || mediaSession == null || video.playbackId >= 0L) return false
+        return prepareVideo(video, null, keepSession = true)
+    }
+
+    private fun prepareVideo(video: DirectPlaybackStart, surface: SurfaceView?, keepSession: Boolean): Boolean {
+        if (finishedPlaybackId == video.playbackId) return false
         val exo = ensurePlayer()
         prepareStartedMs = SystemClock.elapsedRealtime()
         if (playbackId == video.playbackId && exo.playbackState != Player.STATE_IDLE &&
             exo.playbackState != Player.STATE_ENDED
         ) {
             exo.playWhenReady = video.playWhenReady
-            exo.setVideoSurfaceView(surface)
+            if (surface != null) exo.setVideoSurfaceView(surface)
             val tracks = exo.currentTracks
             if (exo.playbackState == Player.STATE_READY && tracks.isTypeSelected(C.TRACK_TYPE_AUDIO) &&
                 !tracks.containsType(C.TRACK_TYPE_VIDEO)
             ) viewCallbacks?.onMediaReady(video.playbackId)
             return true
         }
-        releaseSystemControls()
+        if (!keepSession) releaseSystemControls()
         finishedPlaybackId = null
         playbackId = video.playbackId
-        exo.setVideoSurfaceView(surface)
+        if (surface != null) exo.setVideoSurfaceView(surface)
         pendingStartFraction = video.startFraction
         if (!video.playWhenReady) exo.playWhenReady = false
         exo.setMediaItem(

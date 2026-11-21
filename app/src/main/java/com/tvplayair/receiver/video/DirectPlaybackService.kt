@@ -2,20 +2,30 @@ package com.tvplayair.receiver.video
 
 import android.content.Context
 import android.content.Intent
+import android.os.Handler
+import android.os.Looper
 import androidx.media3.session.MediaSession
 import androidx.media3.session.MediaSessionService
+import com.tvplayair.receiver.cast.TvCastReceiver
 import com.tvplayair.receiver.session.SessionConnection
 import com.tvplayair.receiver.session.SessionEventListener
 
-/** Owns an active AirPlay player when the TV UI is gone. All handoffs run on the main thread. */
+/** Owns active direct playback when the TV UI is gone. All handoffs run on the main thread. */
 class DirectPlaybackService : MediaSessionService() {
     internal data class RetainedPlayback(
         val player: WebVideoPlayer,
-        val connection: SessionConnection
+        val connection: SessionConnection,
+        val castReceiver: TvCastReceiver? = null,
+        val castVideo: DirectPlaybackStart? = null
     )
 
     private var hostedSession: MediaSession? = null
     private var retained: RetainedPlayback? = null
+    private val handler = Handler(Looper.getMainLooper())
+    private val castStartupTimeout = Runnable {
+        val player = retained?.player ?: return@Runnable
+        if (!player.currentTelemetry().isReady) finishRetained()
+    }
 
     override fun onCreate() {
         super.onCreate()
@@ -39,20 +49,52 @@ class DirectPlaybackService : MediaSessionService() {
         addSession(session)
     }
 
-    private fun retain(player: WebVideoPlayer, connection: SessionConnection): Boolean {
+    private fun retain(handoff: RetainedPlayback): Boolean {
+        val player = handoff.player
+        val connection = handoff.connection
         val id = player.playbackId ?: return false
-        if (id <= 0L || player.systemSession !== hostedSession || hostedSession == null) return false
-        retained = RetainedPlayback(player, connection)
+        if (player.systemSession !== hostedSession || hostedSession == null) return false
+        if (id < 0L && (handoff.castReceiver == null || handoff.castVideo?.playbackId != id)) return false
+        retained = handoff
+        handoff.castReceiver?.replaceLoadHandler { request ->
+            val current = retained?.castVideo ?: return@replaceLoadHandler false
+            val replacement = DirectPlaybackStart(
+                request.url, 0.0, current.playbackId - 1L, request.startMs, request.autoplay
+            )
+            handler.removeCallbacks(castStartupTimeout)
+            handler.postDelayed(castStartupTimeout, DIRECT_STARTUP_TIMEOUT_MS)
+            if (!player.prepareDetachedCast(replacement)) {
+                handler.removeCallbacks(castStartupTimeout)
+                return@replaceLoadHandler false
+            }
+            retained = retained?.copy(castVideo = replacement)
+            true
+        }
 
         connection.replaceListener(object : SessionEventListener {
-            override fun onSharedMemoryDetached() = finishRetained(notifySender = false)
+            private var replayedAirPlayId = 0L
 
-            override fun onDirectVideoUrl(video: DirectPlaybackStart) {
-                if (video.playbackId != id) finishRetained(notifySender = false)
+            override fun onSharedMemoryReady(generationId: Int, activeDirectPlaybackId: Long) {
+                replayedAirPlayId = activeDirectPlaybackId
             }
 
-            override fun onVideoConfigChanged(mimeType: String, width: Int, height: Int, generationId: Int) {
-                finishRetained()
+            override fun onSharedMemoryDetached() {
+                if (id > 0L) finishRetained(notifySender = false)
+            }
+
+            override fun onDirectVideoUrl(video: DirectPlaybackStart) {
+                if (id < 0L && video.playbackId == replayedAirPlayId) {
+                    replayedAirPlayId = 0L
+                    connection.finishDirectPlayback(video.playbackId)
+                } else if (video.playbackId != id) {
+                    finishRetained(notifySender = false)
+                }
+            }
+
+            override fun onVideoConfigChanged(
+                mimeType: String, width: Int, height: Int, generationId: Int, isSnapshot: Boolean
+            ) {
+                if (!isSnapshot) finishRetained()
             }
 
             override fun onDirectVideoCommand(command: String, value: Double, playbackId: Long) {
@@ -67,18 +109,28 @@ class DirectPlaybackService : MediaSessionService() {
         })
         player.setDetachedCallbacks(object : WebVideoPlayer.ViewCallbacks {
             override fun onTelemetryChanged(telemetry: DirectPlaybackTelemetry) {
-                if (retained != null) connection.updatePlaybackTelemetry(id, telemetry, player.checkpointPositionMs())
+                if (id > 0L && retained != null) {
+                    connection.updatePlaybackTelemetry(id, telemetry, player.checkpointPositionMs())
+                } else if (id < 0L && telemetry.isReady) {
+                    handler.removeCallbacks(castStartupTimeout)
+                }
             }
 
             override fun onMediaReady(playbackId: Long) = Unit
 
             override fun onPlaybackFinished(playbackId: Long) {
-                if (playbackId == id) finishRetained()
+                if (playbackId == player.playbackId) finishRetained()
             }
 
             override fun onSystemPlaybackIntent(playbackId: Long, playWhenReady: Boolean) {
-                if (playbackId == id && retained != null) {
-                    connection.setDirectPlaybackIntent(id, if (playWhenReady) "play" else "pause")
+                if (playbackId == player.playbackId && retained != null) {
+                    if (id > 0L) {
+                        connection.setDirectPlaybackIntent(id, if (playWhenReady) "play" else "pause")
+                    } else if (playWhenReady) {
+                        player.play()
+                    } else {
+                        player.pause()
+                    }
                 }
             }
         })
@@ -88,7 +140,11 @@ class DirectPlaybackService : MediaSessionService() {
     private fun finishRetained(notifySender: Boolean = true) {
         val handoff = retained ?: return
         retained = null
-        if (notifySender) handoff.player.playbackId?.let(handoff.connection::finishDirectPlayback)
+        handler.removeCallbacks(castStartupTimeout)
+        if (notifySender) {
+            handoff.player.playbackId?.takeIf { it > 0L }?.let(handoff.connection::finishDirectPlayback)
+        }
+        handoff.castReceiver?.stop()
         handoff.connection.replaceListener(object : SessionEventListener {})
         handoff.player.release()
         handoff.connection.close()
@@ -130,12 +186,13 @@ class DirectPlaybackService : MediaSessionService() {
             service.stopSelf()
         }
 
-        internal fun retain(player: WebVideoPlayer, connection: SessionConnection): Boolean =
-            running?.retain(player, connection) == true
+        internal fun retain(handoff: RetainedPlayback): Boolean =
+            running?.retain(handoff) == true
 
         internal fun claim(): RetainedPlayback? {
             val service = running ?: return null
             val handoff = service.retained
+            service.handler.removeCallbacks(service.castStartupTimeout)
             service.retained = null
             return handoff
         }

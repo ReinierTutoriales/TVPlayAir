@@ -157,6 +157,10 @@ class VideoPresentationCoordinator(
         surfaceController.hideAllSurfaces()
     }
 
+    fun onCachedMirrorAvailable() {
+        if (hasDirectPlayback) resumeMirrorAfterDirect = true
+    }
+
     fun onMirrorDisconnected() {
         resumeMirrorAfterDirect = false
         if (state != PresentationState.MIRROR_ACTIVE && state != PresentationState.RECOVERING) return
