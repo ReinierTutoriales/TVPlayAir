@@ -90,3 +90,5 @@ Registrar: **hipótesis → evidencia oficial/código → alternativa más simpl
 
 - `87721c18`: checkpoint solo con telemetría lista y posición >1 s; evita que estado inicial cero borre la posición AirPlay y evita ambigüedad fracción/segundos por debajo de 1 s. Pendiente modelar explícitamente unidad de posición.
 - `5810fcff`: reenvío duplicado de la misma reproducción activa no reinicia Media3. Requiere prueba de registro de callback duplicado.
+
+- `b4870978`–`058d7242` (2026-11-21): `/scrub`, `/rate`, `/stop` capturan `playbackId` desde `AirPlayPlaybackEvents.control` y lo propagan por `AirPlayProtocolListener`, `SessionService`, AIDL y `SessionConnection` hasta `MainActivity`. Servicio y Activity descartan comandos para un ID distinto del vigente. **Pendiente**: prueba compilada de todas las firmas AIDL, regresión de cambios rápidos, confirmación CI y sincronización de estado de pausa.
