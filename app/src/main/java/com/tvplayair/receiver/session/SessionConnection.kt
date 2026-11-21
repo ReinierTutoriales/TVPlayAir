@@ -10,13 +10,15 @@ import android.os.Looper
 import android.os.ParcelFileDescriptor
 import com.tvplayair.receiver.ipc.ITvPlayCallback
 import com.tvplayair.receiver.ipc.ITvPlaySession
+import com.tvplayair.receiver.video.DirectPlaybackStart
 import com.tvplayair.receiver.video.DirectPlaybackTelemetry
+import com.tvplayair.receiver.video.NO_DIRECT_CHECKPOINT_MS
 
 interface SessionEventListener {
     fun onSharedMemoryReady(generationId: Int) = Unit
     fun onSharedMemoryDetached() = Unit
     fun onVideoConfigChanged(mimeType: String, width: Int, height: Int, generationId: Int) = Unit
-    fun onDirectVideoUrl(url: String, startPosition: Double, playbackId: Long) = Unit
+    fun onDirectVideoUrl(video: DirectPlaybackStart) = Unit
     fun onDirectVideoCommand(command: String, value: Double, playbackId: Long) = Unit
     fun onClientConnected(clientName: String, dacpId: String, activeRemote: String) = Unit
     fun onClientDisconnected() = Unit
@@ -89,8 +91,13 @@ class SessionConnection(
             listener.onVideoConfigChanged(mimeType, width, height, generationId)
         }
 
-        override fun onDirectVideoUrl(url: String, startPosition: Double, playbackId: Long) =
-            deliver(epoch) { listener.onDirectVideoUrl(url, startPosition, playbackId) }
+        override fun onDirectVideoUrl(
+            url: String, startPosition: Double, playbackId: Long, resumePositionMs: Long, playWhenReady: Boolean
+        ) = deliver(epoch) {
+            listener.onDirectVideoUrl(
+                DirectPlaybackStart(url, startPosition, playbackId, resumePositionMs.takeIf { it >= 0L }, playWhenReady)
+            )
+        }
 
         override fun onDirectVideoCommand(command: String, value: Double, playbackId: Long) =
             deliver(epoch) { listener.onDirectVideoCommand(command, value, playbackId) }
@@ -169,7 +176,8 @@ class SessionConnection(
     }
 
     fun finishDirectPlayback(playbackId: Long) {
-        if (playbackId != 0L) runCatching { service?.finishDirectPlayback(playbackId) }
+        val source = activeCallback ?: return
+        if (playbackId != 0L) runCatching { service?.finishDirectPlayback(source, playbackId) }
     }
 
     fun sendDacpCommand(command: String) {
@@ -181,10 +189,17 @@ class SessionConnection(
         runCatching { service?.setProjectionVisible(visible) }
     }
 
-    fun updatePlaybackTelemetry(playbackId: Long, telemetry: DirectPlaybackTelemetry) {
+    fun setDirectPlaybackIntent(playbackId: Long, command: String) {
+        val source = activeCallback ?: return
+        runCatching { service?.setDirectPlaybackIntent(source, playbackId, command) }
+    }
+
+    fun updatePlaybackTelemetry(playbackId: Long, telemetry: DirectPlaybackTelemetry, positionMs: Long?) {
+        val source = activeCallback ?: return
         runCatching {
             service?.updatePlaybackTelemetry(
-                playbackId, telemetry.durationSec, telemetry.positionSec,
+                source, playbackId, positionMs ?: NO_DIRECT_CHECKPOINT_MS,
+                telemetry.durationSec, telemetry.positionSec,
                 telemetry.rate, telemetry.isPlaying, telemetry.isBuffering, telemetry.isReady
             )
         }

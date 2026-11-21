@@ -29,7 +29,7 @@ interface MirrorVideoEngine {
 }
 
 interface DirectVideoEngine {
-    fun prepareAndPlay(url: String, startPosition: Double, playbackId: Long): Boolean
+    fun prepare(video: DirectPlaybackStart): Boolean
     fun play()
     fun pause()
     fun seekTo(positionSec: Double)
@@ -98,8 +98,9 @@ class VideoPresentationCoordinator(
         return switchToMirror()
     }
 
-    fun switchToDirectVideo(url: String, startPosition: Double, playbackId: Long): Boolean {
-        if (url.isBlank() || !startPosition.isFinite()) return false
+    fun switchToDirectVideo(video: DirectPlaybackStart): Boolean {
+        if (video.url.isBlank() || !video.airPlayPosition.isFinite()) return false
+        val playbackId = video.playbackId
         val replacingDirect = hasDirectPlayback
         if (state == PresentationState.MIRROR_ACTIVE) resumeMirrorAfterDirect = true
         state = PresentationState.SWITCHING_TO_DIRECT
@@ -110,7 +111,7 @@ class VideoPresentationCoordinator(
             mirrorEngine.stopAndRelease()
         }
         surfaceController.showDirectSurface()
-        val prepared = directEngine.prepareAndPlay(url, startPosition, playbackId)
+        val prepared = directEngine.prepare(video)
         if (!hasDirectPlayback || directPlaybackId != playbackId) return false
         if (!prepared) {
             // A failed replacement must not leave an old direct stream visible.

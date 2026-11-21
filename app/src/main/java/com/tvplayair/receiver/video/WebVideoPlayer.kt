@@ -158,22 +158,29 @@ class WebVideoPlayer(
             }
     }
 
-    override fun prepareAndPlay(url: String, startPosition: Double, playbackId: Long): Boolean {
-        if (url.isBlank() || !startPosition.isFinite()) return false
-        this.playbackId = playbackId
+    override fun prepare(video: DirectPlaybackStart): Boolean {
+        playbackId = video.playbackId
         prepareStartedMs = SystemClock.elapsedRealtime()
         val exo = ensurePlayer()
-        val initialPositionMs = initialDirectPositionMs(startPosition, durationMs = 0L)
-        pendingStartFraction = null
+        pendingStartFraction = video.startFraction
+        if (!video.playWhenReady) exo.playWhenReady = false
         exo.setMediaItem(
-            MediaItem.Builder().setUri(url).setMediaId(playbackId.toString()).build(),
-            initialPositionMs?.takeIf { it > 0L } ?: C.TIME_UNSET
+            MediaItem.Builder().setUri(video.url).setMediaId(video.playbackId.toString()).build(),
+            video.initialPositionMs() ?: C.TIME_UNSET
         )
-        if (initialPositionMs == null) pendingStartFraction = startPosition
+        exo.playWhenReady = video.playWhenReady
         exo.prepare()
-        exo.playWhenReady = true
         onTelemetryChanged(currentTelemetry())
         return true
+    }
+
+    fun checkpointPositionMs(): Long? {
+        val exo = player ?: return null
+        if (playbackId == null || pendingStartFraction != null || exo.currentTimeline.isEmpty ||
+            !exo.isCurrentMediaItemSeekable || exo.isCurrentMediaItemLive || exo.isPlayingAd ||
+            exo.playbackState == Player.STATE_IDLE || exo.playbackState == Player.STATE_ENDED
+        ) return null
+        return exo.currentPosition.takeIf { it >= 0L }
     }
 
     override fun play() {
@@ -182,12 +189,6 @@ class WebVideoPlayer(
 
     override fun pause() {
         player?.pause()
-    }
-
-    fun togglePlayback() {
-        player?.let { exo ->
-            if (exo.playWhenReady) exo.pause() else exo.play()
-        }
     }
 
     override fun seekTo(positionSec: Double) {

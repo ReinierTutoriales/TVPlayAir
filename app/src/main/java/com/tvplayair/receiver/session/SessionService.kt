@@ -21,6 +21,8 @@ import com.tvplayair.receiver.network.AirPlayAdvertiseConfig
 import com.tvplayair.receiver.network.MdnsAdvertiser
 import com.tvplayair.receiver.network.ReceiverIdentityHelper
 import com.tvplayair.receiver.network.ReceiverIdentityStore
+import com.tvplayair.receiver.video.DirectPlaybackStart
+import com.tvplayair.receiver.video.NO_DIRECT_CHECKPOINT_MS
 import com.tvplayair.receiver.video.DirectPlaybackTelemetry
 
 class SessionService : Service() {
@@ -60,12 +62,14 @@ class SessionService : Service() {
 
     @Volatile
     private var callback: ITvPlayCallback? = null
-    private data class PendingDirectVideo(
-        val url: String, val position: Double, val playbackId: Long,
-        val paused: Boolean = false
-    )
+    private var directPlayback: DirectPlaybackStart? = null
 
-    private var pendingDirectUrl: PendingDirectVideo? = null
+    private fun ITvPlayCallback.showDirectVideo(video: DirectPlaybackStart) {
+        onDirectVideoUrl(
+            video.url, video.airPlayPosition, video.playbackId,
+            video.resumePositionMs ?: NO_DIRECT_CHECKPOINT_MS, video.playWhenReady
+        )
+    }
 
     private lateinit var identityStore: ReceiverIdentityStore
     private lateinit var mdnsAdvertiser: MdnsAdvertiser
@@ -94,22 +98,19 @@ class SessionService : Service() {
         override fun onDirectVideoUrl(url: String, startPosition: Double, playbackId: Long) {
             synchronized(callbackLock) {
                 // Retain the active source for Activity recreation, even if a UI is bound.
-                pendingDirectUrl = PendingDirectVideo(url, startPosition, playbackId)
-                val cb = callback
-                if (cb != null) {
-                    runCatching { cb.onDirectVideoUrl(url, startPosition, playbackId) }
-                }
+                val video = DirectPlaybackStart(url, startPosition, playbackId)
+                directPlayback = video
+                runCatching { callback?.showDirectVideo(video) }
             }
             ensureUiForeground()
         }
 
         override fun onDirectVideoCommand(command: String, value: Double, playbackId: Long) {
             synchronized(callbackLock) {
-                if (pendingDirectUrl?.playbackId != playbackId) return
+                if (directPlayback?.playbackId != playbackId) return
                 when (command) {
-                    "stop" -> pendingDirectUrl = null
-                    "pause" -> pendingDirectUrl = pendingDirectUrl?.copy(paused = true)
-                    "play" -> pendingDirectUrl = pendingDirectUrl?.copy(paused = false)
+                    "stop" -> directPlayback = null
+                    "pause", "play" -> directPlayback = directPlayback?.withPlaybackIntent(command)
                 }
                 runCatching { callback?.onDirectVideoCommand(command, value, playbackId) }
             }
@@ -194,12 +195,7 @@ class SessionService : Service() {
                 sendNowPlaying(cb, latestNowPlaying)
                 activeAudioGeneration?.let { runCatching { cb.onAudioStreamStarted(it) } }
                 latestMirrorConfig?.let { config -> runCatching { config.sendTo(cb) } }
-                pendingDirectUrl?.let { video ->
-                    runCatching {
-                        cb.onDirectVideoUrl(video.url, video.position, video.playbackId)
-                        if (video.paused) cb.onDirectVideoCommand("pause", 0.0, video.playbackId)
-                    }
-                }
+                directPlayback?.let { video -> runCatching { cb.showDirectVideo(video) } }
             }
         }
 
@@ -225,7 +221,9 @@ class SessionService : Service() {
         }
 
         override fun updatePlaybackTelemetry(
+            source: ITvPlayCallback,
             playbackId: Long,
+            resumePositionMs: Long,
             durationSec: Double,
             positionSec: Double,
             rate: Float,
@@ -234,18 +232,9 @@ class SessionService : Service() {
             isReady: Boolean
         ) {
             synchronized(callbackLock) {
-                pendingDirectUrl = pendingDirectUrl?.let { active ->
-                    if (active.playbackId != playbackId || !isReady || isBuffering) {
-                        active
-                    } else {
-                        // A READY player can temporarily report isPlaying=false while
-                        // playWhenReady=true; only explicit /rate commands define pause.
-                        active.copy(
-                            position = if (positionSec.isFinite() && positionSec > 1.0 &&
-                                durationSec.isFinite()) positionSec else active.position
-                        )
-                    }
-                }
+                val active = directPlayback ?: return
+                if (callback?.asBinder() != source.asBinder() || active.playbackId != playbackId) return
+                directPlayback = active.withCheckpoint(resumePositionMs)
             }
             protocolEngine.updatePlaybackTelemetry(
                 playbackId,
@@ -253,9 +242,25 @@ class SessionService : Service() {
             )
         }
 
-        override fun finishDirectPlayback(playbackId: Long) {
+        override fun setDirectPlaybackIntent(
+            source: ITvPlayCallback, playbackId: Long, command: String
+        ) {
             synchronized(callbackLock) {
-                if (pendingDirectUrl?.playbackId == playbackId) pendingDirectUrl = null
+                val active = directPlayback ?: return
+                if (callback?.asBinder() != source.asBinder() || active.playbackId != playbackId) return
+                val updated = active.withPlaybackIntent(command)
+                if (updated === active) return
+                directPlayback = updated
+                // Deliver in the same order as /rate commands from the iPhone.
+                val action = if (updated.playWhenReady) "play" else "pause"
+                runCatching { callback?.onDirectVideoCommand(action, 0.0, playbackId) }
+            }
+        }
+
+        override fun finishDirectPlayback(source: ITvPlayCallback, playbackId: Long) {
+            synchronized(callbackLock) {
+                if (callback?.asBinder() != source.asBinder()) return
+                if (directPlayback?.playbackId == playbackId) directPlayback = null
             }
             protocolEngine.finishDirectPlayback(playbackId)
         }
@@ -402,7 +407,7 @@ class SessionService : Service() {
             latestMirrorConfig = null
             latestNowPlaying = null
             activeAudioGeneration = null
-            pendingDirectUrl = null
+            directPlayback = null
         }
         dacpController.onClientDisconnected()
     }

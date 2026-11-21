@@ -9,9 +9,11 @@ interface ITvPlaySession {
     oneway void setProjectionVisible(boolean visible);
     void startServer();
     void stopServer();
-    void updatePlaybackTelemetry(long playbackId, double durationSec, double positionSec,
+    void updatePlaybackTelemetry(ITvPlayCallback source, long playbackId, long resumePositionMs,
+                                 double durationSec, double positionSec,
                                  float rate, boolean isPlaying, boolean isBuffering, boolean isReady);
-    oneway void finishDirectPlayback(long playbackId);
+    void setDirectPlaybackIntent(ITvPlayCallback source, long playbackId, String command);
+    oneway void finishDirectPlayback(ITvPlayCallback source, long playbackId);
     void sendDacpCommand(String command);
     oneway void configureAdvertising(int maxWidth, int maxHeight, boolean hevcEnabled, String serviceName);
 }

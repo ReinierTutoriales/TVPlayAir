@@ -45,7 +45,8 @@ Recepción AirPlay en Android TV con presentación automática y minimalista: m�
 ### B. Continuidad audiovisual
 
 - [x] Conservar referencia del vídeo directo activo en `SessionService` y reenviarla al registrar una Activity nueva (`7becbe52`); recuperación por nueva preparación, no preservación de decoder.
-- [ ] Completar restauración de posición, pausa y controles; invalidar la referencia al finalizar reproducción natural y asegurar no reactivar vídeo antiguo. Contrastar con superficies Android y FGS.
+- [x] Restaurar posición exacta en VOD y pausa explícita del mando o del iPhone al registrar otra Activity. El servicio invalida el video al terminar y rechaza actualizaciones de una Activity reemplazada.
+- [ ] Verificar en Android la recreación de Activity, la desaparición temporal de superficie y el comportamiento del servicio en segundo plano.
 - [x] Confirmar el primer fotograma del video directo vigente y acotar la preparación a 15 s. La verificación visual del cambio corresponde a la prueba de integración en TV.
 - [x] Impedir que `prepareAndPlay` reactive vídeo tras `stop` durante `SWITCHING_TO_DIRECT` (`31b6b4c2`, `793d6e31`); añadida prueba de regresión (`94c7de7b`). Ejecución pendiente.
 - [ ] Verificar recuperación audio→vídeo→audio y espejo→vídeo→espejo, sin audio doble ni estado stale.
@@ -107,3 +108,10 @@ La superficie de ExoPlayer permanece conectada bajo una capa negra mientras se p
 `direct_startup` en Logcat registra resultado, identificador y milisegundos desde la recepción de la orden en la Activity. Esa medida incluye el despacho del evento al hilo principal y no incluye la red desde el iPhone. Las pruebas JVM cubren 100 reemplazos consecutivos con fotogramas, finales y temporizadores atrasados, además de restauración tras un timeout. Falta medir percentiles y verificar la composición real del frame en Android TV.
 
 Se conserva Media3 1.11.1 estable. La beta 1.12.0-beta01 mejora el uso de memoria de los segmentos del búfer y contiene ajustes de renderizado entre periodos, pero esta transición puede resolverse con la versión estable y una sola instancia del reproductor. [API del primer fotograma](https://developer.android.com/reference/androidx/media3/exoplayer/analytics/AnalyticsListener#onRenderedFirstFrame(androidx.media3.exoplayer.analytics.AnalyticsListener.EventTime,java.lang.Object,long)) · [Notas de Media3](https://developer.android.com/jetpack/androidx/releases/media3)
+
+
+## Restauración de video al recrear la Activity
+
+El proceso de sesión entrega el último punto de VOD en milisegundos y la intención de reproducción en una sola llamada Binder. El punto admite cero y posiciones inferiores a un segundo, independientemente de la fracción inicial de AirPlay. Se registra al avanzar en una línea de tiempo VOD navegable y al ocultar o destruir la pantalla. Si el video es en vivo, Media3 vuelve a elegir la posición inicial. El video preparado en pausa recibe esa intención antes de llamar a `prepare()`.
+
+El mando y el iPhone actualizan una sola intención explícita bajo el mismo bloqueo. Una pausa por interrupción temporal de Media3 no modifica esa intención. El servicio compara el Binder de la Activity y el identificador de reproducción antes de aceptar cambios. La restauración todavía prepara el medio de nuevo. [Contrato de Player en Media3](https://developer.android.com/reference/androidx/media3/common/Player)

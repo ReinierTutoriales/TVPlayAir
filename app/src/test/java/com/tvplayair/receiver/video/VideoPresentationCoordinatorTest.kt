@@ -17,6 +17,37 @@ class VideoPresentationCoordinatorTest {
     }
 
     @Test
+    fun resumesExactSubsecondPositionAndPauseInTheInitialPrepare() {
+        val events = mutableListOf<String>()
+        val direct = FakeDirectEngine(events)
+        val coordinator = VideoPresentationCoordinator(
+            FakeMirrorEngine(events), direct, FakeAudioController(events), FakeSurfaceController(events)
+        )
+        val original = DirectPlaybackStart("https://example.com/movie.mp4", 0.5, 7)
+        assertNull(original.initialPositionMs())
+        assertEquals(0.5, original.startFraction)
+
+        val restored = original.withCheckpoint(370L).withPlaybackIntent("pause")
+        assertTrue(coordinator.switchToDirectVideo(restored))
+        assertEquals(370L, direct.preparedVideo?.initialPositionMs())
+        assertNull(direct.preparedVideo?.startFraction)
+        assertEquals(false, direct.preparedVideo?.playWhenReady)
+        assertFalse(events.contains("direct.play"))
+        assertEquals(0L, restored.withCheckpoint(0L).initialPositionMs())
+        assertEquals(370L, restored.withCheckpoint(NO_DIRECT_CHECKPOINT_MS).initialPositionMs())
+    }
+
+    @Test
+    fun pauseIntentSurvivesPositionUpdatesAndOrdersRapidToggles() {
+        val initial = DirectPlaybackStart("https://example.com/movie.mp4", 0.0, 1)
+        val paused = initial.withPlaybackIntent("toggle").withCheckpoint(720L)
+        assertFalse(paused.playWhenReady)
+        assertTrue(paused.withPlaybackIntent("toggle").playWhenReady)
+        assertFalse(paused.withPlaybackIntent("play").withPlaybackIntent("pause").playWhenReady)
+        assertEquals(720L, paused.withPlaybackIntent("play").resumePositionMs)
+    }
+
+    @Test
     fun invalidDirectHandoffDoesNotInterruptActiveMirror() {
         val events = mutableListOf<String>()
         val coordinator = VideoPresentationCoordinator(
@@ -27,9 +58,9 @@ class VideoPresentationCoordinatorTest {
         )
         assertTrue(coordinator.startMirror())
         events.clear()
-        assertFalse(coordinator.switchToDirectVideo("", 0.0, playbackId = 1))
-        assertFalse(coordinator.switchToDirectVideo("https://example.com/movie", Double.NaN, playbackId = 1))
-        assertFalse(coordinator.switchToDirectVideo("https://example.com/movie", Double.POSITIVE_INFINITY, playbackId = 1))
+        assertFalse(coordinator.switchToDirectVideo(DirectPlaybackStart("", 0.0, playbackId = 1)))
+        assertFalse(coordinator.switchToDirectVideo(DirectPlaybackStart("https://example.com/movie", Double.NaN, playbackId = 1)))
+        assertFalse(coordinator.switchToDirectVideo(DirectPlaybackStart("https://example.com/movie", Double.POSITIVE_INFINITY, playbackId = 1)))
         assertEquals(PresentationState.MIRROR_ACTIVE, coordinator.state)
         assertTrue(events.isEmpty())
     }
@@ -55,8 +86,10 @@ class VideoPresentationCoordinatorTest {
 
     private class FakeDirectEngine(private val events: MutableList<String>) : DirectVideoEngine {
         var failPrepare = false
-        override fun prepareAndPlay(url: String, startPosition: Double, playbackId: Long): Boolean {
-            events += "direct.prepareAndPlay($url,$startPosition)"
+        var preparedVideo: DirectPlaybackStart? = null
+        override fun prepare(video: DirectPlaybackStart): Boolean {
+            preparedVideo = video
+            events += "direct.prepareAndPlay(${video.url},${video.airPlayPosition})"
             return !failPrepare
         }
 
@@ -131,7 +164,7 @@ class VideoPresentationCoordinatorTest {
         assertEquals(PresentationState.MIRROR_ACTIVE, coordinator.state)
         events.clear()
 
-        assertTrue(coordinator.switchToDirectVideo("https://example.com/4k.m3u8", 12.5, playbackId = 1))
+        assertTrue(coordinator.switchToDirectVideo(DirectPlaybackStart("https://example.com/4k.m3u8", 12.5, playbackId = 1)))
         assertEquals(PresentationState.SWITCHING_TO_DIRECT, coordinator.state)
         assertEquals(
             listOf(
@@ -176,9 +209,9 @@ class VideoPresentationCoordinatorTest {
         )
 
         assertTrue(coordinator.startMirror())
-        coordinator.switchToDirectVideo("https://example.com/video.mp4", 0.0, playbackId = 1)
+        coordinator.switchToDirectVideo(DirectPlaybackStart("https://example.com/video.mp4", 0.0, playbackId = 1))
         events.clear()
-        coordinator.switchToDirectVideo("https://example.com/next.mp4", 0.0, playbackId = 2)
+        coordinator.switchToDirectVideo(DirectPlaybackStart("https://example.com/next.mp4", 0.0, playbackId = 2))
         assertEquals(listOf("surface.showDirect", "direct.prepareAndPlay(https://example.com/next.mp4,0.0)"), events)
         events.clear()
 
@@ -205,7 +238,7 @@ class VideoPresentationCoordinatorTest {
             FakeSurfaceController(events)
         )
 
-        coordinator.switchToDirectVideo("https://example.com/video.mp4", 0.0, playbackId = 1)
+        coordinator.switchToDirectVideo(DirectPlaybackStart("https://example.com/video.mp4", 0.0, playbackId = 1))
         events.clear()
         coordinator.stopDirectVideo()
         coordinator.stopDirectVideo()
@@ -228,7 +261,7 @@ class VideoPresentationCoordinatorTest {
         )
 
         assertTrue(coordinator.startMirror())
-        assertTrue(coordinator.switchToDirectVideo("https://example.com/video.mp4", 0.0, playbackId = 1))
+        assertTrue(coordinator.switchToDirectVideo(DirectPlaybackStart("https://example.com/video.mp4", 0.0, playbackId = 1)))
         events.clear()
         coordinator.onSurfaceDestroyed(isDirectSurface = true)
 
@@ -250,7 +283,7 @@ class VideoPresentationCoordinatorTest {
             FakeSurfaceController(events)
         )
 
-        assertFalse(coordinator.switchToDirectVideo("https://bad.invalid/stream.m3u8", 0.0, playbackId = 1))
+        assertFalse(coordinator.switchToDirectVideo(DirectPlaybackStart("https://bad.invalid/stream.m3u8", 0.0, playbackId = 1)))
         assertEquals(PresentationState.IDLE, coordinator.state)
         assertEquals(
             listOf("direct.stopAndClear", "audio.pausedForExternal(false)", "surface.hideAll"),
@@ -269,7 +302,7 @@ class VideoPresentationCoordinatorTest {
         )
 
         coordinator.startMirror()
-        coordinator.switchToDirectVideo("https://example.com/video.mp4", 0.0, playbackId = 1)
+        coordinator.switchToDirectVideo(DirectPlaybackStart("https://example.com/video.mp4", 0.0, playbackId = 1))
         events.clear()
         coordinator.onMirrorDisconnected()
         assertEquals(PresentationState.SWITCHING_TO_DIRECT, coordinator.state)
@@ -310,7 +343,7 @@ class VideoPresentationCoordinatorTest {
         val events = mutableListOf<String>()
         lateinit var coordinator: VideoPresentationCoordinator
         val direct = object : DirectVideoEngine {
-            override fun prepareAndPlay(url: String, startPosition: Double, playbackId: Long): Boolean {
+            override fun prepare(video: DirectPlaybackStart): Boolean {
                 coordinator.stopDirectVideo()
                 return true
             }
@@ -324,7 +357,7 @@ class VideoPresentationCoordinatorTest {
             FakeMirrorEngine(events), direct,
             FakeAudioController(events), FakeSurfaceController(events)
         )
-        coordinator.switchToDirectVideo("https://example.com/movie.mp4", 0.0, playbackId = 1)
+        coordinator.switchToDirectVideo(DirectPlaybackStart("https://example.com/movie.mp4", 0.0, playbackId = 1))
         assertEquals(PresentationState.IDLE, coordinator.state)
     }
 
@@ -335,9 +368,9 @@ class VideoPresentationCoordinatorTest {
             FakeMirrorEngine(events), FakeDirectEngine(events),
             FakeAudioController(events), FakeSurfaceController(events)
         )
-        assertTrue(coordinator.switchToDirectVideo("https://example.com/1.mp4", 0.0, 1))
+        assertTrue(coordinator.switchToDirectVideo(DirectPlaybackStart("https://example.com/1.mp4", 0.0, 1)))
         for (id in 2L..101L) {
-            assertTrue(coordinator.switchToDirectVideo("https://example.com/$id.mp4", 0.0, id))
+            assertTrue(coordinator.switchToDirectVideo(DirectPlaybackStart("https://example.com/$id.mp4", 0.0, id)))
             assertFalse(coordinator.onDirectMediaReady(id - 1))
             assertFalse(coordinator.onDirectStartupTimeout(id - 1))
             assertFalse(coordinator.finishDirectPlayback(id - 1))
@@ -359,7 +392,7 @@ class VideoPresentationCoordinatorTest {
             FakeAudioController(events), FakeSurfaceController(events)
         )
         coordinator.startMirror()
-        coordinator.switchToDirectVideo("https://example.com/slow.mp4", 0.0, 1)
+        coordinator.switchToDirectVideo(DirectPlaybackStart("https://example.com/slow.mp4", 0.0, 1))
         coordinator.pauseDirect()
         assertTrue(events.contains("direct.pause"))
         assertTrue(coordinator.onDirectStartupTimeout(1))
