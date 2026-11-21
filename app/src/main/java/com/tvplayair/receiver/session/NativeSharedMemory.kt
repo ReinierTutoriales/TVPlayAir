@@ -28,6 +28,13 @@ object NativeSharedMemory {
     ): Int
     external fun nativeGetVideoDroppedPackets(): Long
     external fun nativeGetAudioDroppedPackets(): Long
+    external fun nativeConfigureAlac(samplesPerFrame: Int, sampleRate: Int): Boolean
+    external fun nativeDecodeAlacToPcm(
+        alacPacket: ByteArray,
+        offset: Int,
+        length: Int,
+        outPcmShorts: ShortArray
+    ): Int
     external fun nativeDetachConsumerBuffers()
     external fun nativeDestroyProducerBuffers()
 }

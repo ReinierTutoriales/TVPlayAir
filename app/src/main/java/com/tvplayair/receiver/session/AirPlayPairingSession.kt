@@ -144,6 +144,13 @@ class AirPlayPairingSession(
             return md.digest().copyOfRange(0, 16)
         }
 
+        fun sha512Trunc16(first: ByteArray, second: ByteArray): ByteArray {
+            val md = MessageDigest.getInstance("SHA-512")
+            md.update(first)
+            md.update(second)
+            return md.digest().copyOfRange(0, 16)
+        }
+
         fun deriveMirrorStreamKey(aesKey16: ByteArray, streamConnectionId: Long): ByteArray {
             require(aesKey16.size == 16) { "Expected 16-byte FairPlay AES key" }
             val prefix = "AirPlayStreamKey${java.lang.Long.toUnsignedString(streamConnectionId)}"

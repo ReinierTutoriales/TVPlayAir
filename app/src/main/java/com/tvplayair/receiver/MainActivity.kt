@@ -80,7 +80,15 @@ class MainActivity : ComponentActivity(), SurfaceLayerController {
     private val hideVideoControls = Runnable { dismissVideoControls() }
     private val closeOverlayOnBack = object : OnBackPressedCallback(false) {
         override fun handleOnBackPressed() {
-            if (overlayState.visible) setOverlayVisible(false) else dismissVideoControls()
+            when {
+                overlayState.visible -> setOverlayVisible(false)
+                overlayState.showingVideoControls -> dismissVideoControls()
+                presentationCoordinator.state == PresentationState.MIRROR_ACTIVE -> {
+                    mirrorRequested = false
+                    presentationCoordinator.onMirrorDisconnected()
+                    syncPresentationState()
+                }
+            }
         }
     }
 
@@ -496,7 +504,9 @@ class MainActivity : ComponentActivity(), SurfaceLayerController {
         if (overlayState.videoControls != null) {
             overlayState = overlayState.copy(videoControls = null)
         }
-        closeOverlayOnBack.isEnabled = overlayState.visible
+        closeOverlayOnBack.isEnabled = overlayState.visible ||
+            (::presentationCoordinator.isInitialized &&
+                presentationCoordinator.state == PresentationState.MIRROR_ACTIVE)
     }
 
     override fun onKeyUp(keyCode: Int, event: KeyEvent?): Boolean {
@@ -668,6 +678,9 @@ class MainActivity : ComponentActivity(), SurfaceLayerController {
         if (overlayState.presentationState != state) {
             overlayState = overlayState.copy(presentationState = state)
         }
+        closeOverlayOnBack.isEnabled = overlayState.visible ||
+            overlayState.showingVideoControls ||
+            state == PresentationState.MIRROR_ACTIVE
         updateScreenWake()
     }
 

@@ -416,12 +416,11 @@ class RaopRtspServer(
         val responseMap: Map<String, Any> = when (streamType) {
             110 -> { // AirPlay Screen Mirroring video stream
                 val connId = (firstStream["streamConnectionID"] as? Long) ?: 0L
-                val key16 = fairplayAesKey ?: pairingSession.sharedSecret?.takeIf { it.size >= 16 }?.copyOfRange(0, 16)
+                val ecdhSecret = pairingSession.sharedSecret
+                val key16 = fairplayAesKey ?: ecdhSecret?.takeIf { it.size >= 16 }?.copyOfRange(0, 16)
                 if (key16 != null && connId != 0L) {
-                    val streamKey = AirPlayPairingSession.deriveMirrorStreamKey(key16, connId)
-                    val streamIv = AirPlayPairingSession.deriveMirrorStreamIv(key16, connId)
-                    mirrorReceiver?.configureStreamCipher(streamKey, streamIv)
-                    Log.i(TAG, "Configured mirror AES-CTR stream cipher (connId=$connId)")
+                    mirrorReceiver?.configureStreamCipherCandidates(key16, ecdhSecret, connId)
+                    Log.i(TAG, "Configured mirror AES-CTR stream cipher candidates (connId=$connId hasEcdh=${ecdhSecret != null})")
                 }
                 linkedMapOf(
                     "streams" to listOf(
@@ -437,23 +436,31 @@ class RaopRtspServer(
                 val ct = (firstStream["ct"] as? Long)?.toInt() ?: 8
                 val spf = (firstStream["spf"] as? Long)?.toInt() ?: 480
                 val shk = (firstStream["shk"] as? ByteArray)?.takeIf { it.size >= 16 }?.copyOfRange(0, 16)
-                val effectiveKey = fairplayAesKey ?: shk
+                val rawKey = fairplayAesKey ?: shk
+                val ecdhSecret = pairingSession.sharedSecret
+                val pairedKey = if (rawKey != null && ecdhSecret != null && ecdhSecret.size >= 16) {
+                    AirPlayPairingSession.sha512Trunc16(rawKey, ecdhSecret)
+                } else {
+                    rawKey
+                }
                 val codec = when (ct) {
                     8 -> RaopAudioCodec.AAC_ELD
                     4 -> RaopAudioCodec.AAC_LC
+                    2 -> RaopAudioCodec.ALAC
                     else -> if (sampleRate == 44100) RaopAudioCodec.PCM_L16_44K1 else RaopAudioCodec.PCM_L16_48K
                 }
                 Log.i(
                     TAG,
                     "SETUP audio stream: ct=$ct sr=$sampleRate spf=$spf codec=$codec " +
-                        "hasKey=${effectiveKey != null} hasIv=${sessionEiv != null}"
+                        "hasKey=${pairedKey != null} hasEcdh=${ecdhSecret != null} hasIv=${sessionEiv != null}"
                 )
                 audioReceiver.configureSession(
                     codec = codec,
                     sampleRate = sampleRate,
-                    sessionAesKey = effectiveKey,
+                    sessionAesKey = pairedKey,
                     sessionAesIv = sessionEiv,
-                    samplesPerFrame = spf
+                    samplesPerFrame = spf,
+                    alternateAesKey = rawKey
                 )
                 if (audioReceiver.start(RaopAudioRtpReceiver.DEFAULT_AUDIO_PORT)) {
                     activateAudioSource(source, request)

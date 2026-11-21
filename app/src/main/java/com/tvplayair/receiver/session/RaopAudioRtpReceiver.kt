@@ -91,6 +91,10 @@ class RaopAudioRtpReceiver(
     @Volatile
     private var aesKey: ByteArray? = null
     @Volatile
+    private var fallbackAesKey: ByteArray? = null
+    @Volatile
+    private var keyConfirmed: Boolean = false
+    @Volatile
     private var aesIv: ByteArray? = null
     private var workerThread: Thread? = null
 
@@ -100,9 +104,12 @@ class RaopAudioRtpReceiver(
         csd0: ByteArray? = null,
         sessionAesKey: ByteArray? = null,
         sessionAesIv: ByteArray? = null,
-        samplesPerFrame: Int = 480
+        samplesPerFrame: Int = 480,
+        alternateAesKey: ByteArray? = null
     ) {
         aesKey = sessionAesKey?.takeIf { it.size == 16 }?.copyOf()
+        fallbackAesKey = alternateAesKey?.takeIf { it.size == 16 }?.copyOf()
+        keyConfirmed = alternateAesKey == null
         aesIv = sessionAesIv?.takeIf { it.size == 16 }?.copyOf()
         decoder.configure(codec, sampleRate, csd0, samplesPerFrame)
     }
@@ -159,9 +166,37 @@ class RaopAudioRtpReceiver(
                 )
             }
             if (key != null && iv != null) {
-                val plain = SessionCrypto.decryptRaopAudioCbc(
+                var plain = SessionCrypto.decryptRaopAudioCbc(
                     key, iv, rxBuf, parsed.payloadOffset, parsed.payloadLength
                 )
+                if (!keyConfirmed && plain.size >= 4) {
+                    val primaryLooksAlac = (plain[0].toInt() and 0xFF) == 0x20 &&
+                        (plain[1].toInt() and 0xFF) == 0x00 &&
+                        (plain[2].toInt() and 0xE0) == 0x00
+                    val alt = fallbackAesKey
+                    if (!primaryLooksAlac && alt != null) {
+                        val altPlain = SessionCrypto.decryptRaopAudioCbc(
+                            alt, iv, rxBuf, parsed.payloadOffset, parsed.payloadLength
+                        )
+                        val altLooksAlac = (altPlain[0].toInt() and 0xFF) == 0x20 &&
+                            (altPlain[1].toInt() and 0xFF) == 0x00 &&
+                            (altPlain[2].toInt() and 0xE0) == 0x00
+                        if (altLooksAlac) {
+                            aesKey = alt
+                            plain = altPlain
+                            Log.i(TAG, "Selected alternate RAOP AES key (ALAC header matched)")
+                        } else {
+                            Log.i(
+                                TAG,
+                                "RAOP first packet header: primary=${plain[0].toInt() and 0xFF},${plain[1].toInt() and 0xFF} " +
+                                    "alt=${altPlain[0].toInt() and 0xFF},${altPlain[1].toInt() and 0xFF}"
+                            )
+                        }
+                    } else if (primaryLooksAlac) {
+                        Log.i(TAG, "Selected primary RAOP AES key (ALAC header matched)")
+                    }
+                    keyConfirmed = true
+                }
                 decoder.decodeAndPublish(plain, 0, plain.size, generation)
             } else {
                 decoder.decodeAndPublish(rxBuf, parsed.payloadOffset, parsed.payloadLength, generation)

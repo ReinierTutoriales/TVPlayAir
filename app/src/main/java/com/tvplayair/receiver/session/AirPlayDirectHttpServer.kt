@@ -53,12 +53,14 @@ class AirPlayDirectHttpServer(
             val mimeType = if (isHevc) MediaFormat.MIMETYPE_VIDEO_HEVC else MediaFormat.MIMETYPE_VIDEO_AVC
             val defaultWidth = if (isHevc) config.maxWidth else config.maxWidth.coerceAtMost(1920)
             val defaultHeight = if (isHevc) config.maxHeight else config.maxHeight.coerceAtMost(1080)
-            listener.onVideoConfigChanged(
-                mimeType,
-                width.takeIf { it > 0 } ?: defaultWidth,
-                height.takeIf { it > 0 } ?: defaultHeight,
-                generation
-            )
+            var w = width.takeIf { it > 0 } ?: defaultWidth
+            var h = height.takeIf { it > 0 } ?: defaultHeight
+            if (!isHevc && maxOf(w, h) > 1920) {
+                val scale = 1920.0 / maxOf(w, h).toDouble()
+                w = ((w * scale).toInt() and 1.inv()).coerceAtLeast(16)
+                h = ((h * scale).toInt() and 1.inv()).coerceAtLeast(16)
+            }
+            listener.onVideoConfigChanged(mimeType, w, h, generation)
         }
     )
     private val raopRtspServer = RaopRtspServer(

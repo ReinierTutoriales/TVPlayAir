@@ -10,6 +10,7 @@ import java.nio.ByteOrder
 enum class RaopAudioCodec {
     PCM_L16_48K,
     PCM_L16_44K1,
+    ALAC,
     AAC_LC,
     AAC_ELD
 }
@@ -139,6 +140,12 @@ class RaopAudioDecoder {
             return true
         }
 
+        if (codec == RaopAudioCodec.ALAC) {
+            val ok = NativeSharedMemory.nativeConfigureAlac(samplesPerFrame, inputSampleRate)
+            Log.i(TAG, "Configured ALAC decoder ($inputSampleRate Hz, spf=$samplesPerFrame, ok=$ok)")
+            return ok
+        }
+
         val effectiveCsd0 = csd0?.takeIf { it.isNotEmpty() }
             ?: defaultAudioSpecificConfig(codec, inputSampleRate, samplesPerFrame)
 
@@ -192,6 +199,17 @@ class RaopAudioDecoder {
                     srcSamples[i] = ((b0 shl 8) or b1).toShort()
                 }
                 publishResampled(frameCount, generationId)
+            }
+            RaopAudioCodec.ALAC -> {
+                val frameCount = NativeSharedMemory.nativeDecodeAlacToPcm(
+                    payload,
+                    offset,
+                    length,
+                    srcSamples
+                )
+                if (frameCount > 0) {
+                    publishResampled(frameCount, generationId)
+                }
             }
             RaopAudioCodec.AAC_LC, RaopAudioCodec.AAC_ELD -> {
                 val decoder = mediaCodec ?: return
