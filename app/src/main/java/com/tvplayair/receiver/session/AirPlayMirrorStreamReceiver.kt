@@ -146,7 +146,8 @@ class AirPlayMirrorStreamReceiver(
                 ) {
                     continue
                 }
-                if (!readIntoDirectBuffer(input, header.payloadSize)) {
+                val isVideo = header.payloadType == AirPlayMirrorHeaderParser.PAYLOAD_TYPE_VIDEO
+                if (!readIntoDirectBuffer(input, header.payloadSize, decrypt = isVideo)) {
                     break
                 }
                 val extraFlags = if (header.payloadType == AirPlayMirrorHeaderParser.PAYLOAD_TYPE_CODEC_CONFIG) {
@@ -159,7 +160,7 @@ class AirPlayMirrorStreamReceiver(
                     size = header.payloadSize,
                     ptsUs = header.ptsUs,
                     isHevc = isHevcProvider(),
-                    isLengthPrefixed = header.payloadType == AirPlayMirrorHeaderParser.PAYLOAD_TYPE_VIDEO,
+                    isLengthPrefixed = isVideo,
                     generationId = generationProvider(),
                     extraFlags = extraFlags
                 )
@@ -177,9 +178,13 @@ class AirPlayMirrorStreamReceiver(
         return true
     }
 
-    private fun readIntoDirectBuffer(input: BufferedInputStream, length: Int): Boolean {
+    private fun readIntoDirectBuffer(
+        input: BufferedInputStream,
+        length: Int,
+        decrypt: Boolean
+    ): Boolean {
         directPayload.clear()
-        val cipher = streamCipher
+        val cipher = if (decrypt) streamCipher else null
         var remaining = length
         while (remaining > 0) {
             val toRead = remaining.coerceAtMost(readChunk.size)

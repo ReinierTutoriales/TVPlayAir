@@ -31,11 +31,22 @@ jobs:
           g++ -std=c++17 -O2 -Wall -Wextra -Werror -pthread \
             -Iapp/src/main/cpp app/src/test/cpp/nal_and_producer_test.cpp \
             -o nal-and-producer-test
+          gcc -std=c17 -O2 -Wall -c \
+            app/src/main/cpp/fairplay_v3/hand_garble.c \
+            app/src/main/cpp/fairplay_v3/modified_md5.c \
+            app/src/main/cpp/fairplay_v3/omg_hax.c \
+            app/src/main/cpp/fairplay_v3/playfair.c \
+            app/src/main/cpp/fairplay_v3/sap_hash.c
+          g++ -std=c++17 -O2 -Wall -Wextra -Werror \
+            -Iapp/src/main/cpp app/src/test/cpp/fairplay_session_test.cpp \
+            hand_garble.o modified_md5.o omg_hax.o playfair.o sap_hash.o \
+            -lm -o fairplay-session-test
       - name: Execute Linux host stress test
         run: |
           ./shared-ring-buffer-test
           ./audio-pcm-pipeline-test
           ./nal-and-producer-test
+          ./fairplay-session-test
 
   assemble:
     runs-on: ubuntu-latest

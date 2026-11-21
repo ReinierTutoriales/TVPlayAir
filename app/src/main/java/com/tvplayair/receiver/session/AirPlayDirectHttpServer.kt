@@ -181,8 +181,14 @@ class AirPlayDirectHttpServer(
                 }
             }
             method == "POST" && path == "/fp-setup" -> {
-                Log.w(TAG, "-> /fp-setup received (${bodyBytes.size}B) - FairPlay SAP requested by iOS")
-                writeResponse(output, 200, "OK")
+                val reply = FairPlayNative.handleFpSetup(bodyBytes)
+                if (reply != null) {
+                    Log.i(TAG, "-> /fp-setup 200 OK (${reply.size}B)")
+                    writeBinaryResponse(output, 200, "OK", "application/octet-stream", reply)
+                } else {
+                    Log.w(TAG, "-> /fp-setup 400 Bad Request (len=${bodyBytes.size})")
+                    writeResponse(output, 400, "Bad Request")
+                }
             }
             method == "POST" && path == "/play" -> {
                 val parsed = AirPlayHttpRequestParser.parsePlayBody(body)

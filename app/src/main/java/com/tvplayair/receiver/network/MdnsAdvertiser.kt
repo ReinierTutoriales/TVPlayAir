@@ -88,7 +88,10 @@ class MdnsAdvertiser(context: Context) {
 
     @Synchronized
     fun start(config: AirPlayAdvertiseConfig) {
-        if (started && activeConfig == config) return
+        if (started && isSameMdnsAdvertisement(activeConfig, config)) {
+            activeConfig = config
+            return
+        }
         if (started) stop()
         activeConfig = config
         acquireLocks()
@@ -119,6 +122,17 @@ class MdnsAdvertiser(context: Context) {
         raopListener = null
         releaseLocks()
     }
+
+    private fun isSameMdnsAdvertisement(
+        a: AirPlayAdvertiseConfig?,
+        b: AirPlayAdvertiseConfig
+    ): Boolean = a != null &&
+        a.serviceName == b.serviceName &&
+        a.deviceId == b.deviceId &&
+        a.airPlayPort == b.airPlayPort &&
+        a.raopPort == b.raopPort &&
+        a.piUuid == b.piUuid &&
+        a.publicKeyHex == b.publicKeyHex
 
     private fun registerService(
         serviceName: String,

@@ -1,5 +1,6 @@
 package com.tvplayair.receiver.session
 
+import android.media.MediaFormat
 import android.util.Log
 import java.io.BufferedInputStream
 import java.io.ByteArrayOutputStream
@@ -39,6 +40,10 @@ class RaopRtspServer(
 
     @Volatile
     private var serverSocket: ServerSocket? = null
+    @Volatile
+    private var fairplayAesKey: ByteArray? = null
+    @Volatile
+    private var sessionEiv: ByteArray? = null
     private var acceptThread: Thread? = null
 
     fun currentGenerationId(): Int = generationId.get()
@@ -189,8 +194,20 @@ class RaopRtspServer(
                         }
                     }
                     request.uri.endsWith("/fp-setup") -> {
-                        Log.w(TAG, "-> /fp-setup received (${request.body.size}B) - FairPlay SAP requested by iOS")
-                        output.write(RtspMessageParser.formatResponse(200, "OK", cseq))
+                        val reply = FairPlayNative.handleFpSetup(request.body)
+                        if (reply != null) {
+                            Log.i(TAG, "-> /fp-setup 200 OK (${reply.size}B)")
+                            output.write(
+                                RtspMessageParser.formatResponse(
+                                    200, "OK", cseq,
+                                    mapOf("Content-Type" to "application/octet-stream"),
+                                    reply
+                                )
+                            )
+                        } else {
+                            Log.w(TAG, "-> /fp-setup 400 Bad Request (len=${request.body.size})")
+                            output.write(RtspMessageParser.formatResponse(400, "Bad Request", cseq))
+                        }
                     }
                     else -> {
                         Log.i(TAG, "-> POST ${request.uri} 200 OK")
@@ -239,6 +256,9 @@ class RaopRtspServer(
             "TEARDOWN" -> {
                 audioReceiver.stop()
                 mirrorReceiver?.clearStreamCipher()
+                fairplayAesKey = null
+                sessionEiv = null
+                FairPlayNative.nativeReset()
                 listener.onClientDisconnected()
                 output.write(RtspMessageParser.formatResponse(200, "OK", cseq))
                 output.flush()
@@ -254,6 +274,21 @@ class RaopRtspServer(
 
     private fun handleBinaryPlistSetup(body: ByteArray, cseq: String, output: OutputStream) {
         val parsed = BinaryPlistParser.parse(body) as? Map<*, *>
+        val ekey = parsed?.get("ekey") as? ByteArray
+        val eiv = parsed?.get("eiv") as? ByteArray
+        if (ekey != null && ekey.size == 72) {
+            val decrypted = FairPlayNative.nativeDecryptKey(ekey)
+            if (decrypted != null && decrypted.size == 16) {
+                fairplayAesKey = decrypted
+                Log.i(TAG, "SETUP decrypted FairPlay ekey (16B)")
+            } else {
+                Log.w(TAG, "SETUP failed to decrypt FairPlay ekey")
+            }
+        }
+        if (eiv != null && eiv.size == 16) {
+            sessionEiv = eiv.copyOf()
+        }
+
         val streams = parsed?.get("streams") as? List<*>
         val firstStream = streams?.firstOrNull() as? Map<*, *>
         val streamType = (firstStream?.get("type") as? Long)?.toInt()
@@ -261,13 +296,16 @@ class RaopRtspServer(
         val responseMap: Map<String, Any> = when (streamType) {
             110 -> { // AirPlay Screen Mirroring video stream
                 val connId = (firstStream["streamConnectionID"] as? Long) ?: 0L
-                val shared = pairingSession.sharedSecret
-                if (shared != null && shared.size >= 16 && connId != 0L) {
-                    val key16 = shared.copyOfRange(0, 16)
+                val key16 = fairplayAesKey ?: pairingSession.sharedSecret?.takeIf { it.size >= 16 }?.copyOfRange(0, 16)
+                if (key16 != null && connId != 0L) {
                     val streamKey = AirPlayPairingSession.deriveMirrorStreamKey(key16, connId)
                     val streamIv = AirPlayPairingSession.deriveMirrorStreamIv(key16, connId)
                     mirrorReceiver?.configureStreamCipher(streamKey, streamIv)
+                    Log.i(TAG, "Configured mirror AES-CTR stream cipher (connId=$connId)")
                 }
+                val cfg = configProvider()
+                val mime = if (cfg.hevcEnabled) MediaFormat.MIMETYPE_VIDEO_HEVC else MediaFormat.MIMETYPE_VIDEO_AVC
+                listener.onVideoConfigChanged(mime, cfg.maxWidth, cfg.maxHeight, generationId.get())
                 linkedMapOf(
                     "streams" to listOf(
                         linkedMapOf<String, Any>(
@@ -285,7 +323,12 @@ class RaopRtspServer(
                     4 -> RaopAudioCodec.AAC_LC
                     else -> RaopAudioCodec.PCM_L16_48K
                 }
-                audioReceiver.configureSession(codec = codec, sampleRate = sampleRate)
+                audioReceiver.configureSession(
+                    codec = codec,
+                    sampleRate = sampleRate,
+                    sessionAesKey = fairplayAesKey,
+                    sessionAesIv = sessionEiv
+                )
                 audioReceiver.start(RaopAudioRtpReceiver.DEFAULT_AUDIO_PORT)
                 linkedMapOf(
                     "streams" to listOf(
