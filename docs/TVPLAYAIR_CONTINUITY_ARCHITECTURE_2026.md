@@ -100,7 +100,7 @@ Esta guía complementa `docs/ENGINEERING_SPEC_v1.0.md`. Cuando contradiga promes
 - Publicar mediciones p50/p95/p99 con emisor simulado y distinguirlas de latencia real iPhone→TV; sin pruebas físicas no declarar compatibilidad universal ni latencia garantizada.
 - No fusionar a main hasta obtener comprobación reproducible. Los commits publicados sin CI permanecen sin certificar.
 
-### Hallazgos de código verificados
+### Hallazgos de la auditoría de partida
 
 - `MainActivity.onNowPlaying(null)` detenía Oboe; se eliminó esa dependencia, manteniendo la señal de stream como autoridad de audio.
 - `WebVideoPlayer.stopAndClear()` reconstruía el reproductor; ahora lo conserva para siguiente media item, con limpieza de contenido.
@@ -114,10 +114,11 @@ Esta guía complementa `docs/ENGINEERING_SPEC_v1.0.md`. Cuando contradiga promes
 | API | Qué delegamos | Qué queda en TVPlayAir |
 |---|---|---|
 | Media3 `MediaSession` en Android TV | Publicar el estado del video directo y ofrecer controles de reproducción de Android mediante el ExoPlayer existente. Solo se activa cuando el medio vigente está listo. | Identidad AirPlay, pausa compartida con el iPhone, cambio de modo y acceso al medio. El mando de Android y el iPhone conservan una sola autoridad de reproducción. |
-| Media3 `MediaSessionService` | Candidato a mantener el mismo reproductor durante la recreación de la pantalla. | Validar vinculación de superficies, capacidad de decodificación y comportamiento de segundo plano antes de retirar el mecanismo de restauración existente. |
+| Android `ViewModel` | Conserva el ExoPlayer y su sesión de medios entre recreaciones por cambio de configuración. | Validar el Binder y el ID del medio antes de conectar la nueva superficie. Si se pierde el reproductor, preparar el video desde la posición y pausa guardadas en el servicio. |
+| Media3 `MediaSessionService` | Candidato para extender la continuidad al cierre completo de la Activity. | Validar el ciclo de vida en segundo plano y el traspaso de superficies antes de retirar la recuperación existente. |
 | Cast Connect | Receptor nativo de video y audio para emisores Google Cast asociados al ID de la aplicación. | Integración opcional sobre el reproductor existente. El SDK cubre el transporte Cast. La duplicación del iPhone sigue por AirPlay. |
 | `MediaDevice` y `AVSystemRouting` de iOS 27 | Descubrimiento integrado en el selector de iOS, activación de ruta y control mediante las APIs públicas de Apple. | App complementaria de iOS, extensión y protocolo hacia Android TV. Comprobar el modo `.player` para URL y `.application` para app asociada. La compatibilidad depende de la app emisora y su soporte de rutas. |
 
-La primera integración activa una sesión de sistema para video directo y usa la versión estable Media3 1.11.1. Se conserva una sola instancia de ExoPlayer y se filtran los controladores de Android mediante el indicador de confianza de Media3. La sesión se cierra al cambiar de medio o abandonar video directo. Se reservan AirPlay, RAOP y DACP para sus rutas actuales. Cast Connect y la extensión de iOS son integraciones propuestas.
+La primera integración activa una sesión de sistema para video directo y usa la versión estable Media3 1.11.1. Se conserva una sola instancia de ExoPlayer y se filtran los controladores de Android mediante el indicador de confianza de Media3. La sesión se cierra al cambiar de medio o abandonar video directo. Se reservan AirPlay, RAOP y DACP para sus rutas actuales. Cast Connect y la extensión de iOS son integraciones propuestas. Ambas deben usar el reproductor existente y respetar el arbitraje de audio y video. La primera validación de Cast requiere registrar el receptor y probarlo con un emisor asociado. La primera validación de iOS 27 debe comprobar descubrimiento, reproducción, pausa, búsqueda y continuidad al bloquear el iPhone o cambiar de app. Los avances y la verificación se registran en el [estado de continuidad](CONTINUITY_EXECUTION_STATUS.md).
 
 [MediaSession en Android TV](https://developer.android.com/media/implement/surfaces/android-tv) · [MediaSessionService](https://developer.android.com/media/media3/session/background-playback) · [Cast Connect](https://developers.google.com/cast/docs/android_tv_receiver) · [Rutas de medios en iOS](https://developer.apple.com/documentation/avsystemrouting/routing-and-streaming-media-to-remote-devices)

@@ -10,7 +10,7 @@ Recepción AirPlay en Android TV con presentación automática y minimalista: m�
 
 ## Decisiones que mantenemos
 
-1. **Receptor desacoplado de la UI**: `SessionService` corre en `:session`; la Activity no es autoridad del protocolo. Pendiente: propiedad o restauración robusta de los motores audiovisuales.
+1. **Receptor desacoplado de la UI**: `SessionService` corre en `:session`; la Activity no es autoridad del protocolo. El video directo conserva el reproductor durante cambios de configuración. Falta verificar la continuidad al cerrar la pantalla.
 2. **Reutilización condicionada**: conservar Media3 ExoPlayer entre vídeos y limpiar media items; no mantener varios decodificadores 4K sin medición de memoria y capacidades.
 3. **Una autoridad de reproducción**: reutilizar `AirPlayPlaybackEvents` y su `playbackId`; extender el control de identidad a Binder, UI, comandos y metadatos. Evitar un segundo árbitro contradictorio.
 4. **Separar datos de transporte**: `onNowPlaying(null)` no equivale a `onAudioStreamStopped`. Solo señales de transporte pueden detener RAOP.
@@ -21,13 +21,13 @@ Recepción AirPlay en Android TV con presentación automática y minimalista: m�
 
 | Aspecto | Evidencia de código | Estado |
 |---|---|---|
-| Sesiones vídeo | `AirPlayPlaybackEvents.SessionKey(peer, appleSessionId)` y `playbackId`; control de sesión en `/play`, `/stop`, `/rate`, `/scrub` | Existente; alcance incompleto en callbacks IPC |
-| RAOP y metadatos | `MainActivity.onNowPlaying` y `SessionService.onNowPlaying` no deben detener el audio por metadata nula | Corregido en rama; CI pendiente |
+| Sesiones vídeo | `AirPlayPlaybackEvents.SessionKey(peer, appleSessionId)` y `playbackId`; control de sesión en `/play`, `/stop`, `/rate`, `/scrub` | Identidad propagada por Binder para el video directo |
+| RAOP y metadatos | `MainActivity.onNowPlaying` y `SessionService.onNowPlaying` no deben detener el audio por metadata nula | Implementado; transiciones de audio por validar en TV |
 | Motor Media3 | `WebVideoPlayer.stopAndClear` conserva instancia y limpia media items | Implementado; coste y frames residuales sin medir |
 | ABR | Se quitó `setForceHighestSupportedBitrate(true)` | Implementado; buffering sin medir |
-| Órdenes de vídeo | `MainActivity` filtra comandos si no hay reproducción directa activa | Implementado; falta ligar comando a playbackId extremo a extremo |
-| Callbacks Binder | Callback y ServiceConnection por epoch; eventos despachados solo si el vínculo sigue vigente | Implementado (`324716c7`); CI y pruebas pendientes |
-| Vida de motores | `MainActivity.onDestroy` libera Media3 y coordinador | Riesgo observado; pendiente diseño y prueba de restauración |
+| Órdenes de vídeo | `MainActivity` filtra comandos si no hay reproducción directa activa | Implementado; las órdenes llevan playbackId hasta la Activity |
+| Callbacks Binder | Callback y ServiceConnection por epoch; eventos despachados solo si el vínculo sigue vigente | Implementado (`324716c7`); compila en CI; faltan pruebas instrumentadas de reconexión |
+| Vida de motores | DirectVideoViewModel conserva ExoPlayer y MediaSession durante cambios de configuración. Se verifica el Binder y el ID del medio al volver a conectar la superficie | Implementado en e3357d6; falta verificar la recreación en Android TV |
 | Primer fotograma de video directo | Media3 identifica el medio y la superficie del evento. El coordinador solo revela la reproducción vigente y restaura la ruta anterior si supera 15 s | Regresiones JVM ejecutadas. Composición y latencia física pendientes |
 | Interoperabilidad real iOS | Depende de protocolos y política de cada app, DRM y estado de iOS | No certificada |
 
@@ -39,12 +39,12 @@ Recepción AirPlay en Android TV con presentación automática y minimalista: m�
 - [x] Añadir cierre terminal y epoch en `SessionConnection` para impedir reconexión tras `close()` y notificaciones `onSharedMemoryReady` encoladas de epochs anteriores (commit `5128f525`).
 - [x] Aislar callbacks Binder y ServiceConnection por epoch de vínculo; descartar entregas de vínculos anteriores (`324716c7`).
 - [ ] Incorporar pruebas JVM/Robolectric para callbacks encolados y reconexión; comprobar compilación y CI.
-- [ ] Vincular órdenes directas a `playbackId` y descartar `stop/seek/rate` obsoletos antes de tocar la UI.
+- [x] Vincular órdenes directas a `playbackId` y descartar `stop/seek/rate` obsoletos antes de tocar la UI.
 - [ ] Definir señales explícitas de inicio/parada de audio y limpiar estado solo cuando corresponda.
 
 ### B. Continuidad audiovisual
 
-- [x] Conservar referencia del vídeo directo activo en `SessionService` y reenviarla al registrar una Activity nueva (`7becbe52`); recuperación por nueva preparación, no preservación de decoder.
+- [x] Conservar referencia del vídeo directo activo en `SessionService` y reenviarla al registrar una Activity nueva (`7becbe52`); se vuelve a conectar la superficie si se conserva ExoPlayer y se prepara desde el punto guardado si se perdió.
 - [x] Restaurar posición exacta en VOD y pausa explícita del mando o del iPhone al registrar otra Activity. El servicio invalida el video al terminar y rechaza actualizaciones de una Activity reemplazada.
 - [ ] Verificar en Android la recreación de Activity, la desaparición temporal de superficie y el comportamiento del servicio en segundo plano.
 - [x] Confirmar el primer fotograma del video directo vigente y acotar la preparación a 15 s. La verificación visual del cambio corresponde a la prueba de integración en TV.
@@ -54,7 +54,8 @@ Recepción AirPlay en Android TV con presentación automática y minimalista: m�
 
 ### C. Rendimiento y certificación
 
-- [ ] Ejecutar build, lint y JVM sobre HEAD de la rama y registrar run/commit.
+- [x] Verificar compilación Android y pruebas JVM y nativas en la [CI de e3357d6](https://github.com/ReinierTutoriales/TVPlayAir/actions/runs/44937591482).
+- [ ] Ejecutar lint independiente.
 - [x] Añadidas pruebas JVM de 100 transiciones y telemetría obsoleta en `AirPlayPlaybackEventsTest` (`1ebe8039`); ejecución pendiente.
 - [ ] Pruebas de reconexión/cierre Binder, eventos reordenados, superficies y errores.
 - [ ] Instrumentar primer frame, primera muestra de audio, buffering, dropped frames y p50/p95/p99.
@@ -114,11 +115,13 @@ Se conserva Media3 1.11.1 estable. La beta 1.12.0-beta01 mejora el uso de memori
 
 El proceso de sesión entrega el último punto de VOD en milisegundos y la intención de reproducción en una sola llamada Binder. El punto admite cero y posiciones inferiores a un segundo, independientemente de la fracción inicial de AirPlay. Se registra al avanzar en una línea de tiempo VOD navegable y al ocultar o destruir la pantalla. Si el video es en vivo, Media3 vuelve a elegir la posición inicial. El video preparado en pausa recibe esa intención antes de llamar a `prepare()`.
 
-El mando y el iPhone actualizan una sola intención explícita bajo el mismo bloqueo. Una pausa por interrupción temporal de Media3 no modifica esa intención. El servicio compara el Binder de la Activity y el identificador de reproducción antes de aceptar cambios. La restauración todavía prepara el medio de nuevo. [Contrato de Player en Media3](https://developer.android.com/reference/androidx/media3/common/Player)
+El mando y el iPhone actualizan una sola intención explícita bajo el mismo bloqueo. Una pausa por interrupción temporal de Media3 no modifica esa intención. El servicio compara el Binder de la Activity y el identificador de reproducción antes de aceptar cambios. Tras perder ExoPlayer, la restauración vuelve a preparar el medio. Si se conserva durante un cambio de configuración, solo se conecta la nueva superficie. [Contrato de Player en Media3](https://developer.android.com/reference/androidx/media3/common/Player)
 
 
 ## Reutilización del reproductor durante cambios de configuración
 
-`DirectVideoViewModel` conserva el ExoPlayer y su MediaSession durante un cambio de configuración que recrea la Activity. La pantalla anterior suelta la superficie y sus callbacks. La nueva solo vuelve a conectar el mismo reproductor si el servicio confirma el identificador vigente. En este caso no se vuelve a cargar ni preparar el medio. El punto de restauración se mantiene para cuando Android pierde el reproductor. El espejo se queda como ruta de retorno durante la restauración del video directo, sin arrancar un segundo decodificador.
+`DirectVideoViewModel` conserva el ExoPlayer y su MediaSession durante un cambio de configuración que recrea la Activity. La pantalla anterior suelta la superficie y sus callbacks. La nueva vuelve a conectar el mismo reproductor si coinciden el Binder del servicio y el identificador de la reproducción vigente. En este caso no se vuelve a cargar ni preparar el medio. El punto de restauración se mantiene para cuando Android pierde el reproductor. El espejo se queda como ruta de retorno durante la restauración del video directo, sin arrancar un segundo decodificador.
+
+**Evidencia de e3357d6.** Pasaron 59 pruebas JVM locales y la [CI del commit](https://github.com/ReinierTutoriales/TVPlayAir/actions/runs/44937591482). Las pruebas cubren el retorno al espejo sin iniciarlo durante la restauración. Falta verificar en Android TV el cambio de superficie con video en marcha y en pausa, y una parada recibida entre las dos pantallas. El lint local quedó pendiente por la descarga de Gradle.
 
 Este alcance cubre recreaciones conservadas por ViewModel. La reproducción persistente tras cerrar la Activity, Cast Connect y la extensión iOS siguen pendientes. Para Cast Connect hace falta un ID de receptor registrado y un emisor asociado. La extensión requiere verificar la ruta en iOS 27 con un destino Android real. [ViewModel de Android](https://developer.android.com/topic/libraries/architecture/viewmodel) · [Cast Connect](https://developers.google.com/cast/docs/android_tv_receiver) · [Rutas de medios de Apple](https://developer.apple.com/documentation/avsystemrouting/routing-and-streaming-media-to-remote-devices)
