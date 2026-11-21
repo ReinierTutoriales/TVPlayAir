@@ -28,12 +28,22 @@ interface MirrorVideoEngine {
 }
 
 interface DirectVideoEngine {
-    fun prepareAndPlay(url: String, startPositionSec: Double): Boolean
+    fun prepareAndPlay(url: String, startPosition: Double): Boolean
     fun play()
     fun pause()
     fun seekTo(positionSec: Double)
     fun stopAndClear()
     fun currentTelemetry(): DirectPlaybackTelemetry
+}
+
+internal fun initialDirectPositionMs(startPosition: Double, durationMs: Long): Long? {
+    // AirPlay sends a fraction. Some clients send absolute seconds above 1.
+    return when {
+        startPosition <= 0.0 -> 0L
+        startPosition > 1.0 -> (startPosition * 1000).toLong()
+        durationMs > 0L -> (durationMs * startPosition).toLong()
+        else -> null
+    }
 }
 
 interface SurfaceLayerController {
@@ -76,13 +86,13 @@ class VideoPresentationCoordinator(
         return true
     }
 
-    fun switchToDirectVideo(url: String, startPositionSec: Double = 0.0): Boolean {
+    fun switchToDirectVideo(url: String, startPosition: Double = 0.0): Boolean {
         state = PresentationState.SWITCHING_TO_DIRECT
         audioController.setPausedForExternalPlayer(true)
         // Hard VPU rule: release mirror MediaCodec completely before preparing ExoPlayer.
         mirrorEngine.stopAndRelease()
         surfaceController.showDirectSurface()
-        val prepared = directEngine.prepareAndPlay(url, startPositionSec)
+        val prepared = directEngine.prepareAndPlay(url, startPosition)
         if (!prepared) {
             directEngine.stopAndClear()
             state = PresentationState.RECOVERING

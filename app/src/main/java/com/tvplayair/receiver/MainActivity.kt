@@ -149,8 +149,8 @@ class MainActivity : ComponentActivity(), SurfaceLayerController {
                     refreshOverlayTelemetry()
                 }
 
-                override fun onDirectVideoUrl(url: String, startPositionSec: Double) {
-                    presentationCoordinator.switchToDirectVideo(url, startPositionSec)
+                override fun onDirectVideoUrl(url: String, startPosition: Double) {
+                    presentationCoordinator.switchToDirectVideo(url, startPosition)
                     refreshOverlayTelemetry()
                 }
 

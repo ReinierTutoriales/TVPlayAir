@@ -2,10 +2,19 @@ package com.tvplayair.receiver.video
 
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
+import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
 class VideoPresentationCoordinatorTest {
+
+    @Test
+    fun resolvesAirPlayStartFractionOnlyAfterDurationIsKnown() {
+        assertNull(initialDirectPositionMs(0.25, durationMs = 0L))
+        assertEquals(30_000L, initialDirectPositionMs(0.25, durationMs = 120_000L))
+        assertEquals(42_500L, initialDirectPositionMs(42.5, durationMs = 0L))
+        assertEquals(0L, initialDirectPositionMs(0.0, durationMs = 0L))
+    }
 
     private class FakeMirrorEngine(private val events: MutableList<String>) : MirrorVideoEngine {
         var failStart = false
@@ -21,8 +30,8 @@ class VideoPresentationCoordinatorTest {
 
     private class FakeDirectEngine(private val events: MutableList<String>) : DirectVideoEngine {
         var failPrepare = false
-        override fun prepareAndPlay(url: String, startPositionSec: Double): Boolean {
-            events += "direct.prepareAndPlay($url,$startPositionSec)"
+        override fun prepareAndPlay(url: String, startPosition: Double): Boolean {
+            events += "direct.prepareAndPlay($url,$startPosition)"
             return !failPrepare
         }
 

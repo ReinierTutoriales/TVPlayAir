@@ -12,6 +12,12 @@ object BinaryPlistParser {
     private val MAGIC = "bplist00".toByteArray(StandardCharsets.US_ASCII)
     private const val TRAILER_BYTES = 32
     private const val MAX_DEPTH = 16
+    private const val MAX_OBJECT_VISITS = 8192
+
+    private class ParseBudget(size: Int) {
+        var visits = MAX_OBJECT_VISITS
+        var bytes = size.toLong() * 4
+    }
 
     fun isBinaryPlist(data: ByteArray): Boolean {
         if (data.size < MAGIC.size + TRAILER_BYTES) return false
@@ -37,7 +43,7 @@ object BinaryPlistParser {
             return null
         }
         val offsetTableBytes = numObjects * offsetIntSize
-        if (offsetTableOffset < MAGIC.size || offsetTableOffset + offsetTableBytes > trailerOffset) {
+        if (offsetTableOffset < MAGIC.size || offsetTableOffset > trailerOffset - offsetTableBytes) {
             return null
         }
 
@@ -49,7 +55,9 @@ object BinaryPlistParser {
             offsets[i] = objOff.toInt()
         }
 
-        return parseObject(data, offsets, objectRefSize, topObject.toInt(), 0)
+        val budget = ParseBudget(data.size)
+        val root = parseObject(data, offsets, objectRefSize, topObject.toInt(), 0, budget)
+        return root.takeIf { budget.visits >= 0 && budget.bytes >= 0 }
     }
 
     private fun parseObject(
@@ -57,8 +65,11 @@ object BinaryPlistParser {
         offsets: IntArray,
         refSize: Int,
         objIndex: Int,
-        depth: Int
+        depth: Int,
+        budget: ParseBudget
     ): Any? {
+        // References can repeat a subtree. Bound work and copied data across the entire parse.
+        if (--budget.visits < 0 || budget.bytes < 0) return null
         if (depth > MAX_DEPTH || objIndex !in offsets.indices) return null
         val offset = offsets[objIndex]
         if (offset >= data.size) return null
@@ -90,18 +101,24 @@ object BinaryPlistParser {
             }
             0x4 -> { // Data blob
                 val (len, start) = readLength(data, offset, info) ?: return null
-                if (start + len > data.size) return null
+                if (len > data.size - start) return null
+                budget.bytes -= len
+                if (budget.bytes < 0) return null
                 data.copyOfRange(start, start + len)
             }
             0x5 -> { // ASCII string
                 val (len, start) = readLength(data, offset, info) ?: return null
-                if (start + len > data.size) return null
+                if (len > data.size - start) return null
+                budget.bytes -= len
+                if (budget.bytes < 0) return null
                 String(data, start, len, StandardCharsets.US_ASCII)
             }
             0x6 -> { // UTF-16BE string
                 val (charCount, start) = readLength(data, offset, info) ?: return null
+                if (charCount > (data.size - start) / 2) return null
                 val byteLen = charCount * 2
-                if (start + byteLen > data.size) return null
+                budget.bytes -= byteLen
+                if (budget.bytes < 0) return null
                 String(data, start, byteLen, StandardCharsets.UTF_16BE)
             }
             0xA -> { // Array
@@ -110,7 +127,8 @@ object BinaryPlistParser {
                 val list = ArrayList<Any?>(count)
                 for (i in 0 until count) {
                     val ref = readUnsignedInt(data, start + i * refSize, refSize).toInt()
-                    list.add(parseObject(data, offsets, refSize, ref, depth + 1))
+                    list.add(parseObject(data, offsets, refSize, ref, depth + 1, budget))
+                    if (budget.visits < 0 || budget.bytes < 0) return null
                 }
                 list
             }
@@ -122,9 +140,11 @@ object BinaryPlistParser {
                 for (i in 0 until count) {
                     val keyRef = readUnsignedInt(data, start + i * refSize, refSize).toInt()
                     val valRef = readUnsignedInt(data, valuesStart + i * refSize, refSize).toInt()
-                    val key = parseObject(data, offsets, refSize, keyRef, depth + 1)?.toString()
-                        ?: continue
-                    map[key] = parseObject(data, offsets, refSize, valRef, depth + 1)
+                    val key = parseObject(data, offsets, refSize, keyRef, depth + 1, budget)
+                    if (budget.visits < 0 || budget.bytes < 0) return null
+                    if (key !is String) continue
+                    map[key] = parseObject(data, offsets, refSize, valRef, depth + 1, budget)
+                    if (budget.visits < 0 || budget.bytes < 0) return null
                 }
                 map
             }

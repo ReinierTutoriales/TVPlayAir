@@ -14,7 +14,7 @@ data class AirPlayServerConfig(
 
 interface AirPlayProtocolListener {
     fun onVideoConfigChanged(mimeType: String, width: Int, height: Int, generationId: Int)
-    fun onDirectVideoUrl(url: String, startPositionSec: Double)
+    fun onDirectVideoUrl(url: String, startPosition: Double)
     fun onDirectVideoCommand(command: String, value: Double)
     fun onClientConnected(clientName: String, dacpId: String, activeRemote: String)
     fun onClientDisconnected()
@@ -33,7 +33,7 @@ interface AirPlayProtocolEngine {
 
 data class ParsedDirectPlayRequest(
     val url: String,
-    val startPositionSec: Double
+    val startPosition: Double
 )
 
 object AirPlayHttpRequestParser {
@@ -46,7 +46,19 @@ object AirPlayHttpRequestParser {
         setOf(RegexOption.IGNORE_CASE, RegexOption.DOT_MATCHES_ALL)
     )
 
-    fun parsePlayBody(body: String): ParsedDirectPlayRequest? {
+    fun parsePlayBody(body: ByteArray): ParsedDirectPlayRequest? {
+        if (!BinaryPlistParser.isBinaryPlist(body)) {
+            return parseTextPlayBody(body.toString(Charsets.UTF_8))
+        }
+
+        val fields = BinaryPlistParser.parse(body) as? Map<*, *> ?: return null
+        val url = (fields["Content-Location"] as? String)?.trim()?.takeIf { it.isNotEmpty() }
+            ?: return null
+        val position = (fields["Start-Position"] as? Number)?.toDouble()
+        return ParsedDirectPlayRequest(url, normalizeStartPosition(position))
+    }
+
+    private fun parseTextPlayBody(body: String): ParsedDirectPlayRequest? {
         val trimmed = body.trim()
         if (trimmed.isEmpty()) return null
 
@@ -54,9 +66,8 @@ object AirPlayHttpRequestParser {
             val url = xmlLocationRegex.find(trimmed)?.groupValues?.get(1)?.trim()
                 ?.replace("&amp;", "&")
                 ?: return null
-            val pos = xmlStartPosRegex.find(trimmed)?.groupValues?.get(1)?.trim()
-                ?.toDoubleOrNull()?.coerceAtLeast(0.0) ?: 0.0
-            return if (url.isNotEmpty()) ParsedDirectPlayRequest(url, pos) else null
+            val pos = xmlStartPosRegex.find(trimmed)?.groupValues?.get(1)?.trim()?.toDoubleOrNull()
+            return if (url.isNotEmpty()) ParsedDirectPlayRequest(url, normalizeStartPosition(pos)) else null
         }
 
         var url: String? = null
@@ -68,11 +79,14 @@ object AirPlayHttpRequestParser {
             val value = line.substring(idx + 1).trim()
             when (key) {
                 "content-location" -> if (value.isNotEmpty()) url = value
-                "start-position" -> startPosition = value.toDoubleOrNull()?.coerceAtLeast(0.0) ?: 0.0
+                "start-position" -> startPosition = normalizeStartPosition(value.toDoubleOrNull())
             }
         }
         return url?.let { ParsedDirectPlayRequest(it, startPosition) }
     }
+
+    private fun normalizeStartPosition(position: Double?): Double =
+        position?.takeIf { it.isFinite() && it > 0.0 } ?: 0.0
 
     fun parseQueryDouble(pathWithQuery: String, paramName: String): Double? {
         val qIdx = pathWithQuery.indexOf('?')

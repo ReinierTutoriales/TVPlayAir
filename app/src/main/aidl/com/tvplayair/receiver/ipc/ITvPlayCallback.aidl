@@ -8,7 +8,7 @@ oneway interface ITvPlayCallback {
                              int generationId);
     void onSessionUnavailable();
     void onVideoConfigChanged(String mimeType, int width, int height, int generationId);
-    void onDirectVideoUrl(String url, double startPositionSec);
+    void onDirectVideoUrl(String url, double startPosition);
     void onDirectVideoCommand(String command, double value);
     void onClientConnected(String clientName, String dacpId, String activeRemote);
     void onClientDisconnected();

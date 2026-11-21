@@ -158,7 +158,6 @@ class AirPlayDirectHttpServer(
         bodyBytes: ByteArray,
         output: OutputStream
     ) {
-        val body = String(bodyBytes, StandardCharsets.UTF_8)
         when {
             method == "POST" && path == "/pair-setup" -> {
                 val reply = pairingSession.handlePairSetup(bodyBytes)
@@ -185,11 +184,11 @@ class AirPlayDirectHttpServer(
                 writeResponse(output, 200, "OK")
             }
             method == "POST" && path == "/play" -> {
-                val parsed = AirPlayHttpRequestParser.parsePlayBody(body)
+                val parsed = AirPlayHttpRequestParser.parsePlayBody(bodyBytes)
                 if (parsed != null) {
                     generationId.incrementAndGet()
-                    listener.onDirectVideoUrl(parsed.url, parsed.startPositionSec)
-                    Log.i(TAG, "-> /play 200 OK url=${parsed.url} pos=${parsed.startPositionSec}")
+                    listener.onDirectVideoUrl(parsed.url, parsed.startPosition)
+                    Log.i(TAG, "-> /play 200 OK startPosition=${parsed.startPosition}")
                     writeResponse(output, 200, "OK")
                 } else {
                     Log.w(TAG, "-> /play 400 Bad Request")

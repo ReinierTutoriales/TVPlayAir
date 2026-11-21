@@ -16,7 +16,7 @@ interface SessionEventListener {
     fun onSharedMemoryReady(generationId: Int) = Unit
     fun onSharedMemoryDetached() = Unit
     fun onVideoConfigChanged(mimeType: String, width: Int, height: Int, generationId: Int) = Unit
-    fun onDirectVideoUrl(url: String, startPositionSec: Double) = Unit
+    fun onDirectVideoUrl(url: String, startPosition: Double) = Unit
     fun onDirectVideoCommand(command: String, value: Double) = Unit
     fun onClientConnected(clientName: String, dacpId: String, activeRemote: String) = Unit
     fun onClientDisconnected() = Unit
@@ -70,9 +70,9 @@ class SessionConnection(
             }
         }
 
-        override fun onDirectVideoUrl(url: String, startPositionSec: Double) {
+        override fun onDirectVideoUrl(url: String, startPosition: Double) {
             handler.post {
-                if (bound) listener.onDirectVideoUrl(url, startPositionSec)
+                if (bound) listener.onDirectVideoUrl(url, startPosition)
             }
         }
 

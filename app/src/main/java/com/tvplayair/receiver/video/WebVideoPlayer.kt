@@ -11,6 +11,7 @@ import androidx.media3.common.C
 import androidx.media3.common.MediaItem
 import androidx.media3.common.PlaybackException
 import androidx.media3.common.Player
+import androidx.media3.common.Timeline
 import androidx.media3.common.util.UnstableApi
 import androidx.media3.datasource.DefaultHttpDataSource
 import androidx.media3.exoplayer.ExoPlayer
@@ -38,6 +39,7 @@ class WebVideoPlayer(
     private val appContext = context.applicationContext
     private val mainHandler = Handler(Looper.getMainLooper())
     private var player: ExoPlayer? = null
+    private var pendingStartFraction: Double? = null
 
     private val telemetryTicker = object : Runnable {
         override fun run() {
@@ -50,6 +52,19 @@ class WebVideoPlayer(
     }
 
     private val playerListener = object : Player.Listener {
+        override fun onTimelineChanged(timeline: Timeline, reason: Int) {
+            val exo = player ?: return
+            val fraction = pendingStartFraction ?: return
+            if (!exo.isCurrentMediaItemSeekable || exo.isCurrentMediaItemLive) return
+            val positionMs = initialDirectPositionMs(fraction, exo.duration) ?: return
+            pendingStartFraction = null
+            exo.seekTo(positionMs)
+        }
+
+        override fun onRenderedFirstFrame() {
+            Log.i(TAG, "Direct video first frame rendered")
+        }
+
         override fun onPlaybackStateChanged(playbackState: Int) {
             Log.i(TAG, "ExoPlayer state=$playbackState")
             onTelemetryChanged(currentTelemetry())
@@ -65,7 +80,8 @@ class WebVideoPlayer(
         }
 
         override fun onPlayerError(error: PlaybackException) {
-            Log.e(TAG, "ExoPlayer error (${error.errorCodeName}): ${error.message}", error)
+            pendingStartFraction = null
+            Log.e(TAG, "ExoPlayer error (${error.errorCodeName})")
             onTelemetryChanged(currentTelemetry())
         }
     }
@@ -104,14 +120,16 @@ class WebVideoPlayer(
             }
     }
 
-    override fun prepareAndPlay(url: String, startPositionSec: Double): Boolean {
+    override fun prepareAndPlay(url: String, startPosition: Double): Boolean {
         if (url.isBlank()) return false
         val exo = ensurePlayer()
-        exo.setVideoSurfaceView(surfaceView)
-        exo.setMediaItem(MediaItem.fromUri(url))
-        if (startPositionSec > 0.0) {
-            exo.seekTo((startPositionSec * 1000.0).toLong())
-        }
+        val initialPositionMs = initialDirectPositionMs(startPosition, durationMs = 0L)
+        pendingStartFraction = null
+        exo.setMediaItem(
+            MediaItem.fromUri(url),
+            initialPositionMs?.takeIf { it > 0L } ?: C.TIME_UNSET
+        )
+        if (initialPositionMs == null) pendingStartFraction = startPosition
         exo.prepare()
         exo.playWhenReady = true
         onTelemetryChanged(currentTelemetry())
@@ -127,11 +145,13 @@ class WebVideoPlayer(
     }
 
     override fun seekTo(positionSec: Double) {
+        pendingStartFraction = null
         val targetMs = (positionSec.coerceAtLeast(0.0) * 1000.0).toLong()
         player?.seekTo(targetMs)
     }
 
     override fun stopAndClear() {
+        pendingStartFraction = null
         mainHandler.removeCallbacks(telemetryTicker)
         player?.let { exo ->
             exo.stop()
@@ -166,6 +186,7 @@ class WebVideoPlayer(
     }
 
     fun release() {
+        pendingStartFraction = null
         mainHandler.removeCallbacks(telemetryTicker)
         player?.let { exo ->
             exo.removeListener(playerListener)

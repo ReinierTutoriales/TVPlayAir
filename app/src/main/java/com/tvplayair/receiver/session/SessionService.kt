@@ -64,14 +64,14 @@ class SessionService : Service() {
             runCatching { callback?.onVideoConfigChanged(mimeType, width, height, generationId) }
         }
 
-        override fun onDirectVideoUrl(url: String, startPositionSec: Double) {
+        override fun onDirectVideoUrl(url: String, startPosition: Double) {
             val cb = callback
             if (cb == null) {
-                pendingDirectUrl = url to startPositionSec
+                pendingDirectUrl = url to startPosition
                 ensureUiForeground()
             } else {
                 pendingDirectUrl = null
-                runCatching { cb.onDirectVideoUrl(url, startPositionSec) }
+                runCatching { cb.onDirectVideoUrl(url, startPosition) }
             }
         }
 
