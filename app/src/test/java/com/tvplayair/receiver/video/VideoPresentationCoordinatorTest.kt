@@ -16,6 +16,31 @@ class VideoPresentationCoordinatorTest {
         assertEquals(0L, initialDirectPositionMs(0.0, durationMs = 0L))
     }
 
+    @Test
+    fun invalidDirectHandoffDoesNotInterruptActiveMirror() {
+        val events = mutableListOf<String>()
+        val coordinator = VideoPresentationCoordinator(
+            FakeMirrorEngine(events),
+            FakeDirectEngine(events),
+            FakeAudioController(events),
+            FakeSurfaceController(events)
+        )
+        assertTrue(coordinator.startMirror())
+        events.clear()
+        assertFalse(coordinator.switchToDirectVideo("", 0.0))
+        assertFalse(coordinator.switchToDirectVideo("https://example.com/movie", Double.NaN))
+        assertFalse(coordinator.switchToDirectVideo("https://example.com/movie", Double.POSITIVE_INFINITY))
+        assertEquals(PresentationState.MIRROR_ACTIVE, coordinator.state)
+        assertTrue(events.isEmpty())
+    }
+
+    @Test
+    fun invalidStartPositionsNeverBecomeSeekCommands() {
+        assertNull(initialDirectPositionMs(Double.NaN, 120_000L))
+        assertNull(initialDirectPositionMs(Double.POSITIVE_INFINITY, 120_000L))
+        assertNull(initialDirectPositionMs(Double.NEGATIVE_INFINITY, 120_000L))
+    }
+
     private class FakeMirrorEngine(private val events: MutableList<String>) : MirrorVideoEngine {
         var failStart = false
         override fun start(): Boolean {
