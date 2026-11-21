@@ -201,7 +201,10 @@ class MainActivity : ComponentActivity(), SurfaceLayerController {
                 }
 
                 override fun onDirectVideoUrl(url: String, startPosition: Double, playbackId: Long) {
-                    if (url.isBlank() || !startPosition.isFinite()) return
+                    if (url.isBlank() || !startPosition.isFinite() || playbackId <= 0L) return
+                    // A re-registration may replay the current source; do not restart it.
+                    if (directPlaybackId == playbackId &&
+                        presentationCoordinator.state == PresentationState.DIRECT_ACTIVE) return
                     dismissVideoControls()
                     directPlaybackId = playbackId
                     if (!presentationCoordinator.switchToDirectVideo(url, startPosition)) {
