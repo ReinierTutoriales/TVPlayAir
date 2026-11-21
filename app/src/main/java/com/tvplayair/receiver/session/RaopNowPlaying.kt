@@ -60,13 +60,14 @@ internal class RaopNowPlayingSession(private val publish: (RaopNowPlaying?) -> U
     private var current = RaopNowPlaying()
 
     @Synchronized
-    fun activate(source: Any, remote: RaopRemote? = null) {
+    fun activate(source: Any, remote: RaopRemote? = null, onActivated: () -> Unit = {}) {
         if (owner === source) return
         owner = source
         timestamp = null
         trackTimestampUnconfirmed = false
         current = RaopNowPlaying(remote = remote)
         publish(current)
+        onActivated()
     }
 
     @Synchronized
@@ -98,6 +99,11 @@ internal class RaopNowPlayingSession(private val publish: (RaopNowPlaying?) -> U
         if (owner !== source || current.remote == remote) return
         current = current.copy(remote = remote)
         publish(current)
+    }
+
+    @Synchronized
+    fun withOwner(source: Any, action: () -> Unit) {
+        if (owner === source) action()
     }
 
     @Synchronized

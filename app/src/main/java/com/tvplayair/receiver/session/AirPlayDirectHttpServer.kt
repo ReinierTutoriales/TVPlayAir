@@ -37,9 +37,8 @@ class AirPlayDirectHttpServer(
     private val running = AtomicBoolean(false)
     private val generationId = AtomicInteger(1)
     private val playbackEvents = AirPlayPlaybackEvents()
-    private val latestTelemetry = AtomicReference(
-        DirectPlaybackTelemetry(0.0, 0.0, 0f, isPlaying = false, isBuffering = false)
-    )
+    private val idleTelemetry = DirectPlaybackTelemetry(0.0, 0.0, 0f, isPlaying = false, isBuffering = false)
+    private val latestTelemetry = AtomicReference(idleTelemetry)
 
     @Volatile
     private var serverSocket: ServerSocket? = null
@@ -115,9 +114,8 @@ class AirPlayDirectHttpServer(
         acceptThread = null
     }
 
-    override fun updatePlaybackTelemetry(telemetry: DirectPlaybackTelemetry) {
-        latestTelemetry.set(telemetry)
-        playbackEvents.update(telemetry)
+    override fun updatePlaybackTelemetry(playbackId: Long, telemetry: DirectPlaybackTelemetry) {
+        playbackEvents.update(playbackId, telemetry) { latestTelemetry.set(telemetry) }
     }
 
     override fun currentGenerationId(): Int = generationId.get()
@@ -207,10 +205,7 @@ class AirPlayDirectHttpServer(
         key: AirPlayPlaybackEvents.SessionKey
     ) {
         val channel = AirPlayPlaybackEvents.Channel(key, socket)
-        if (!playbackEvents.attach(channel)) {
-            writeResponse(output, 409, "Conflict")
-            return
-        }
+        playbackEvents.attach(channel)
         try {
             socket.soTimeout = EVENT_ACK_TIMEOUT_MS
             output.write(
@@ -275,8 +270,10 @@ class AirPlayDirectHttpServer(
             method == "POST" && path == "/play" -> {
                 val parsed = AirPlayHttpRequestParser.parsePlayBody(bodyBytes)
                 if (parsed != null) {
-                    playbackEvents.start(sessionKey)
-                    listener.onDirectVideoUrl(parsed.url, parsed.startPosition)
+                    playbackEvents.start(sessionKey) { playbackId ->
+                        latestTelemetry.set(idleTelemetry.copy(isBuffering = true))
+                        listener.onDirectVideoUrl(parsed.url, parsed.startPosition, playbackId)
+                    }
                     Log.i(TAG, "-> /play 200 OK startPosition=${parsed.startPosition}")
                     writeResponse(output, 200, "OK")
                 } else {
@@ -287,7 +284,7 @@ class AirPlayDirectHttpServer(
             method == "POST" && path == "/scrub" -> {
                 val position = AirPlayHttpRequestParser.parseQueryDouble(fullPath, "position")
                 if (position != null) {
-                    listener.onDirectVideoCommand("seek", position)
+                    playbackEvents.control(sessionKey) { listener.onDirectVideoCommand("seek", position) }
                     writeResponse(output, 200, "OK")
                 } else {
                     writeResponse(output, 400, "Bad Request")
@@ -296,14 +293,19 @@ class AirPlayDirectHttpServer(
             method == "POST" && path == "/rate" -> {
                 val rate = AirPlayHttpRequestParser.parseQueryDouble(fullPath, "value")
                 if (rate != null) {
-                    listener.onDirectVideoCommand(if (rate > 0.0) "play" else "pause", rate)
+                    playbackEvents.control(sessionKey) {
+                        listener.onDirectVideoCommand(if (rate > 0.0) "play" else "pause", rate)
+                    }
                     writeResponse(output, 200, "OK")
                 } else {
                     writeResponse(output, 400, "Bad Request")
                 }
             }
             method == "POST" && path == "/stop" -> {
-                listener.onDirectVideoCommand("stop", 0.0)
+                playbackEvents.control(sessionKey, stop = true) {
+                    latestTelemetry.set(idleTelemetry)
+                    listener.onDirectVideoCommand("stop", 0.0)
+                }
                 writeResponse(output, 200, "OK")
             }
             method == "GET" && path == "/info" -> {

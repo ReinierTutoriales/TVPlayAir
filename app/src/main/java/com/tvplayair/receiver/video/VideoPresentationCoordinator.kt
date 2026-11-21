@@ -77,16 +77,18 @@ class VideoPresentationCoordinator(
     }
 
     fun switchToDirectVideo(url: String, startPosition: Double = 0.0): Boolean {
+        val replacingDirect = state == PresentationState.DIRECT_ACTIVE
         if (state == PresentationState.MIRROR_ACTIVE) resumeMirrorAfterDirect = true
         state = PresentationState.SWITCHING_TO_DIRECT
-        audioController.setPausedForExternalPlayer(true)
-        // Hard VPU rule: release mirror MediaCodec completely before preparing ExoPlayer.
-        mirrorEngine.stopAndRelease()
-        surfaceController.showDirectSurface()
+        if (!replacingDirect) {
+            audioController.setPausedForExternalPlayer(true)
+            // Hard VPU rule: release mirror MediaCodec before preparing ExoPlayer.
+            mirrorEngine.stopAndRelease()
+            surfaceController.showDirectSurface()
+        }
         val prepared = directEngine.prepareAndPlay(url, startPosition)
         if (!prepared) {
-            directEngine.stopAndClear()
-            state = PresentationState.RECOVERING
+            restoreAfterDirect()
             return false
         }
         state = PresentationState.DIRECT_ACTIVE
@@ -95,6 +97,10 @@ class VideoPresentationCoordinator(
 
     fun stopDirectVideo() {
         if (state != PresentationState.DIRECT_ACTIVE) return
+        restoreAfterDirect()
+    }
+
+    private fun restoreAfterDirect() {
         if (resumeMirrorAfterDirect) {
             switchToMirror()
         } else {
@@ -121,11 +127,20 @@ class VideoPresentationCoordinator(
         surfaceController.hideAllSurfaces()
     }
 
+    fun onMirrorDisconnected() {
+        resumeMirrorAfterDirect = false
+        if (state != PresentationState.MIRROR_ACTIVE && state != PresentationState.RECOVERING) return
+        mirrorEngine.stopAndRelease()
+        surfaceController.hideAllSurfaces()
+        state = PresentationState.IDLE
+    }
+
     fun onSessionDied() {
         resumeMirrorAfterDirect = false
         directEngine.stopAndClear()
         mirrorEngine.stopAndRelease()
         audioController.stop()
+        audioController.setPausedForExternalPlayer(false)
         surfaceController.hideAllSurfaces()
         state = PresentationState.IDLE
     }

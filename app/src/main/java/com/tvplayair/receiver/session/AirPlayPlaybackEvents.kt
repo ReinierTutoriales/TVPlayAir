@@ -60,38 +60,68 @@ internal class AirPlayPlaybackEvents {
     }
 
     private var channel: Channel? = null
+    private var standbyChannel: Channel? = null
     private var activeSession: SessionKey? = null
     private var currentEvent: Event? = null
     private var playbackId = 0L
+    private var stopRequested = false
 
     @Synchronized
-    fun attach(connection: Channel): Boolean {
-        if (activeSession != null && activeSession != connection.key &&
-            currentEvent?.state != State.STOPPED && channel?.key == activeSession
-        ) return false
-        channel?.close()
-        channel = connection
-        if (activeSession == connection.key) currentEvent?.let(connection::offer)
-        return true
+    fun attach(connection: Channel) {
+        if (activeSession == connection.key) {
+            channel?.close()
+            channel = connection
+            currentEvent?.let(connection::offer)
+        } else {
+            standbyChannel?.close()
+            standbyChannel = connection
+        }
     }
 
     @Synchronized
     fun detach(connection: Channel) {
         if (channel === connection) channel = null
+        if (standbyChannel === connection) standbyChannel = null
     }
 
     @Synchronized
-    fun start(key: SessionKey) {
-        if (activeSession != key && currentEvent?.state != State.STOPPED) publish(State.STOPPED)
-        activeSession = key
+    fun start(key: SessionKey, onStart: (Long) -> Unit = {}) {
+        if (activeSession != key) {
+            if (currentEvent?.state != State.STOPPED) publish(State.STOPPED)
+            val previous = channel
+            channel = standbyChannel?.takeIf { it.key == key }
+            if (channel != null || standbyChannel == null) {
+                // Keep the old channel long enough to deliver STOPPED and allow it to resume.
+                standbyChannel = previous
+            } else {
+                previous?.close()
+            }
+            activeSession = key
+        }
         playbackId++
+        stopRequested = false
         currentEvent = null
         publish(State.LOADING)
+        onStart(playbackId)
     }
 
     @Synchronized
-    fun update(telemetry: DirectPlaybackTelemetry) {
-        if (activeSession == null) return
+    fun control(key: SessionKey, stop: Boolean = false, dispatch: () -> Unit) {
+        val active = activeSession ?: return
+        // Some senders omit the session header on controls. Preserve same-peer legacy control.
+        if (active.peer != key.peer || (key.appleSessionId != null && key != active)) return
+        if (stopRequested) return
+        if (stop) {
+            stopRequested = true
+            publish(State.STOPPED)
+        }
+        dispatch()
+    }
+
+    @Synchronized
+    fun update(id: Long, telemetry: DirectPlaybackTelemetry, onAccepted: () -> Unit = {}) {
+        if (activeSession == null || id != playbackId || stopRequested) return
+        onAccepted()
         publish(State.from(telemetry))
     }
 
@@ -106,6 +136,8 @@ internal class AirPlayPlaybackEvents {
     fun clear() {
         channel?.close()
         channel = null
+        standbyChannel?.close()
+        standbyChannel = null
         activeSession = null
         currentEvent = null
     }

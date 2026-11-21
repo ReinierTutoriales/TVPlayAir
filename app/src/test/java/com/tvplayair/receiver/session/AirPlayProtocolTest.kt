@@ -16,12 +16,13 @@ class AirPlayProtocolTest {
         val key = AirPlayPlaybackEvents.SessionKey("127.0.0.1", "tvplayair-test")
         Socket().use { socket ->
             val channel = AirPlayPlaybackEvents.Channel(key, socket)
-            assertTrue(events.attach(channel))
-            events.start(key)
-            events.update(DirectPlaybackTelemetry(0.0, 0.0, 1f, true, false))
-            events.update(DirectPlaybackTelemetry(0.0, 1.0, 1f, true, false))
-            events.update(DirectPlaybackTelemetry(0.0, 1.0, 0f, false, false, isReady = true))
-            events.update(DirectPlaybackTelemetry(120.0, 120.0, 0f, false, false, isReady = false))
+            events.attach(channel)
+            var playbackId = 0L
+            events.start(key) { playbackId = it }
+            events.update(playbackId, DirectPlaybackTelemetry(0.0, 0.0, 1f, true, false))
+            events.update(playbackId, DirectPlaybackTelemetry(0.0, 1.0, 1f, true, false))
+            events.update(playbackId, DirectPlaybackTelemetry(0.0, 1.0, 0f, false, false, isReady = true))
+            events.update(playbackId, DirectPlaybackTelemetry(120.0, 120.0, 0f, false, false, isReady = false))
 
             assertEquals(
                 listOf("loading", "playing", "paused", "stopped"),
@@ -32,6 +33,36 @@ class AirPlayProtocolTest {
             assertTrue(request.startsWith("POST /event HTTP/1.1\r\n"))
             assertTrue(request.contains("X-Apple-Session-ID: tvplayair-test\r\n"))
             assertTrue(request.contains("Content-Length: ${body.toByteArray().size}\r\n"))
+        }
+    }
+
+    @Test
+    fun nextAppCanOpenReverseEarlyAndOnlyTheCurrentSessionCanControlVideo() {
+        val events = AirPlayPlaybackEvents()
+        val first = AirPlayPlaybackEvents.SessionKey("127.0.0.1", "first-app")
+        val next = first.copy(appleSessionId = "next-app")
+        Socket().use { firstSocket ->
+            Socket().use { nextSocket ->
+                val firstChannel = AirPlayPlaybackEvents.Channel(first, firstSocket)
+                val nextChannel = AirPlayPlaybackEvents.Channel(next, nextSocket)
+                val commands = mutableListOf<String>()
+
+                events.attach(firstChannel)
+                var firstId = 0L
+                events.start(first) { firstId = it }
+                events.attach(nextChannel)
+                assertTrue(nextChannel.events.isEmpty())
+                events.start(next)
+                events.control(first, stop = true) { commands += "old stop" }
+                events.update(firstId, DirectPlaybackTelemetry(120.0, 120.0, 0f, false, false))
+                events.control(next.copy(peer = "127.0.0.2")) { commands += "other peer" }
+                events.control(next) { commands += "new seek" }
+                events.control(next.copy(appleSessionId = null)) { commands += "legacy pause" }
+
+                assertEquals(listOf("loading", "stopped"), firstChannel.events.map { it.state.value })
+                assertEquals(listOf("loading"), nextChannel.events.map { it.state.value })
+                assertEquals(listOf("new seek", "legacy pause"), commands)
+            }
         }
     }
 

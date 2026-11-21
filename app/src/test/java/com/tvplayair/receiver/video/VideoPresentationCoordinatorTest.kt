@@ -148,7 +148,9 @@ class VideoPresentationCoordinatorTest {
 
         assertTrue(coordinator.startMirror())
         coordinator.switchToDirectVideo("https://example.com/video.mp4", 0.0)
+        events.clear()
         coordinator.switchToDirectVideo("https://example.com/next.mp4", 0.0)
+        assertEquals(listOf("direct.prepareAndPlay(https://example.com/next.mp4,0.0)"), events)
         events.clear()
 
         coordinator.stopDirectVideo()
@@ -209,7 +211,7 @@ class VideoPresentationCoordinatorTest {
     }
 
     @Test
-    fun directPrepareFailureEntersRecoveringAndCleansUp() {
+    fun directPrepareFailureReturnsToStandbyAndUnpausesAudio() {
         val events = mutableListOf<String>()
         val direct = FakeDirectEngine(events).apply { failPrepare = true }
         val coordinator = VideoPresentationCoordinator(
@@ -220,9 +222,32 @@ class VideoPresentationCoordinatorTest {
         )
 
         assertFalse(coordinator.switchToDirectVideo("https://bad.invalid/stream.m3u8", 0.0))
-        assertEquals(PresentationState.RECOVERING, coordinator.state)
-        assertTrue(events.contains("mirror.stopAndRelease"))
-        assertEquals("direct.stopAndClear", events.last())
+        assertEquals(PresentationState.IDLE, coordinator.state)
+        assertEquals(
+            listOf("direct.stopAndClear", "audio.pausedForExternal(false)", "surface.hideAll"),
+            events.takeLast(3)
+        )
+    }
+
+    @Test
+    fun mirrorDisconnectDuringDirectPlaybackPreventsRestartingADeadMirror() {
+        val events = mutableListOf<String>()
+        val coordinator = VideoPresentationCoordinator(
+            FakeMirrorEngine(events),
+            FakeDirectEngine(events),
+            FakeAudioController(events),
+            FakeSurfaceController(events)
+        )
+
+        coordinator.startMirror()
+        coordinator.switchToDirectVideo("https://example.com/video.mp4")
+        events.clear()
+        coordinator.onMirrorDisconnected()
+        assertEquals(PresentationState.DIRECT_ACTIVE, coordinator.state)
+        assertTrue(events.isEmpty())
+        coordinator.stopDirectVideo()
+        assertEquals(PresentationState.IDLE, coordinator.state)
+        assertFalse(events.contains("mirror.start"))
     }
 
     @Test
@@ -245,6 +270,7 @@ class VideoPresentationCoordinatorTest {
                 "direct.stopAndClear",
                 "mirror.stopAndRelease",
                 "audio.stop",
+                "audio.pausedForExternal(false)",
                 "surface.hideAll"
             ),
             events

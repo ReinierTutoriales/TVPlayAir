@@ -50,7 +50,11 @@ class RtspAndRtpParserTest {
         assertEquals(track2, visible?.track)
         assertNull(visible?.artwork)
 
-        playback.activate(source2, remote2)
+        var generationBumps = 0
+        playback.activate(source2, remote2) { generationBumps++ }
+        playback.withOwner(source1) { generationBumps++ }
+        playback.withOwner(source2) { generationBumps++ }
+        assertEquals(2, generationBumps)
         assertEquals(remote2, visible?.remote)
         assertNull(visible?.track)
         assertNull(visible?.artwork)

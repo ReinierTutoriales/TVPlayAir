@@ -60,7 +60,9 @@ class SessionService : Service() {
 
     @Volatile
     private var callback: ITvPlayCallback? = null
-    private var pendingDirectUrl: Pair<String, Double>? = null
+    private data class PendingDirectVideo(val url: String, val position: Double, val playbackId: Long)
+
+    private var pendingDirectUrl: PendingDirectVideo? = null
 
     private lateinit var identityStore: ReceiverIdentityStore
     private lateinit var mdnsAdvertiser: MdnsAdvertiser
@@ -86,21 +88,24 @@ class SessionService : Service() {
             ensureUiForeground()
         }
 
-        override fun onDirectVideoUrl(url: String, startPosition: Double) {
+        override fun onDirectVideoUrl(url: String, startPosition: Double, playbackId: Long) {
             synchronized(callbackLock) {
                 val cb = callback
                 if (cb == null) {
-                    pendingDirectUrl = url to startPosition
+                    pendingDirectUrl = PendingDirectVideo(url, startPosition, playbackId)
                 } else {
                     pendingDirectUrl = null
-                    runCatching { cb.onDirectVideoUrl(url, startPosition) }
+                    runCatching { cb.onDirectVideoUrl(url, startPosition, playbackId) }
                 }
             }
             ensureUiForeground()
         }
 
         override fun onDirectVideoCommand(command: String, value: Double) {
-            runCatching { callback?.onDirectVideoCommand(command, value) }
+            synchronized(callbackLock) {
+                if (command == "stop") pendingDirectUrl = null
+                runCatching { callback?.onDirectVideoCommand(command, value) }
+            }
         }
 
         override fun onClientConnected(clientName: String, dacpId: String, activeRemote: String) {
@@ -135,12 +140,14 @@ class SessionService : Service() {
                     }
                 }
                 latestNowPlaying = metadata
+                if (metadata == null) activeAudioGeneration = null
                 callback?.let { sendNowPlaying(it, metadata) }
             }
         }
 
         override fun onAudioStreamStarted(generationId: Int) {
             synchronized(callbackLock) {
+                if (activeAudioGeneration == generationId) return
                 activeAudioGeneration = generationId
                 latestMirrorConfig = latestMirrorConfig?.copy(generationId = generationId)
                 runCatching { callback?.onAudioStreamStarted(generationId) }
@@ -179,9 +186,9 @@ class SessionService : Service() {
                 sendNowPlaying(cb, latestNowPlaying)
                 activeAudioGeneration?.let { runCatching { cb.onAudioStreamStarted(it) } }
                 latestMirrorConfig?.let { config -> runCatching { config.sendTo(cb) } }
-                pendingDirectUrl?.let { (url, position) ->
+                pendingDirectUrl?.let { (url, position, playbackId) ->
                     pendingDirectUrl = null
-                    runCatching { cb.onDirectVideoUrl(url, position) }
+                    runCatching { cb.onDirectVideoUrl(url, position, playbackId) }
                 }
             }
         }
@@ -208,6 +215,7 @@ class SessionService : Service() {
         }
 
         override fun updatePlaybackTelemetry(
+            playbackId: Long,
             durationSec: Double,
             positionSec: Double,
             rate: Float,
@@ -216,6 +224,7 @@ class SessionService : Service() {
             isReady: Boolean
         ) {
             protocolEngine.updatePlaybackTelemetry(
+                playbackId,
                 DirectPlaybackTelemetry(durationSec, positionSec, rate, isPlaying, isBuffering, isReady)
             )
         }
@@ -362,6 +371,7 @@ class SessionService : Service() {
             latestMirrorConfig = null
             latestNowPlaying = null
             activeAudioGeneration = null
+            pendingDirectUrl = null
         }
         dacpController.onClientDisconnected()
     }

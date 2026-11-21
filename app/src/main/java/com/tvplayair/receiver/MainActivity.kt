@@ -47,6 +47,7 @@ class MainActivity : ComponentActivity(), SurfaceLayerController {
 
     private var sharedMemoryReady = false
     private var mirrorRequested = false
+    private var directPlaybackId = 0L
     private var overlayState by mutableStateOf(TvOverlayState())
 
     private val closeSettingsOnBack = object : OnBackPressedCallback(false) {
@@ -113,8 +114,8 @@ class MainActivity : ComponentActivity(), SurfaceLayerController {
             context = this,
             surfaceView = directSurfaceView,
             onTelemetryChanged = { telemetry ->
-                if (::sessionConnection.isInitialized) {
-                    sessionConnection.updatePlaybackTelemetry(telemetry)
+                if (::sessionConnection.isInitialized && directPlaybackId != 0L) {
+                    sessionConnection.updatePlaybackTelemetry(directPlaybackId, telemetry)
                 }
             },
             onPlaybackFinished = {
@@ -141,9 +142,7 @@ class MainActivity : ComponentActivity(), SurfaceLayerController {
                         presentationCoordinator.startMirror()
                         syncPresentationState()
                     }
-                    if (overlayState.connectedClient != null &&
-                        presentationCoordinator.state != PresentationState.DIRECT_ACTIVE
-                    ) {
+                    if (overlayState.audioProjectionActive) {
                         audioConsumer.start(generationId)
                     }
                 }
@@ -151,6 +150,7 @@ class MainActivity : ComponentActivity(), SurfaceLayerController {
                 override fun onSharedMemoryDetached() {
                     sharedMemoryReady = false
                     mirrorRequested = false
+                    directPlaybackId = 0L
                     presentationCoordinator.onSessionDied()
                     overlayState = overlayState.copy(
                         connectedClient = null,
@@ -177,7 +177,8 @@ class MainActivity : ComponentActivity(), SurfaceLayerController {
                     syncPresentationState()
                 }
 
-                override fun onDirectVideoUrl(url: String, startPosition: Double) {
+                override fun onDirectVideoUrl(url: String, startPosition: Double, playbackId: Long) {
+                    directPlaybackId = playbackId
                     presentationCoordinator.switchToDirectVideo(url, startPosition)
                     syncPresentationState()
                 }
@@ -198,9 +199,6 @@ class MainActivity : ComponentActivity(), SurfaceLayerController {
                     activeRemote: String
                 ) {
                     overlayState = overlayState.copy(connectedClient = clientName)
-                    if (presentationCoordinator.state != PresentationState.DIRECT_ACTIVE) {
-                        audioConsumer.start()
-                    }
                 }
 
                 override fun onClientDisconnected() {
@@ -209,7 +207,8 @@ class MainActivity : ComponentActivity(), SurfaceLayerController {
                         connectedClient = null, audioProjectionActive = false, nowPlaying = null
                     )
                     audioConsumer.stop()
-                    updateScreenWake()
+                    presentationCoordinator.onMirrorDisconnected()
+                    syncPresentationState()
                 }
 
                 override fun onAudioStreamStarted(generationId: Int) {
@@ -217,14 +216,13 @@ class MainActivity : ComponentActivity(), SurfaceLayerController {
                     updateScreenWake()
                     mirrorDecoder.setGeneration(generationId)
                     audioConsumer.setGeneration(generationId)
-                    if (sharedMemoryReady &&
-                        presentationCoordinator.state != PresentationState.DIRECT_ACTIVE
-                    ) {
+                    if (sharedMemoryReady) {
                         audioConsumer.start(generationId)
                     }
                 }
 
                 override fun onNowPlaying(metadata: RaopNowPlaying?) {
+                    if (metadata == null && overlayState.audioProjectionActive) audioConsumer.stop()
                     overlayState = overlayState.copy(
                         nowPlaying = metadata,
                         audioProjectionActive = metadata != null

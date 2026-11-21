@@ -166,12 +166,7 @@ class WebVideoPlayer(
     }
 
     override fun stopAndClear() {
-        pendingStartFraction = null
-        mainHandler.removeCallbacks(telemetryTicker)
-        player?.let { exo ->
-            exo.stop()
-            exo.clearMediaItems()
-        }
+        release()
         onTelemetryChanged(currentTelemetry())
     }
 
@@ -206,9 +201,6 @@ class WebVideoPlayer(
         mainHandler.removeCallbacks(telemetryTicker)
         player?.let { exo ->
             exo.removeListener(playerListener)
-            exo.stop()
-            exo.clearMediaItems()
-            exo.clearVideoSurfaceView(surfaceView)
             exo.release()
         }
         player = null

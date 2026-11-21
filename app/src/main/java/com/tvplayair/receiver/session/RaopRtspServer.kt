@@ -261,9 +261,8 @@ class RaopRtspServer(
                 } else {
                     val transport = RtspMessageParser.parseTransport(request.header("transport"))
                     if (audioReceiver.start(RaopAudioRtpReceiver.DEFAULT_AUDIO_PORT)) {
-                        nowPlaying.activate(source, remoteFor(request))
+                        activateAudioSource(source, request)
                     }
-                    listener.onAudioStreamStarted(generationId.get())
                     val responseTransport = buildString {
                         append("RTP/AVP/UDP;unicast;mode=record")
                         append(";server_port=").append(RaopAudioRtpReceiver.DEFAULT_AUDIO_PORT)
@@ -280,7 +279,7 @@ class RaopRtspServer(
             }
             "RECORD" -> {
                 remoteFor(request)?.let { nowPlaying.updateRemote(source, it) }
-                listener.onAudioStreamStarted(generationId.get())
+                nowPlaying.withOwner(source) { listener.onAudioStreamStarted(generationId.get()) }
                 Log.i(TAG, "-> RECORD 200 OK (cseq=$cseq gen=${generationId.get()})")
                 output.write(
                     RtspMessageParser.formatResponse(
@@ -319,9 +318,10 @@ class RaopRtspServer(
                 output.write(RtspMessageParser.formatResponse(200, "OK", cseq))
             }
             "FLUSH" -> {
-                val newGen = generationId.incrementAndGet()
-                listener.onAudioStreamStarted(newGen)
-                Log.i(TAG, "-> FLUSH 200 OK (cseq=$cseq gen=$newGen)")
+                nowPlaying.withOwner(source) {
+                    listener.onAudioStreamStarted(generationId.incrementAndGet())
+                }
+                Log.i(TAG, "-> FLUSH 200 OK (cseq=$cseq gen=${generationId.get()})")
                 output.write(RtspMessageParser.formatResponse(200, "OK", cseq))
             }
             "TEARDOWN" -> {
@@ -343,6 +343,12 @@ class RaopRtspServer(
         }
         output.flush()
         return true
+    }
+
+    private fun activateAudioSource(source: Any, request: RtspRequest) {
+        nowPlaying.activate(source, remoteFor(request)) {
+            listener.onAudioStreamStarted(generationId.incrementAndGet())
+        }
     }
 
     private fun updateVolume(body: ByteArray) {
@@ -450,9 +456,8 @@ class RaopRtspServer(
                     samplesPerFrame = spf
                 )
                 if (audioReceiver.start(RaopAudioRtpReceiver.DEFAULT_AUDIO_PORT)) {
-                    nowPlaying.activate(source, remoteFor(request))
+                    activateAudioSource(source, request)
                 }
-                listener.onAudioStreamStarted(generationId.get())
                 linkedMapOf(
                     "streams" to listOf(
                         linkedMapOf<String, Any>(

@@ -14,7 +14,7 @@ data class AirPlayServerConfig(
 
 interface AirPlayProtocolListener {
     fun onVideoConfigChanged(mimeType: String, width: Int, height: Int, generationId: Int)
-    fun onDirectVideoUrl(url: String, startPosition: Double)
+    fun onDirectVideoUrl(url: String, startPosition: Double, playbackId: Long)
     fun onDirectVideoCommand(command: String, value: Double)
     fun onClientConnected(clientName: String, dacpId: String, activeRemote: String)
     fun onClientDisconnected()
@@ -29,7 +29,7 @@ interface AirPlayProtocolListener {
 interface AirPlayProtocolEngine {
     fun start(config: AirPlayServerConfig): Boolean
     fun stop()
-    fun updatePlaybackTelemetry(telemetry: DirectPlaybackTelemetry)
+    fun updatePlaybackTelemetry(playbackId: Long, telemetry: DirectPlaybackTelemetry)
     fun currentGenerationId(): Int
 }
 
