@@ -1,0 +1,64 @@
+# TVPlayAir — Estado vivo de continuidad
+
+Última actualización: 2026-11-21. Rama de trabajo: `feat/direct-airplay-playback`.
+
+> Este documento es la **fuente operativa de verdad** para decidir el siguiente cambio. Separar siempre **observado en código**, **implementado**, **probado** y **pendiente**. Nunca convertir una hipótesis de rendimiento en una promesa.
+
+## Norte de producto
+
+Recepción AirPlay en Android TV con presentación automática y minimalista: música con carátula y controles; vídeo directo inmersivo; duplicación de pantalla sin interferencias. Al cambiar de canción, app o modalidad, conservar la sesión de recepción y mostrar **solo** el medio actual, sin carátulas ni fotogramas antiguos. Buscar transiciones rápidas, pero medir antes de declarar latencia mínima. No implica implementar CarPlay ni controlar el ciclo de vida de las apps iOS.
+
+## Decisiones que mantenemos
+
+1. **Receptor desacoplado de la UI**: `SessionService` corre en `:session`; la Activity no es autoridad del protocolo. Pendiente: propiedad o restauración robusta de los motores audiovisuales.
+2. **Reutilización condicionada**: conservar Media3 ExoPlayer entre vídeos y limpiar media items; no mantener varios decodificadores 4K sin medición de memoria y capacidades.
+3. **Una autoridad de reproducción**: reutilizar `AirPlayPlaybackEvents` y su `playbackId`; extender el control de identidad a Binder, UI, comandos y metadatos. Evitar un segundo árbitro contradictorio.
+4. **Separar datos de transporte**: `onNowPlaying(null)` no equivale a `onAudioStreamStopped`. Solo señales de transporte pueden detener RAOP.
+5. **Calidad adaptativa**: permitir selección adaptativa de pistas en Media3, sin forzar bitrate máximo.
+6. **Primera imagen válida**: no declarar transición visual completa hasta recibir primer fotograma del medio actual; disponer de timeout y estado recuperable.
+
+## Evidencia y estado
+
+| Aspecto | Evidencia de código | Estado |
+|---|---|---|
+| Sesiones vídeo | `AirPlayPlaybackEvents.SessionKey(peer, appleSessionId)` y `playbackId`; control de sesión en `/play`, `/stop`, `/rate`, `/scrub` | Existente; alcance incompleto en callbacks IPC |
+| RAOP y metadatos | `MainActivity.onNowPlaying` y `SessionService.onNowPlaying` no deben detener el audio por metadata nula | Corregido en rama; CI pendiente |
+| Motor Media3 | `WebVideoPlayer.stopAndClear` conserva instancia y limpia media items | Implementado; coste y frames residuales sin medir |
+| ABR | Se quitó `setForceHighestSupportedBitrate(true)` | Implementado; buffering sin medir |
+| Órdenes de vídeo | `MainActivity` filtra comandos si no hay reproducción directa activa | Implementado; falta ligar comando a playbackId extremo a extremo |
+| Callbacks Binder | `SessionConnection` usa `bound` sin epoch de vínculo | Riesgo observado; pendiente corrección y test |
+| Vida de motores | `MainActivity.onDestroy` libera Media3 y coordinador | Riesgo observado; pendiente diseño y prueba de restauración |
+| Primer frame | `WebVideoPlayer.onRenderedFirstFrame` registra log; no confirma transición al coordinador | Pendiente |
+| Interoperabilidad real iOS | Depende de protocolos y política de cada app, DRM y estado de iOS | No certificada |
+
+## Ruta de ejecución — en este orden
+
+### A. Integridad de sesión (bloqueante)
+
+- [ ] Inspeccionar eventos RTSP/RAOP y HTTP y definir qué identificadores son realmente confiables. La IP sola no basta.
+- [ ] Añadir epoch de conexión en `SessionConnection`; impedir callbacks de vínculos antiguos y reconexiones tras `close()`.
+- [ ] Vincular órdenes directas a `playbackId` y descartar `stop/seek/rate` obsoletos antes de tocar la UI.
+- [ ] Definir señales explícitas de inicio/parada de audio y limpiar estado solo cuando corresponda.
+
+### B. Continuidad audiovisual
+
+- [ ] Decidir propiedad de motores fuera de Activity o restauración de estado al recrearla; contrastar con superficies Android y FGS.
+- [ ] Añadir handshake de primer frame y timeout al cambiar a vídeo; no enseñar frames anteriores.
+- [ ] Verificar recuperación audio→vídeo→audio y espejo→vídeo→espejo, sin audio doble ni estado stale.
+- [ ] Controlar metadatos y carátulas con identidad del medio; cancelar resultados asíncronos obsoletos.
+
+### C. Rendimiento y certificación
+
+- [ ] Ejecutar build, lint y JVM sobre HEAD de la rama y registrar run/commit.
+- [ ] Pruebas deterministas: ≥100 transiciones, eventos reordenados, reconexión, cierre, superficies y errores.
+- [ ] Instrumentar primer frame, primera muestra de audio, buffering, dropped frames y p50/p95/p99.
+- [ ] Documentar por separado pruebas simuladas y compatibilidad real iPhone/Android TV.
+
+## Regla para incorporar nuevas ideas
+
+Registrar: **hipótesis → evidencia oficial/código → alternativa más simple → coste y riesgo → prueba de aceptación → decisión**. Si la prueba falla, revertir o revisar la idea; si pasa, actualizar esta tabla y la arquitectura. Mantener cambios concentrados en la misma rama, sin fusionar antes de CI verde.
+
+## Documentos relacionados
+
+- [Arquitectura y limitaciones](TVPLAYAIR_CONTINUITY_ARCHITECTURE_2026.md)
+- [Especificación de ingeniería](ENGINEERING_SPEC_v1.0.md)
