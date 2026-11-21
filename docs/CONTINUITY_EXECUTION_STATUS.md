@@ -52,7 +52,8 @@ Recepción AirPlay en Android TV con presentación automática y minimalista: m�
 ### C. Rendimiento y certificación
 
 - [ ] Ejecutar build, lint y JVM sobre HEAD de la rama y registrar run/commit.
-- [ ] Pruebas deterministas: ≥100 transiciones, eventos reordenados, reconexión, cierre, superficies y errores.
+- [x] Añadidas pruebas JVM de 100 transiciones y telemetría obsoleta en `AirPlayPlaybackEventsTest` (`1ebe8039`); ejecución pendiente.
+- [ ] Pruebas de reconexión/cierre Binder, eventos reordenados, superficies y errores.
 - [ ] Instrumentar primer frame, primera muestra de audio, buffering, dropped frames y p50/p95/p99.
 - [ ] Documentar por separado pruebas simuladas y compatibilidad real iPhone/Android TV.
 
@@ -70,3 +71,6 @@ Registrar: **hipótesis → evidencia oficial/código → alternativa más simpl
 - `5128f525`: `SessionConnection.close()` se vuelve terminal; `connect()` y backoff no reconectan tras cierre; los avisos de memoria compartida encolados comprueban epoch. **No resuelve todavía callbacks generales de vínculos anteriores.** Compilación y pruebas CI aún sin verificar.
 
 - `324716c7`: cada vinculación crea un callback Binder, DeathRecipient y ServiceConnection propios; todas las entregas comprueban epoch al ejecutarse. El mapeo de memoria se serializa en el hilo principal con detach para evitar carreras entre ambos. **No se ha validado todavía por CI**.
+
+- `ab043231`: corrige propiedad de ParcelFileDescriptor antes de despacho asíncrono; cierra FDs si epoch inválido. Revisar manejo de error de mapeo nativo y verificar compilación.
+- `1ebe8039`: cuatro pruebas unitarias del árbitro AirPlay, incluida secuencia de 100 cambios. Son pruebas de estado, **no** de latencia ni de interoperabilidad iOS. No ejecutadas en esta sesión.
