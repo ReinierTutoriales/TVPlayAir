@@ -181,7 +181,15 @@ class WebVideoPlayer(
     }
 
     override fun stopAndClear() {
-        release()
+        // Keep the player and its SurfaceView binding warm for the next AirPlay video.
+        // Stop and remove the old media so stale frames/metadata cannot be reused.
+        playbackGeneration++
+        pendingStartFraction = null
+        mainHandler.removeCallbacks(telemetryTicker)
+        player?.let { exo ->
+            exo.stop()
+            exo.clearMediaItems()
+        }
         onTelemetryChanged(currentTelemetry())
     }
 
