@@ -168,6 +168,10 @@ class SessionConnection(
         }
     }
 
+    fun finishDirectPlayback(playbackId: Long) {
+        if (playbackId != 0L) runCatching { service?.finishDirectPlayback(playbackId) }
+    }
+
     fun sendDacpCommand(command: String) {
         runCatching { service?.sendDacpCommand(command) }
     }
