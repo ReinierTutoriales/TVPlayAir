@@ -122,6 +122,7 @@ class SessionConnection(
 
     fun connect() {
         if (bound) return
+        runCatching { SessionService.startInBackground(appContext) }
         bound = appContext.bindService(
             Intent(appContext, SessionService::class.java),
             connection,
@@ -190,7 +191,6 @@ class SessionConnection(
         handler.removeCallbacks(notifyReady)
         runCatching {
             service?.unregisterCallback(callback)
-            service?.stopServer()
         }
         listener.onSharedMemoryDetached()
         NativeSharedMemory.nativeDetachConsumerBuffers()

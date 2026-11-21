@@ -41,6 +41,7 @@ class AirPlayDirectHttpServer(
     @Volatile
     private var activeConfig = AirPlayServerConfig()
     private var acceptThread: Thread? = null
+    private val pairingSession = AirPlayPairingSession()
     private val mirrorReceiver = AirPlayMirrorStreamReceiver(
         generationProvider = { generationId.get() },
         isHevcProvider = { activeConfig.hevcEnabled }
@@ -48,11 +49,13 @@ class AirPlayDirectHttpServer(
     private val raopRtspServer = RaopRtspServer(
         listener = listener,
         configProvider = { activeConfig },
-        mirrorReceiver = mirrorReceiver
+        mirrorReceiver = mirrorReceiver,
+        pairingSession = pairingSession
     )
 
     override fun start(config: AirPlayServerConfig): Boolean {
         activeConfig = config
+        config.ed25519PrivateKey?.let { pairingSession.setEdPrivateKey(it) }
         if (running.get()) return true
         val socket = runCatching {
             ServerSocket().apply {
@@ -140,8 +143,11 @@ class AirPlayDirectHttpServer(
 
             val contentLength = headers["content-length"]?.toIntOrNull()?.coerceIn(0, MAX_BODY_BYTES) ?: 0
             val body = if (contentLength > 0) readExactBytes(input, contentLength) else ByteArray(0)
+            val peer = sock.inetAddress?.hostAddress ?: "unknown"
+            val contentType = headers["content-type"].orEmpty()
+            Log.i(TAG, "<- $peer $method $fullPath (ct=$contentType len=${body.size})")
 
-            dispatchRequest(method, path, fullPath, String(body, StandardCharsets.UTF_8), output)
+            dispatchRequest(method, path, fullPath, body, output)
         }
     }
 
@@ -149,17 +155,44 @@ class AirPlayDirectHttpServer(
         method: String,
         path: String,
         fullPath: String,
-        body: String,
+        bodyBytes: ByteArray,
         output: OutputStream
     ) {
+        val body = String(bodyBytes, StandardCharsets.UTF_8)
         when {
+            method == "POST" && path == "/pair-setup" -> {
+                val reply = pairingSession.handlePairSetup(bodyBytes)
+                if (reply != null) {
+                    Log.i(TAG, "-> /pair-setup 200 OK (${reply.size}B)")
+                    writeBinaryResponse(output, 200, "OK", "application/octet-stream", reply)
+                } else {
+                    Log.w(TAG, "-> /pair-setup 400 (len=${bodyBytes.size})")
+                    writeResponse(output, 400, "Bad Request")
+                }
+            }
+            method == "POST" && path == "/pair-verify" -> {
+                val reply = pairingSession.handlePairVerify(bodyBytes)
+                if (reply != null) {
+                    Log.i(TAG, "-> /pair-verify 200 OK (${reply.size}B verified=${pairingSession.isVerified})")
+                    writeBinaryResponse(output, 200, "OK", "application/octet-stream", reply)
+                } else {
+                    Log.w(TAG, "-> /pair-verify 403 Forbidden (len=${bodyBytes.size})")
+                    writeResponse(output, 403, "Forbidden")
+                }
+            }
+            method == "POST" && path == "/fp-setup" -> {
+                Log.w(TAG, "-> /fp-setup received (${bodyBytes.size}B) - FairPlay SAP requested by iOS")
+                writeResponse(output, 200, "OK")
+            }
             method == "POST" && path == "/play" -> {
                 val parsed = AirPlayHttpRequestParser.parsePlayBody(body)
                 if (parsed != null) {
                     generationId.incrementAndGet()
                     listener.onDirectVideoUrl(parsed.url, parsed.startPositionSec)
+                    Log.i(TAG, "-> /play 200 OK url=${parsed.url} pos=${parsed.startPositionSec}")
                     writeResponse(output, 200, "OK")
                 } else {
+                    Log.w(TAG, "-> /play 400 Bad Request")
                     writeResponse(output, 400, "Bad Request")
                 }
             }
@@ -186,13 +219,14 @@ class AirPlayDirectHttpServer(
                 writeResponse(output, 200, "OK")
             }
             method == "GET" && path == "/info" -> {
-                val info = AirPlayInfoPlist.formatInfoXml(
+                val info = AirPlayInfoPlist.formatInfoBinary(
                     deviceId = activeConfig.deviceId,
                     maxWidth = activeConfig.maxWidth,
                     maxHeight = activeConfig.maxHeight,
                     hevcEnabled = activeConfig.hevcEnabled
                 )
-                writeResponse(output, 200, "OK", "text/x-apple-plist+xml", info)
+                Log.i(TAG, "-> /info 200 OK bplist00 (${info.size}B)")
+                writeBinaryResponse(output, 200, "OK", "application/x-apple-binary-plist", info)
             }
             method == "GET" && path == "/server-info" -> {
                 val info = AirPlayInfoPlist.formatServerInfoXml(activeConfig.deviceId)
@@ -209,7 +243,10 @@ class AirPlayDirectHttpServer(
                 val plist = AirPlayPlaybackInfoFormatter.formatPlist(latestTelemetry.get())
                 writeResponse(output, 200, "OK", "text/x-apple-plist+xml", plist)
             }
-            else -> writeResponse(output, 404, "Not Found")
+            else -> {
+                Log.w(TAG, "-> $method $path 404 Not Found")
+                writeResponse(output, 404, "Not Found")
+            }
         }
     }
 
@@ -249,7 +286,22 @@ class AirPlayDirectHttpServer(
         contentType: String = "text/plain",
         body: String = ""
     ) {
-        val bodyBytes = body.toByteArray(StandardCharsets.UTF_8)
+        writeBinaryResponse(
+            output,
+            statusCode,
+            reason,
+            contentType,
+            body.toByteArray(StandardCharsets.UTF_8)
+        )
+    }
+
+    private fun writeBinaryResponse(
+        output: OutputStream,
+        statusCode: Int,
+        reason: String,
+        contentType: String,
+        bodyBytes: ByteArray
+    ) {
         val headers = buildString {
             append("HTTP/1.1 ").append(statusCode).append(' ').append(reason).append("\r\n")
             append("Content-Type: ").append(contentType).append("\r\n")
