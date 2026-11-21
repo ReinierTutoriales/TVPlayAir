@@ -51,10 +51,12 @@ class AirPlayDirectHttpServer(
         onCodecConfigReady = { isHevc, width, height, generation ->
             val config = activeConfig
             val mimeType = if (isHevc) MediaFormat.MIMETYPE_VIDEO_HEVC else MediaFormat.MIMETYPE_VIDEO_AVC
+            val defaultWidth = if (isHevc) config.maxWidth else config.maxWidth.coerceAtMost(1920)
+            val defaultHeight = if (isHevc) config.maxHeight else config.maxHeight.coerceAtMost(1080)
             listener.onVideoConfigChanged(
                 mimeType,
-                width.takeIf { it > 0 } ?: config.maxWidth,
-                height.takeIf { it > 0 } ?: config.maxHeight,
+                width.takeIf { it > 0 } ?: defaultWidth,
+                height.takeIf { it > 0 } ?: defaultHeight,
                 generation
             )
         }

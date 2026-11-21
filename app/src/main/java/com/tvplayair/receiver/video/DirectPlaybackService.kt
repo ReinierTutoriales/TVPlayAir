@@ -79,14 +79,15 @@ class DirectPlaybackService : MediaSessionService() {
             }
 
             override fun onSharedMemoryDetached() {
-                if (id > 0L) finishRetained(notifySender = false)
+                if ((player.playbackId ?: id) > 0L) finishRetained(notifySender = false)
             }
 
             override fun onDirectVideoUrl(video: DirectPlaybackStart) {
-                if (id < 0L && video.playbackId == replayedAirPlayId) {
+                val activeId = player.playbackId ?: id
+                if (activeId < 0L && video.playbackId == replayedAirPlayId) {
                     replayedAirPlayId = 0L
                     connection.finishDirectPlayback(video.playbackId)
-                } else if (video.playbackId != id) {
+                } else if (video.playbackId != activeId) {
                     finishRetained(notifySender = false)
                 }
             }
@@ -98,7 +99,8 @@ class DirectPlaybackService : MediaSessionService() {
             }
 
             override fun onDirectVideoCommand(command: String, value: Double, playbackId: Long) {
-                if (playbackId != id || retained == null) return
+                val activeId = player.playbackId ?: return
+                if (playbackId != activeId || retained == null) return
                 when (command) {
                     "play" -> player.play()
                     "pause" -> player.pause()
@@ -109,9 +111,10 @@ class DirectPlaybackService : MediaSessionService() {
         })
         player.setDetachedCallbacks(object : WebVideoPlayer.ViewCallbacks {
             override fun onTelemetryChanged(telemetry: DirectPlaybackTelemetry) {
-                if (id > 0L && retained != null) {
-                    connection.updatePlaybackTelemetry(id, telemetry, player.checkpointPositionMs())
-                } else if (id < 0L && telemetry.isReady) {
+                val activeId = player.playbackId ?: return
+                if (activeId > 0L && retained != null) {
+                    connection.updatePlaybackTelemetry(activeId, telemetry, player.checkpointPositionMs())
+                } else if (activeId < 0L && telemetry.isReady) {
                     handler.removeCallbacks(castStartupTimeout)
                 }
             }
@@ -123,9 +126,10 @@ class DirectPlaybackService : MediaSessionService() {
             }
 
             override fun onSystemPlaybackIntent(playbackId: Long, playWhenReady: Boolean) {
-                if (playbackId == player.playbackId && retained != null) {
-                    if (id > 0L) {
-                        connection.setDirectPlaybackIntent(id, if (playWhenReady) "play" else "pause")
+                val activeId = player.playbackId ?: return
+                if (playbackId == activeId && retained != null) {
+                    if (activeId > 0L) {
+                        connection.setDirectPlaybackIntent(activeId, if (playWhenReady) "play" else "pause")
                     } else if (playWhenReady) {
                         player.play()
                     } else {

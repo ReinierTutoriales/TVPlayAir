@@ -16,9 +16,9 @@ import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicInteger
 
 data class MirrorVideoConfig(
-    val mimeType: String = MediaFormat.MIMETYPE_VIDEO_HEVC,
-    val width: Int = 3840,
-    val height: Int = 2160
+    val mimeType: String = MediaFormat.MIMETYPE_VIDEO_AVC,
+    val width: Int = 1920,
+    val height: Int = 1080
 )
 
 /**
@@ -55,9 +55,14 @@ class MirrorDecoder(
 
     fun updateConfig(newConfig: MirrorVideoConfig): Boolean {
         if (config == newConfig) return false
+        val mimeChanged = config.mimeType != newConfig.mimeType
         stopAndRelease()
         config = newConfig
-        frameGate.clearAll()
+        if (mimeChanged) {
+            frameGate.clearAll()
+        } else {
+            frameGate.resetGate()
+        }
         return true
     }
 
