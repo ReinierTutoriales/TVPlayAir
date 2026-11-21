@@ -95,3 +95,6 @@ Registrar: **hipótesis → evidencia oficial/código → alternativa más simpl
 
 - `76a4a7fc`: servicio guarda `paused` por reproducción, actualiza con `/rate` y reenvía pausa al registrar Activity después de URL. Solo restaura pausas explícitas de protocolo; no es persistencia completa del reproductor ni elimina el reinicio del decodificador.
 - `a62312e7`: prueba nueva de correlación de `playbackId` de controles tras transición. **Prueba añadida, no ejecutada**. Pendientes: compilación AIDL, pruebas CI, cambio de Activity y reproducción sin reinicio.
+
+- `4132f315` (2026-11-21): añadidas pruebas de aislamiento de `stop` entre peers y de comandos para nueva reproducción del mismo peer.
+- `e5534122`: se conserva la pausa explícita del protocolo; no se interpreta `Media3.isPlaying=false` durante transición READY como pausa del usuario. Checkpoint de posición solo si `isReady && !isBuffering` y posición >1 s. **Pendiente**: estado real `playWhenReady`, prueba de restauración, validación CI y arquitectura de reproductor persistente.
