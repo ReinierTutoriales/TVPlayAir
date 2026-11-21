@@ -20,7 +20,7 @@ import androidx.media3.exoplayer.trackselection.DefaultTrackSelector
 
 /**
  * Direct 4K HDR web video player backed by Media3 ExoPlayer on a native SurfaceView.
- * Uses Safari iOS User-Agent and highest-bitrate track selection for direct TV playback.
+ * Uses Safari iOS User-Agent and adaptive track selection for direct TV playback.
  */
 class WebVideoPlayer(
     context: Context,
@@ -116,8 +116,7 @@ class WebVideoPlayer(
 
         val trackSelector = DefaultTrackSelector(appContext).apply {
             parameters = buildUponParameters()
-                .setForceHighestSupportedBitrate(true)
-                .build()
+                    .build()
         }
 
         val audioAttributes = AudioAttributes.Builder()
@@ -138,7 +137,7 @@ class WebVideoPlayer(
     }
 
     override fun prepareAndPlay(url: String, startPosition: Double): Boolean {
-        if (url.isBlank()) return false
+        if (url.isBlank() || !startPosition.isFinite()) return false
         playbackGeneration++
         val exo = ensurePlayer()
         val initialPositionMs = initialDirectPositionMs(startPosition, durationMs = 0L)
