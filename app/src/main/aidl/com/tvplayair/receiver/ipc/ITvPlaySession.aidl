@@ -11,6 +11,7 @@ interface ITvPlaySession {
     void stopServer();
     void updatePlaybackTelemetry(long playbackId, double durationSec, double positionSec,
                                  float rate, boolean isPlaying, boolean isBuffering, boolean isReady);
+    oneway void finishDirectPlayback(long playbackId);
     void sendDacpCommand(String command);
     oneway void configureAdvertising(int maxWidth, int maxHeight, boolean hevcEnabled, String serviceName);
 }
