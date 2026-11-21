@@ -139,6 +139,7 @@ class MainActivity : ComponentActivity(), SurfaceLayerController {
                 }
             },
             onPlaybackFinished = {
+                if (::sessionConnection.isInitialized) sessionConnection.finishDirectPlayback(directPlaybackId)
                 directPlaybackId = 0L
                 presentationCoordinator.stopDirectVideo()
                 syncPresentationState()
