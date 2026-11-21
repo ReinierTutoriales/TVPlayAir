@@ -56,13 +56,22 @@ class SessionConnection(
             audioSize: Long,
             generationId: Int
         ) {
-            // Native mapping must not race with unmapping on binder death or close.
-            deliver(epoch) {
+            // The service closes its ParcelFileDescriptor copies after the Binder call.
+            // Take ownership before posting; close both if the connection becomes stale.
+            val videoRawFd = videoFd.detachFd()
+            val audioRawFd = audioFd.detachFd()
+            handler.post {
+                if (!isCurrent(epoch)) {
+                    ParcelFileDescriptor.adoptFd(videoRawFd).close()
+                    ParcelFileDescriptor.adoptFd(audioRawFd).close()
+                    return@post
+                }
+                // Mapping and unmapping are serialized on the main thread.
                 val videoMapped = NativeSharedMemory.nativeMapConsumerBuffer(
-                    0, videoFd.detachFd(), videoSize
+                    0, videoRawFd, videoSize
                 )
                 val audioMapped = NativeSharedMemory.nativeMapConsumerBuffer(
-                    1, audioFd.detachFd(), audioSize
+                    1, audioRawFd, audioSize
                 )
                 if (!videoMapped || !audioMapped) {
                     handleBinderDeath(epoch)
