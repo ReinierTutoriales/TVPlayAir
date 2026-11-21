@@ -89,6 +89,7 @@ class VideoPresentationCoordinator(
             surfaceController.showDirectSurface()
         }
         val prepared = directEngine.prepareAndPlay(url, startPosition)
+        if (state != PresentationState.SWITCHING_TO_DIRECT) return false
         if (!prepared) {
             // A failed replacement must not leave an old direct stream visible.
             restoreAfterDirect()
