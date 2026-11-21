@@ -1,9 +1,17 @@
 package com.tvplayair.receiver.session
 
+import android.app.Notification
+import android.app.NotificationChannel
+import android.app.NotificationManager
 import android.app.Service
+import android.content.Context
 import android.content.Intent
+import android.content.pm.ServiceInfo
+import android.os.Build
 import android.os.IBinder
 import android.os.ParcelFileDescriptor
+import android.util.Log
+import com.tvplayair.receiver.MainActivity
 import com.tvplayair.receiver.control.DacpController
 import com.tvplayair.receiver.ipc.ITvPlayCallback
 import com.tvplayair.receiver.ipc.ITvPlaySession
@@ -14,11 +22,27 @@ import com.tvplayair.receiver.network.ReceiverIdentityStore
 import com.tvplayair.receiver.video.DirectPlaybackTelemetry
 
 class SessionService : Service() {
+    companion object {
+        private const val TAG = "SessionService"
+        private const val CHANNEL_ID = "tvplayair_session"
+        private const val NOTIFICATION_ID = 1001
+        const val ACTION_START_BACKGROUND = "com.tvplayair.receiver.action.START_BACKGROUND"
+
+        fun startInBackground(context: Context) {
+            val intent = Intent(context.applicationContext, SessionService::class.java).apply {
+                action = ACTION_START_BACKGROUND
+            }
+            context.applicationContext.startForegroundService(intent)
+        }
+    }
+
     private var videoFd: ParcelFileDescriptor? = null
     private var audioFd: ParcelFileDescriptor? = null
 
     @Volatile
     private var callback: ITvPlayCallback? = null
+    @Volatile
+    private var pendingDirectUrl: Pair<String, Double>? = null
 
     private lateinit var identityStore: ReceiverIdentityStore
     private lateinit var mdnsAdvertiser: MdnsAdvertiser
@@ -36,11 +60,19 @@ class SessionService : Service() {
             height: Int,
             generationId: Int
         ) {
+            ensureUiForeground()
             runCatching { callback?.onVideoConfigChanged(mimeType, width, height, generationId) }
         }
 
         override fun onDirectVideoUrl(url: String, startPositionSec: Double) {
-            runCatching { callback?.onDirectVideoUrl(url, startPositionSec) }
+            val cb = callback
+            if (cb == null) {
+                pendingDirectUrl = url to startPositionSec
+                ensureUiForeground()
+            } else {
+                pendingDirectUrl = null
+                runCatching { cb.onDirectVideoUrl(url, startPositionSec) }
+            }
         }
 
         override fun onDirectVideoCommand(command: String, value: Double) {
@@ -49,6 +81,7 @@ class SessionService : Service() {
 
         override fun onClientConnected(clientName: String, dacpId: String, activeRemote: String) {
             dacpController.onClientConnected(dacpId, activeRemote)
+            ensureUiForeground()
             runCatching { callback?.onClientConnected(clientName, dacpId, activeRemote) }
         }
 
@@ -83,6 +116,10 @@ class SessionService : Service() {
                 }
             } finally {
                 videoCopy.close()
+            }
+            pendingDirectUrl?.let { (url, pos) ->
+                pendingDirectUrl = null
+                runCatching { cb.onDirectVideoUrl(url, pos) }
             }
         }
 
@@ -153,6 +190,59 @@ class SessionService : Service() {
         mdnsAdvertiser = MdnsAdvertiser(this)
         dacpController = DacpController(this)
         protocolEngine = AirPlayDirectHttpServer(protocolListener)
+    }
+
+    override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
+        promoteToForeground()
+        startAirPlaySession()
+        return START_STICKY
+    }
+
+    private fun promoteToForeground() {
+        val manager = getSystemService(NotificationManager::class.java)
+        val channel = NotificationChannel(
+            CHANNEL_ID,
+            "TVPlayAir Background Receiver",
+            NotificationManager.IMPORTANCE_LOW
+        )
+        manager?.createNotificationChannel(channel)
+
+        val notification = Notification.Builder(this, CHANNEL_ID)
+            .setContentTitle(advertiseConfig.serviceName)
+            .setContentText("AirPlay receiver active in background")
+            .setSmallIcon(android.R.drawable.stat_sys_data_bluetooth)
+            .setOngoing(true)
+            .build()
+
+        runCatching {
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+                startForeground(
+                    NOTIFICATION_ID,
+                    notification,
+                    ServiceInfo.FOREGROUND_SERVICE_TYPE_MEDIA_PLAYBACK
+                )
+            } else {
+                startForeground(NOTIFICATION_ID, notification)
+            }
+        }.onFailure {
+            Log.w(TAG, "Could not promote SessionService to foreground", it)
+        }
+    }
+
+    private fun ensureUiForeground() {
+        if (callback != null) return
+        runCatching {
+            val intent = Intent(this, MainActivity::class.java).apply {
+                addFlags(
+                    Intent.FLAG_ACTIVITY_NEW_TASK or
+                        Intent.FLAG_ACTIVITY_SINGLE_TOP or
+                        Intent.FLAG_ACTIVITY_REORDER_TO_FRONT
+                )
+            }
+            startActivity(intent)
+        }.onFailure {
+            Log.w(TAG, "Unable to auto-launch MainActivity from background", it)
+        }
     }
 
     @Synchronized

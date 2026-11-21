@@ -20,7 +20,8 @@ import java.util.concurrent.atomic.AtomicInteger
 class RaopRtspServer(
     private val listener: AirPlayProtocolListener,
     private val configProvider: () -> AirPlayServerConfig,
-    private val mirrorReceiver: AirPlayMirrorStreamReceiver? = null
+    private val mirrorReceiver: AirPlayMirrorStreamReceiver? = null,
+    private val pairingSession: AirPlayPairingSession = AirPlayPairingSession()
 ) {
     companion object {
         private const val TAG = "RaopRtspServer"
@@ -35,7 +36,6 @@ class RaopRtspServer(
     private val running = AtomicBoolean(false)
     private val generationId = AtomicInteger(1)
     private val audioReceiver = RaopAudioRtpReceiver { generationId.get() }
-    private val pairingSession = AirPlayPairingSession()
 
     @Volatile
     private var serverSocket: ServerSocket? = null
@@ -101,6 +101,12 @@ class RaopRtspServer(
                     ?.toIntOrNull()?.coerceIn(0, MAX_BODY_BYTES) ?: 0
                 val body = if (contentLength > 0) readExact(input, contentLength) else ByteArray(0)
                 val request = preliminary.copy(body = body)
+                val peer = sock.inetAddress?.hostAddress ?: "unknown"
+                Log.i(
+                    TAG,
+                    "<- $peer ${request.method} ${request.uri} " +
+                        "(cseq=${request.cseq()} ct=${request.header("content-type").orEmpty()} len=${body.size})"
+                )
 
                 val dacpId = request.header("dacp-id").orEmpty()
                 val activeRemote = request.header("active-remote").orEmpty()
@@ -128,15 +134,16 @@ class RaopRtspServer(
             "GET" -> {
                 if (request.uri.endsWith("/info")) {
                     val cfg = configProvider()
-                    val xml = AirPlayInfoPlist.formatInfoXml(
+                    val bin = AirPlayInfoPlist.formatInfoBinary(
                         deviceId = cfg.deviceId,
                         maxWidth = cfg.maxWidth,
                         maxHeight = cfg.maxHeight,
                         hevcEnabled = cfg.hevcEnabled
-                    ).toByteArray(StandardCharsets.UTF_8)
+                    )
+                    Log.i(TAG, "-> GET /info 200 OK bplist00 (${bin.size}B)")
                     output.write(
                         RtspMessageParser.formatResponse(
-                            200, "OK", cseq, mapOf("Content-Type" to "text/x-apple-plist+xml"), xml
+                            200, "OK", cseq, mapOf("Content-Type" to "application/x-apple-binary-plist"), bin
                         )
                     )
                 } else {
@@ -152,6 +159,7 @@ class RaopRtspServer(
                     request.uri.endsWith("/pair-setup") -> {
                         val reply = pairingSession.handlePairSetup(request.body)
                         if (reply != null) {
+                            Log.i(TAG, "-> /pair-setup 200 OK (${reply.size}B)")
                             output.write(
                                 RtspMessageParser.formatResponse(
                                     200, "OK", cseq,
@@ -160,12 +168,14 @@ class RaopRtspServer(
                                 )
                             )
                         } else {
+                            Log.w(TAG, "-> /pair-setup 400 (len=${request.body.size})")
                             output.write(RtspMessageParser.formatResponse(400, "Bad Request", cseq))
                         }
                     }
                     request.uri.endsWith("/pair-verify") -> {
                         val reply = pairingSession.handlePairVerify(request.body)
                         if (reply != null) {
+                            Log.i(TAG, "-> /pair-verify 200 OK (${reply.size}B verified=${pairingSession.isVerified})")
                             output.write(
                                 RtspMessageParser.formatResponse(
                                     200, "OK", cseq,
@@ -174,10 +184,18 @@ class RaopRtspServer(
                                 )
                             )
                         } else {
+                            Log.w(TAG, "-> /pair-verify 403 Forbidden (len=${request.body.size})")
                             output.write(RtspMessageParser.formatResponse(403, "Forbidden", cseq))
                         }
                     }
-                    else -> output.write(RtspMessageParser.formatResponse(200, "OK", cseq))
+                    request.uri.endsWith("/fp-setup") -> {
+                        Log.w(TAG, "-> /fp-setup received (${request.body.size}B) - FairPlay SAP requested by iOS")
+                        output.write(RtspMessageParser.formatResponse(200, "OK", cseq))
+                    }
+                    else -> {
+                        Log.i(TAG, "-> POST ${request.uri} 200 OK")
+                        output.write(RtspMessageParser.formatResponse(200, "OK", cseq))
+                    }
                 }
             }
             "SETUP" -> {

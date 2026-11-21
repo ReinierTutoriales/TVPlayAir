@@ -11,6 +11,49 @@ object AirPlayInfoPlist {
     const val FEATURES_64BIT: Long = (0x1EL shl 32) or 0x5A7FFFF7L
     const val STATUS_FLAGS: Int = 0x44
 
+    fun buildInfoMap(
+        deviceId: String,
+        maxWidth: Int,
+        maxHeight: Int,
+        hevcEnabled: Boolean
+    ): Map<String, Any> {
+        val width = maxWidth.coerceAtLeast(1280).toLong()
+        val height = maxHeight.coerceAtLeast(720).toLong()
+        return linkedMapOf(
+            "deviceID" to deviceId,
+            "features" to FEATURES_64BIT,
+            "model" to MdnsTxtRecords.AIRPLAY_MODEL,
+            "sourceVersion" to "220.68",
+            "statusFlags" to STATUS_FLAGS.toLong(),
+            "vv" to 2L,
+            "preferredCodec" to if (hevcEnabled) "HEVC" else "H264",
+            "displays" to listOf(
+                linkedMapOf<String, Any>(
+                    "widthPixels" to width,
+                    "heightPixels" to height,
+                    "maxFPS" to 60L,
+                    "overscanned" to false,
+                    "refreshRate" to 60.0,
+                    "rotation" to true
+                )
+            ),
+            "audioFormats" to listOf(
+                linkedMapOf<String, Any>(
+                    "audioInputFormats" to 67108860L,
+                    "audioOutputFormats" to 67108860L,
+                    "type" to 100L
+                )
+            )
+        )
+    }
+
+    fun formatInfoBinary(
+        deviceId: String,
+        maxWidth: Int,
+        maxHeight: Int,
+        hevcEnabled: Boolean
+    ): ByteArray = BinaryPlistWriter.encode(buildInfoMap(deviceId, maxWidth, maxHeight, hevcEnabled))
+
     fun formatInfoXml(
         deviceId: String,
         maxWidth: Int,

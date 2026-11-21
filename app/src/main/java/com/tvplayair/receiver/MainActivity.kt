@@ -207,6 +207,7 @@ class MainActivity : ComponentActivity(), SurfaceLayerController {
 
         if ((keyCode == KeyEvent.KEYCODE_DPAD_CENTER || keyCode == KeyEvent.KEYCODE_ENTER) &&
             (event == null || event.repeatCount == 0) &&
+            presentationCoordinator.state != PresentationState.IDLE &&
             !hidBridge.isConnected()
         ) {
             setOverlayVisible(true)
