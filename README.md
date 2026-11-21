@@ -6,6 +6,8 @@ Entrega calidad nativa 4K/HEVC/HDR, transición limpia entre espejo de pantalla 
 
 ## Documentación
 
+- **[Estado actual y siguiente paso](docs/CONTINUITY_EXECUTION_STATUS.md)** — Registro vivo de decisiones, evidencias, avances, riesgos y ruta de ejecución. Consultar primero antes de modificar la arquitectura.
+
 - [Arquitectura de continuidad multimedia y auditoría 2026](docs/TVPLAYAIR_CONTINUITY_ARCHITECTURE_2026.md) — Objetivo de experiencia tipo CarPlay para TV, arbitraje de sesiones, pruebas y tecnologías oficiales.
 - [Especificación de Ingeniería v1.0](docs/ENGINEERING_SPEC_v1.0.md) — Arquitectura definitiva, contratos IPC, estructura del repositorio y hoja de ruta.
 
