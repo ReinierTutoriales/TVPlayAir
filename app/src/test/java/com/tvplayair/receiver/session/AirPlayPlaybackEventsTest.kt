@@ -46,6 +46,37 @@ class AirPlayPlaybackEventsTest {
         assertEquals(listOf(first, second), dispatched)
     }
 
+
+    @Test
+    fun stopForPreviousSessionCannotStopReplacement() {
+        val events = AirPlayPlaybackEvents()
+        var first = 0L
+        var second = 0L
+        events.start(peerA) { first = it }
+        events.start(peerB) { second = it }
+        val stopped = mutableListOf<Long>()
+        events.control(peerA, stop = true) { id -> stopped.add(id) }
+        events.control(peerB) { id -> stopped.add(id) }
+        assertEquals(listOf(second), stopped)
+        events.control(peerB, stop = true) { id -> stopped.add(id) }
+        assertEquals(listOf(second, second), stopped)
+        events.control(peerB) { id -> stopped.add(id) }
+        assertEquals(listOf(second, second), stopped)
+    }
+
+    @Test
+    fun samePeerNewPlaybackReceivesNewCommandIdentity() {
+        val events = AirPlayPlaybackEvents()
+        var oldId = 0L
+        var currentId = 0L
+        events.start(peerA) { oldId = it }
+        events.start(peerA) { currentId = it }
+        val ids = mutableListOf<Long>()
+        events.control(peerA) { id -> ids.add(id) }
+        assertEquals(listOf(currentId), ids)
+        org.junit.Assert.assertNotEquals(oldId, currentId)
+    }
+
     @Test
     fun staleTelemetryNeverUpdatesActivePlayback() {
         val events = AirPlayPlaybackEvents()
