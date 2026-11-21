@@ -92,8 +92,8 @@ class SessionConnection(
         override fun onDirectVideoUrl(url: String, startPosition: Double, playbackId: Long) =
             deliver(epoch) { listener.onDirectVideoUrl(url, startPosition, playbackId) }
 
-        override fun onDirectVideoCommand(command: String, value: Double) =
-            deliver(epoch) { listener.onDirectVideoCommand(command, value) }
+        override fun onDirectVideoCommand(command: String, value: Double, playbackId: Long) =
+            deliver(epoch) { listener.onDirectVideoCommand(command, value, playbackId) }
 
         override fun onClientConnected(clientName: String, dacpId: String, activeRemote: String) =
             deliver(epoch) { listener.onClientConnected(clientName, dacpId, activeRemote) }
