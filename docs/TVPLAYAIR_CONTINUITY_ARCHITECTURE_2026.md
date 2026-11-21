@@ -77,3 +77,33 @@ Inventario comprobado en `gradle/libs.versions.toml`: AGP 9.5.2; Kotlin 2.4.21; 
 ## Gobernanza
 
 Esta guía complementa `docs/ENGINEERING_SPEC_v1.0.md`. Cuando contradiga promesas absolutas de calidad, compatibilidad o comportamiento, prevalecen las limitaciones verificadas y las pruebas. Cada cambio relevante debe incluir pruebas de regresión, documentación de las decisiones y una evaluación de versiones/seguridad. No actualizar dependencias por número sin revisar API, toolchain y regresiones.
+
+## Ejecución priorizada — 2026-11-21
+
+### Pasada 1: contrato funcional (P0)
+
+- Identidad separada para conexión IPC, generación del buffer compartido y reproducción directa (playbackId). No tratar metadata nula como stop de RAOP.
+- Validar URL/posición antes de pausar Oboe o liberar MediaCodec; rechazar comandos de vídeo sin reproducción activa.
+- Serializar eventos de sesión en el hilo principal, invalidar callbacks de una vinculación anterior y comprobar su identidad **en ejecución**, no solo cuando se encolan.
+- El estado DIRECT_ACTIVE no prueba primer fotograma: incorporar evento de primer frame y timeout antes de considerar una transición visual completa.
+
+### Pasada 2: latencia y recursos (P1)
+
+- Conservar ExoPlayer entre medios compatibles, limpiar el media item anterior y liberar el motor al finalizar el ciclo de vida real.
+- Mantener un solo decodificador 4K activo; no precalentar otra VPU sin prueba de capacidad. Medir costes de preparación, primer fotograma y audio antes de introducir PlayerPool.
+- Servicio de recepción independiente de la Activity; bloquear el iPhone o apagar su pantalla no es señal de stop. Respetar restricciones de background/foreground service y suspensión profunda de Android TV.
+- No confundir la desaparición de carátula con parada de audio; evitar enviar DACP a sesiones desconectadas.
+
+### Pasada 3: certificación (P2)
+
+- Ejecutar CI de build, lint y JVM. Incorporar pruebas de secuencias audio A/B, audio→vídeo→audio, espejo→vídeo→espejo, callbacks IPC obsoletos, cierre y reconexión, superficies destruidas, metadatos vacíos y seek inválido.
+- Publicar mediciones p50/p95/p99 con emisor simulado y distinguirlas de latencia real iPhone→TV; sin pruebas físicas no declarar compatibilidad universal ni latencia garantizada.
+- No fusionar a main hasta obtener comprobación reproducible. Los commits publicados sin CI permanecen sin certificar.
+
+### Hallazgos de código verificados
+
+- `MainActivity.onNowPlaying(null)` detenía Oboe; se eliminó esa dependencia, manteniendo la señal de stream como autoridad de audio.
+- `WebVideoPlayer.stopAndClear()` reconstruía el reproductor; ahora lo conserva para siguiente media item, con limpieza de contenido.
+- `SessionConnection` publica callbacks Binder a un Handler y solo comprueba `bound`: ese booleano no distingue dos vinculaciones consecutivas. Requiere epoch de conexión para impedir eventos tardíos.
+- `SessionService` conserva `pendingDirectUrl` cuando no hay UI, pero una orden stop recibida mientras la UI está ausente solo limpia ese pending; comprobar recuperación de comandos y reproducción al registrar callback.
+- `MainActivity.onDestroy()` destruye el motor audiovisual aunque el proceso del servicio continúe; la recepción del protocolo persiste, pero la reproducción de audio/vídeo dependiente de Activity **no** sobrevive íntegramente a su destrucción. Requiere separar propiedad de motores o restauración explícita antes de certificar continuidad con pantalla TV suspendida.
