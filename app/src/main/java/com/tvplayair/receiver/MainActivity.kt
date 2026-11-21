@@ -127,7 +127,9 @@ class MainActivity : ComponentActivity(), SurfaceLayerController {
             context = this,
             surfaceView = directSurfaceView,
             onTelemetryChanged = { telemetry ->
-                if (presentationCoordinator.state == PresentationState.DIRECT_ACTIVE && overlayState.showingVideoControls) {
+                if (::presentationCoordinator.isInitialized &&
+                    presentationCoordinator.state == PresentationState.DIRECT_ACTIVE &&
+                    overlayState.showingVideoControls) {
                     overlayState = overlayState.copy(videoControls = telemetry)
                 }
                 if (::presentationCoordinator.isInitialized &&
@@ -208,6 +210,8 @@ class MainActivity : ComponentActivity(), SurfaceLayerController {
                 }
 
                 override fun onDirectVideoCommand(command: String, value: Double) {
+                    if (directPlaybackId == 0L ||
+                        presentationCoordinator.state != PresentationState.DIRECT_ACTIVE) return
                     when (command) {
                         "play" -> presentationCoordinator.playDirect()
                         "pause" -> presentationCoordinator.pauseDirect()
@@ -319,10 +323,12 @@ class MainActivity : ComponentActivity(), SurfaceLayerController {
                 return true
             }
             KeyEvent.KEYCODE_MEDIA_NEXT -> {
+                if (inDirectMode) return true
                 sessionConnection.sendDacpCommand(DacpCommand.NEXT.wirePath)
                 return true
             }
             KeyEvent.KEYCODE_MEDIA_PREVIOUS -> {
+                if (inDirectMode) return true
                 sessionConnection.sendDacpCommand(DacpCommand.PREVIOUS.wirePath)
                 return true
             }
