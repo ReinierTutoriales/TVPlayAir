@@ -38,6 +38,7 @@ import com.tvplayair.receiver.ui.TvOverlayMenu
 import com.tvplayair.receiver.ui.TvOverlayState
 import com.tvplayair.receiver.video.DirectPlaybackTelemetry
 import com.tvplayair.receiver.video.DirectPlaybackStart
+import com.tvplayair.receiver.video.DirectPlaybackService
 import com.tvplayair.receiver.video.DirectVideoViewModel
 import com.tvplayair.receiver.video.MirrorDecoder
 import com.tvplayair.receiver.video.MirrorVideoConfig
@@ -146,6 +147,8 @@ class MainActivity : ComponentActivity(), SurfaceLayerController {
         root.addView(overlayComposeView, FrameLayout.LayoutParams(matchParent))
         setContentView(root)
 
+        val retainedPlayback = DirectPlaybackService.claim()
+        retainedPlayback?.let(directVideoModel::adopt)
         audioConsumer = OboeAudioConsumer(this)
         mirrorDecoder = MirrorDecoder { mirrorSurfaceView.holder.surface }
         webVideoPlayer.attachView(directSurfaceView, object : WebVideoPlayer.ViewCallbacks {
@@ -170,6 +173,7 @@ class MainActivity : ComponentActivity(), SurfaceLayerController {
                     Log.i("TVPlayAir", "direct_startup outcome=ready playbackId=$playbackId elapsedMs=$elapsedMs")
                     syncPresentationState()
                     webVideoPlayer.exposeSystemControls(playbackId)
+                    if (playbackId > 0L && screenStarted) publishDirectPlayback()
                     if (playbackId < 0L) castReceiver?.attachSession(webVideoPlayer.platformSessionToken)
                     saveDirectCheckpoint()
                 }
@@ -195,131 +199,130 @@ class MainActivity : ComponentActivity(), SurfaceLayerController {
         )
         hidBridge = TvRemoteHidBridge(this).apply { startIfSupported() }
 
-        sessionConnection = SessionConnection(
-            context = this,
-            listener = object : SessionEventListener {
-                override fun onSharedMemoryReady(generationId: Int, activeDirectPlaybackId: Long) {
-                    sharedMemoryReady = true
-                    awaitingDirectSnapshot = activeDirectPlaybackId != 0L
-                    val retainedId = webVideoPlayer.playbackId
-                    val binder = sessionConnection.remoteBinder
-                    if (retainedId != null && retainedId > 0L &&
-                        (retainedId != activeDirectPlaybackId || binder != directVideoModel.sessionBinder)
-                    ) webVideoPlayer.stopAndClear()
-                    directVideoModel.sessionBinder = binder
-                    if (awaitingDirectSnapshot) audioConsumer.setPausedForExternalPlayer(true)
-                    mirrorDecoder.setGeneration(generationId)
-                    audioConsumer.setGeneration(generationId)
-                    if (mirrorRequested && !awaitingDirectSnapshot) {
-                        presentationCoordinator.startMirror()
-                        syncPresentationState()
-                    }
-                    if (overlayState.audioProjectionActive) {
-                        audioConsumer.start(generationId)
-                    }
-                }
-
-                override fun onSharedMemoryDetached() {
-                    if (destroyingView) return
-                    sharedMemoryReady = false
-                    directVideoModel.sessionBinder = null
-                    awaitingDirectSnapshot = false
-                    mirrorRequested = false
-                    val castWasActive = directPlaybackId < 0L
-                    directPlaybackId = 0L
-                    cancelDirectStartupTimeout()
-                    dismissVideoControls()
-                    presentationCoordinator.onSessionDied()
-                    if (castWasActive) releaseCastPlayback()
-                    overlayState = overlayState.copy(
-                        connectedClient = null,
-                        audioProjectionActive = false,
-                        nowPlaying = null,
-                        presentationState = presentationCoordinator.state
-                    )
-                    updateScreenWake()
-                }
-
-                override fun onVideoConfigChanged(
-                    mimeType: String,
-                    width: Int,
-                    height: Int,
-                    generationId: Int
-                ) {
-                    val reconfigured = mirrorDecoder.updateConfig(MirrorVideoConfig(mimeType, width, height))
-                    mirrorDecoder.setGeneration(generationId)
-                    audioConsumer.setGeneration(generationId)
-                    mirrorRequested = true
-                    if (sharedMemoryReady && !awaitingDirectSnapshot) {
-                        presentationCoordinator.startMirror(reconfigured)
-                        if (directPlaybackId != 0L) finishDirectSession(directPlaybackId)
-                    }
+        val sessionListener = object : SessionEventListener {
+            override fun onSharedMemoryReady(generationId: Int, activeDirectPlaybackId: Long) {
+                sharedMemoryReady = true
+                awaitingDirectSnapshot = activeDirectPlaybackId != 0L
+                val retainedId = webVideoPlayer.playbackId
+                val binder = sessionConnection.remoteBinder
+                if (retainedId != null && retainedId > 0L &&
+                    (retainedId != activeDirectPlaybackId || binder != directVideoModel.sessionBinder)
+                ) webVideoPlayer.stopAndClear()
+                directVideoModel.sessionBinder = binder
+                if (awaitingDirectSnapshot) audioConsumer.setPausedForExternalPlayer(true)
+                mirrorDecoder.setGeneration(generationId)
+                audioConsumer.setGeneration(generationId)
+                if (mirrorRequested && !awaitingDirectSnapshot) {
+                    presentationCoordinator.startMirror()
                     syncPresentationState()
                 }
-
-                override fun onDirectVideoUrl(video: DirectPlaybackStart) {
-                    val restoringMirror = awaitingDirectSnapshot && mirrorRequested
-                    if (awaitingDirectSnapshot && directPlaybackId < 0L) {
-                        awaitingDirectSnapshot = false
-                        sessionConnection.finishDirectPlayback(video.playbackId)
-                        return
-                    }
-                    awaitingDirectSnapshot = false
-                    if (video.playbackId > 0L) startDirectVideo(video, restoringMirror)
-                }
-
-                override fun onDirectVideoCommand(command: String, value: Double, playbackId: Long) {
-                    if (directPlaybackId == 0L || directPlaybackId != playbackId) return
-                    if (!presentationCoordinator.hasDirectPlayback) return
-                    when (command) {
-                        "play" -> presentationCoordinator.playDirect()
-                        "pause" -> presentationCoordinator.pauseDirect()
-                        "seek" -> presentationCoordinator.seekDirect(value)
-                        "stop" -> {
-                            if (presentationCoordinator.finishDirectPlayback(playbackId)) {
-                                finishDirectSession(playbackId)
-                            }
-                        }
-                    }
-                    syncPresentationState()
-                }
-
-                override fun onClientConnected(
-                    clientName: String,
-                    dacpId: String,
-                    activeRemote: String
-                ) {
-                    overlayState = overlayState.copy(connectedClient = clientName)
-                }
-
-                override fun onClientDisconnected() {
-                    mirrorRequested = false
-                    overlayState = overlayState.copy(
-                        connectedClient = null, audioProjectionActive = false, nowPlaying = null
-                    )
-                    audioConsumer.stop()
-                    presentationCoordinator.onMirrorDisconnected()
-                    syncPresentationState()
-                }
-
-                override fun onAudioStreamStarted(generationId: Int) {
-                    overlayState = overlayState.copy(audioProjectionActive = true)
-                    updateScreenWake()
-                    mirrorDecoder.setGeneration(generationId)
-                    audioConsumer.setGeneration(generationId)
-                    if (sharedMemoryReady) {
-                        audioConsumer.start(generationId)
-                    }
-                }
-
-                override fun onNowPlaying(metadata: RaopNowPlaying?) {
-                    // Metadata is not a transport stop signal: artwork/title may disappear
-                    // while the sender keeps its audio stream alive (including on lock).
-                    overlayState = overlayState.copy(nowPlaying = metadata)
-                    updateScreenWake()
+                if (overlayState.audioProjectionActive) {
+                    audioConsumer.start(generationId)
                 }
             }
-        )
+
+            override fun onSharedMemoryDetached() {
+                if (destroyingView) return
+                sharedMemoryReady = false
+                directVideoModel.sessionBinder = null
+                awaitingDirectSnapshot = false
+                mirrorRequested = false
+                val castWasActive = directPlaybackId < 0L
+                directPlaybackId = 0L
+                cancelDirectStartupTimeout()
+                dismissVideoControls()
+                presentationCoordinator.onSessionDied()
+                if (castWasActive) releaseCastPlayback()
+                overlayState = overlayState.copy(
+                    connectedClient = null,
+                    audioProjectionActive = false,
+                    nowPlaying = null,
+                    presentationState = presentationCoordinator.state
+                )
+                updateScreenWake()
+            }
+
+            override fun onVideoConfigChanged(
+                mimeType: String,
+                width: Int,
+                height: Int,
+                generationId: Int
+            ) {
+                val reconfigured = mirrorDecoder.updateConfig(MirrorVideoConfig(mimeType, width, height))
+                mirrorDecoder.setGeneration(generationId)
+                audioConsumer.setGeneration(generationId)
+                mirrorRequested = true
+                if (sharedMemoryReady && !awaitingDirectSnapshot) {
+                    presentationCoordinator.startMirror(reconfigured)
+                    if (directPlaybackId != 0L) finishDirectSession(directPlaybackId)
+                }
+                syncPresentationState()
+            }
+
+            override fun onDirectVideoUrl(video: DirectPlaybackStart) {
+                val restoringMirror = awaitingDirectSnapshot && mirrorRequested
+                if (awaitingDirectSnapshot && directPlaybackId < 0L) {
+                    awaitingDirectSnapshot = false
+                    sessionConnection.finishDirectPlayback(video.playbackId)
+                    return
+                }
+                awaitingDirectSnapshot = false
+                if (video.playbackId > 0L) startDirectVideo(video, restoringMirror)
+            }
+
+            override fun onDirectVideoCommand(command: String, value: Double, playbackId: Long) {
+                if (directPlaybackId == 0L || directPlaybackId != playbackId) return
+                if (!presentationCoordinator.hasDirectPlayback) return
+                when (command) {
+                    "play" -> presentationCoordinator.playDirect()
+                    "pause" -> presentationCoordinator.pauseDirect()
+                    "seek" -> presentationCoordinator.seekDirect(value)
+                    "stop" -> {
+                        if (presentationCoordinator.finishDirectPlayback(playbackId)) {
+                            finishDirectSession(playbackId)
+                        }
+                    }
+                }
+                syncPresentationState()
+            }
+
+            override fun onClientConnected(
+                clientName: String,
+                dacpId: String,
+                activeRemote: String
+            ) {
+                overlayState = overlayState.copy(connectedClient = clientName)
+            }
+
+            override fun onClientDisconnected() {
+                mirrorRequested = false
+                overlayState = overlayState.copy(
+                    connectedClient = null, audioProjectionActive = false, nowPlaying = null
+                )
+                audioConsumer.stop()
+                presentationCoordinator.onMirrorDisconnected()
+                syncPresentationState()
+            }
+
+            override fun onAudioStreamStarted(generationId: Int) {
+                overlayState = overlayState.copy(audioProjectionActive = true)
+                updateScreenWake()
+                mirrorDecoder.setGeneration(generationId)
+                audioConsumer.setGeneration(generationId)
+                if (sharedMemoryReady) {
+                    audioConsumer.start(generationId)
+                }
+            }
+
+            override fun onNowPlaying(metadata: RaopNowPlaying?) {
+                // Metadata is not a transport stop signal: artwork/title may disappear
+                // while the sender keeps its audio stream alive (including on lock).
+                overlayState = overlayState.copy(nowPlaying = metadata)
+                updateScreenWake()
+            }
+        }
+        sessionConnection = retainedPlayback?.connection ?: SessionConnection(this)
+        sessionConnection.replaceListener(sessionListener, replay = retainedPlayback != null)
         sessionConnection.connect()
         if (BuildConfig.CAST_CONNECT_ENABLED) {
             castReceiver = runCatching {
@@ -347,6 +350,7 @@ class MainActivity : ComponentActivity(), SurfaceLayerController {
         super.onStart()
         screenStarted = true
         sessionConnection.setProjectionVisible(true)
+        if (directPlaybackId > 0L) publishDirectPlayback()
         castReceiver?.let { receiver ->
             runCatching {
                 receiver.start()
@@ -610,6 +614,10 @@ class MainActivity : ComponentActivity(), SurfaceLayerController {
         }
     }
 
+    private fun publishDirectPlayback() {
+        webVideoPlayer.systemSession?.let { DirectPlaybackService.publish(applicationContext, it) }
+    }
+
     private fun saveDirectCheckpoint() {
         if (directPlaybackId <= 0L || !canReportDirectPlayback()) return
         sessionConnection.updatePlaybackTelemetry(
@@ -714,13 +722,16 @@ class MainActivity : ComponentActivity(), SurfaceLayerController {
         hidBridge.release()
         castReceiver?.stop()
         webVideoPlayer.detachView(directSurfaceView)
-        if (isChangingConfigurations) {
+        val retainedByService = !isChangingConfigurations &&
+            DirectPlaybackService.retain(webVideoPlayer, sessionConnection)
+        if (retainedByService) directVideoModel.relinquishPlayer()
+        if (isChangingConfigurations || retainedByService) {
             mirrorDecoder.stopAndRelease()
             audioConsumer.stop()
         } else {
             presentationCoordinator.onSessionDied()
         }
-        sessionConnection.close()
+        if (!retainedByService) sessionConnection.close()
         super.onDestroy()
     }
 }

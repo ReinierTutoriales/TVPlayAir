@@ -28,7 +28,7 @@ interface SessionEventListener {
 
 class SessionConnection(
     context: Context,
-    private val listener: SessionEventListener = object : SessionEventListener {}
+    private var listener: SessionEventListener = object : SessionEventListener {}
 ) {
     private val appContext = context.applicationContext
     private val handler = Handler(Looper.getMainLooper())
@@ -155,6 +155,14 @@ class SessionConnection(
         }
 
         override fun onServiceDisconnected(name: ComponentName?) = handleBinderDeath(epoch)
+    }
+
+    internal fun replaceListener(listener: SessionEventListener, replay: Boolean = false) {
+        this.listener = listener
+        if (!replay) return
+        val callback = activeCallback ?: return
+        runCatching { service?.registerCallback(callback) }
+            .onFailure { handleBinderDeath(bindingEpoch) }
     }
 
     fun connect() {

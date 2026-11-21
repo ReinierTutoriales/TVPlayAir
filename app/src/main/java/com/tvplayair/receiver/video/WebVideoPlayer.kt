@@ -68,6 +68,14 @@ class WebVideoPlayer(context: Context) : DirectVideoEngine {
     private var mediaSession: MediaSession? = null
     private var systemPlayer: Player? = null
 
+    internal val systemSession: MediaSession?
+        get() = mediaSession
+
+    internal fun setDetachedCallbacks(callbacks: ViewCallbacks) {
+        check(surfaceView == null)
+        viewCallbacks = callbacks
+    }
+
     val platformSessionToken: android.media.session.MediaSession.Token?
         get() = mediaSession?.platformToken
 
@@ -237,7 +245,10 @@ class WebVideoPlayer(context: Context) : DirectVideoEngine {
     private fun releaseSystemControls() {
         val session = mediaSession
         mediaSession = null
-        session?.release()
+        session?.let {
+            DirectPlaybackService.unpublish(it)
+            it.release()
+        }
     }
 
     override fun prepare(video: DirectPlaybackStart): Boolean {
@@ -348,6 +359,7 @@ class WebVideoPlayer(context: Context) : DirectVideoEngine {
 
     fun release() {
         surfaceView?.let(::detachView)
+        viewCallbacks = null
         playbackId = null
         finishedPlaybackId = null
         releaseSystemControls()
