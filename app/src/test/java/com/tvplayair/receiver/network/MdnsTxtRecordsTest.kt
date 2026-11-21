@@ -16,7 +16,7 @@ class MdnsTxtRecordsTest {
 
         assertEquals("0", txt["acl"])
         assertEquals("AA:BB:CC:DD:EE:FF", txt["deviceid"])
-        assertEquals("0x5A7FFFF7,0x1E", txt["features"])
+        assertEquals("0x5A7FFFF3,0x1C", txt["features"])
         assertEquals("0x44", txt["flags"])
         assertEquals("AppleTV3,2", txt["model"])
         assertEquals("0", txt["overscanned"])
@@ -37,7 +37,7 @@ class MdnsTxtRecordsTest {
         assertEquals("16", raop["ss"])
         assertEquals("2", raop["ch"])
         assertEquals("AppleTV3,2", raop["am"])
-        assertEquals("0x5A7FFFF7,0x1E", raop["ft"])
+        assertEquals("0x5A7FFFF3,0x1C", raop["ft"])
         assertEquals(64, raop["pk"]?.length)
     }
 }

@@ -113,6 +113,15 @@ object AirPlayHttpRequestParser {
                     return trimmed
                 }
             }
+            is ByteArray -> {
+                if (BinaryPlistParser.isBinaryPlist(node)) {
+                    findUrlInPlist(BinaryPlistParser.parse(node), depth + 1)?.let { return it }
+                } else {
+                    val text = runCatching { node.toString(Charsets.UTF_8) }.getOrNull().orEmpty()
+                    Regex("https?://[^\\s\"'<>\\u0000]+", RegexOption.IGNORE_CASE)
+                        .find(text)?.value?.let { return it }
+                }
+            }
         }
         return null
     }

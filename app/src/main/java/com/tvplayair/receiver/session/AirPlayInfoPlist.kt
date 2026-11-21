@@ -7,8 +7,10 @@ import com.tvplayair.receiver.network.MdnsTxtRecords
  * advertising live display resolution (4K/1080p) and audio capabilities.
  */
 object AirPlayInfoPlist {
-    // 0x5A7FFFF7,0x1E combined as 64-bit integer: (0x1EL << 32) | 0x5A7FFFF7L = 130367487991
-    const val FEATURES_64BIT: Long = (0x1EL shl 32) or 0x5A7FFFF7L
+    // 0x5A7FFFF3,0x1C combined as 64-bit integer (clears VideoFairPlay bit 2 and VideoV2 bit 33
+    // so iOS uses direct Content-Location URLs in POST /play instead of FCUP reverse proxy + /fp-setup2).
+    const val FEATURES_64BIT: Long = (0x1CL shl 32) or 0x5A7FFFF3L
+    const val SERVER_INFO_FEATURES: Long = 0x5A7FEFF3L
     const val STATUS_FLAGS: Int = 0x44
 
     fun buildInfoMap(
@@ -17,8 +19,8 @@ object AirPlayInfoPlist {
         maxHeight: Int,
         hevcEnabled: Boolean
     ): Map<String, Any> {
-        val width = maxWidth.coerceAtLeast(1280).toLong()
-        val height = maxHeight.coerceAtLeast(720).toLong()
+        val width = maxWidth.coerceIn(1280, 1920).toLong()
+        val height = maxHeight.coerceIn(720, 1080).toLong()
         return linkedMapOf(
             "deviceID" to deviceId,
             "macAddress" to deviceId,
@@ -113,7 +115,7 @@ object AirPlayInfoPlist {
         append("\"http://www.apple.com/DTDs/PropertyList-1.0.dtd\">\n")
         append("<plist version=\"1.0\">\n<dict>\n")
         append("  <key>deviceid</key><string>").append(deviceId).append("</string>\n")
-        append("  <key>features</key><integer>").append(FEATURES_64BIT).append("</integer>\n")
+        append("  <key>features</key><integer>").append(SERVER_INFO_FEATURES).append("</integer>\n")
         append("  <key>model</key><string>").append(MdnsTxtRecords.AIRPLAY_MODEL).append("</string>\n")
         append("  <key>protovers</key><string>1.0</string>\n")
         append("  <key>srcvers</key><string>220.68</string>\n")

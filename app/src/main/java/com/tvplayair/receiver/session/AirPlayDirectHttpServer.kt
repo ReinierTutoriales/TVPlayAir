@@ -151,6 +151,9 @@ class AirPlayDirectHttpServer(
         }
     }
 
+    private val currentRequestProtocol = ThreadLocal<String>()
+    private val currentRequestCSeq = ThreadLocal<String?>()
+
     internal fun handleHttpConnection(
         sock: Socket,
         input: BufferedInputStream,
@@ -205,7 +208,11 @@ class AirPlayDirectHttpServer(
             val body = if (contentLength > 0) readExactBytes(input, contentLength) else ByteArray(0)
             if (body.size != contentLength) break
             val contentType = headers["content-type"].orEmpty()
-            Log.i(TAG, "<- $peer $method $fullPath (ct=$contentType len=${body.size})")
+            val isRtsp = RtspMessageParser.isRtspRequestLine(firstLine)
+            val cseq = headers["cseq"]
+            currentRequestProtocol.set(if (isRtsp) "RTSP/1.0" else "HTTP/1.1")
+            currentRequestCSeq.set(cseq)
+            Log.i(TAG, "<- $peer $method $fullPath (proto=${if (isRtsp) "RTSP/1.0" else "HTTP/1.1"} cseq=${cseq ?: "-"} ct=$contentType len=${body.size})")
 
             val sessionId = headers["x-apple-session-id"]?.takeIf { value ->
                 value.length in 1..128 && value.all { it in '!'..'~' }
@@ -231,11 +238,15 @@ class AirPlayDirectHttpServer(
         playbackEvents.attach(channel)
         try {
             socket.soTimeout = EVENT_ACK_TIMEOUT_MS
-            output.write(
-                ("HTTP/1.1 101 Switching Protocols\r\n" +
-                    "Upgrade: PTTH/1.0\r\nConnection: Upgrade\r\n\r\n")
-                    .toByteArray(StandardCharsets.US_ASCII)
-            )
+            val cseq = currentRequestCSeq.get()
+            val responseHeaders = buildString {
+                append("HTTP/1.1 101 Switching Protocols\r\n")
+                if (!cseq.isNullOrBlank()) {
+                    append("CSeq: ").append(cseq).append("\r\n")
+                }
+                append("Upgrade: PTTH/1.0\r\nConnection: Upgrade\r\n\r\n")
+            }
+            output.write(responseHeaders.toByteArray(StandardCharsets.US_ASCII))
             output.flush()
             while (running.get() && !socket.isClosed) {
                 val event = channel.events.poll(1, TimeUnit.SECONDS) ?: continue
@@ -367,6 +378,7 @@ class AirPlayDirectHttpServer(
             }
             method == "GET" && path == "/server-info" -> {
                 val info = AirPlayInfoPlist.formatServerInfoXml(activeConfig.deviceId)
+                Log.i(TAG, "-> GET /server-info 200 OK (${info.length}B)")
                 writeResponse(output, 200, "OK", "text/x-apple-plist+xml", info)
             }
             method == "GET" && path == "/playback-info" -> {
@@ -456,8 +468,16 @@ class AirPlayDirectHttpServer(
         contentType: String,
         bodyBytes: ByteArray
     ) {
+        val protocol = currentRequestProtocol.get() ?: "HTTP/1.1"
+        val cseq = currentRequestCSeq.get()
         val headers = buildString {
-            append("HTTP/1.1 ").append(statusCode).append(' ').append(reason).append("\r\n")
+            append(protocol).append(' ').append(statusCode).append(' ').append(reason).append("\r\n")
+            if (protocol == "RTSP/1.0") {
+                append("Server: AirTunes/366.0\r\n")
+            }
+            if (!cseq.isNullOrBlank()) {
+                append("CSeq: ").append(cseq).append("\r\n")
+            }
             append("Content-Type: ").append(contentType).append("\r\n")
             append("Content-Length: ").append(bodyBytes.size).append("\r\n\r\n")
         }

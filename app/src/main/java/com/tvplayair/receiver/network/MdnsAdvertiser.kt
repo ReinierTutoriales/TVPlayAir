@@ -22,7 +22,7 @@ data class AirPlayAdvertiseConfig(
 object MdnsTxtRecords {
     const val AIRPLAY_SERVICE_TYPE = "_airplay._tcp."
     const val RAOP_SERVICE_TYPE = "_raop._tcp."
-    const val AIRPLAY_FEATURES = "0x5A7FFFF7,0x1E"
+    const val AIRPLAY_FEATURES = "0x5A7FFFF3,0x1C"
     const val AIRPLAY_FLAGS = "0x44"
     const val AIRPLAY_MODEL = "AppleTV3,2"
 

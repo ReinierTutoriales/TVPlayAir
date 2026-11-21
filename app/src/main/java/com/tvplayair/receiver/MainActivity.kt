@@ -7,6 +7,7 @@ import android.os.Handler
 import android.os.Looper
 import android.os.SystemClock
 import android.util.Log
+import android.view.Gravity
 import android.view.KeyEvent
 import android.view.SurfaceHolder
 import android.view.SurfaceView
@@ -159,7 +160,10 @@ class MainActivity : ComponentActivity(), SurfaceLayerController {
         val retainedPlayback = DirectPlaybackService.claim()
         retainedPlayback?.let(directVideoModel::adopt)
         audioConsumer = OboeAudioConsumer(this)
-        mirrorDecoder = MirrorDecoder { mirrorSurfaceView.holder.surface }
+        mirrorDecoder = MirrorDecoder(
+            surfaceProvider = { mirrorSurfaceView.holder.surface },
+            onVideoSizeChanged = ::updateMirrorSurfaceAspectRatio
+        )
         webVideoPlayer.attachView(directSurfaceView, object : WebVideoPlayer.ViewCallbacks {
             override fun onTelemetryChanged(telemetry: DirectPlaybackTelemetry) {
                 if (::presentationCoordinator.isInitialized &&
@@ -261,6 +265,7 @@ class MainActivity : ComponentActivity(), SurfaceLayerController {
                 generationId: Int,
                 isSnapshot: Boolean
             ) {
+                updateMirrorSurfaceAspectRatio(width, height)
                 val reconfigured = mirrorDecoder.updateConfig(MirrorVideoConfig(mimeType, width, height))
                 mirrorDecoder.setGeneration(generationId)
                 audioConsumer.setGeneration(generationId)
@@ -689,6 +694,28 @@ class MainActivity : ComponentActivity(), SurfaceLayerController {
         val keepScreenOn = !state.projectionHome || state.visible || state.showingAudio || !state.showStandby
         val flag = WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON
         if (keepScreenOn) window.addFlags(flag) else window.clearFlags(flag)
+    }
+
+    private fun updateMirrorSurfaceAspectRatio(videoWidth: Int, videoHeight: Int) {
+        if (!::mirrorSurfaceView.isInitialized || videoWidth <= 0 || videoHeight <= 0) return
+        val parent = mirrorSurfaceView.parent as? View
+        val containerW = parent?.width?.takeIf { it > 0 } ?: resources.displayMetrics.widthPixels
+        val containerH = parent?.height?.takeIf { it > 0 } ?: resources.displayMetrics.heightPixels
+        if (containerW <= 0 || containerH <= 0) return
+
+        val fitW: Int
+        val fitH: Int
+        if (videoWidth.toLong() * containerH >= videoHeight.toLong() * containerW) {
+            fitW = containerW
+            fitH = ((containerW.toLong() * videoHeight) / videoWidth).toInt().coerceAtLeast(1)
+        } else {
+            fitH = containerH
+            fitW = ((containerH.toLong() * videoWidth) / videoHeight).toInt().coerceAtLeast(1)
+        }
+        val currentParams = mirrorSurfaceView.layoutParams as? FrameLayout.LayoutParams
+        if (currentParams == null || currentParams.width != fitW || currentParams.height != fitH) {
+            mirrorSurfaceView.layoutParams = FrameLayout.LayoutParams(fitW, fitH, Gravity.CENTER)
+        }
     }
 
     override fun showMirrorSurface() {

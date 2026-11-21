@@ -88,10 +88,11 @@ object AirPlayMirrorHeaderParser {
         )
     }
 
-    private fun dimension(header: ByteBuffer, offset: Int, fallbackOffset: Int): Int =
-        header.getFloat(offset).takeIf { it in 16f..8192f }?.toInt()
-            ?: header.getFloat(fallbackOffset).takeIf { it in 16f..8192f }?.toInt()
-            ?: 0
+    private fun dimension(header: ByteBuffer, offset: Int, fallbackOffset: Int): Int {
+        val first = header.getFloat(offset).takeIf { it in 16f..8192f }?.toInt() ?: 0
+        val second = header.getFloat(fallbackOffset).takeIf { it in 16f..8192f }?.toInt() ?: 0
+        return maxOf(first, second)
+    }
 }
 
 /**

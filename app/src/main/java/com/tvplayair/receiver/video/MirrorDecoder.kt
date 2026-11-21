@@ -26,7 +26,8 @@ data class MirrorVideoConfig(
  * SharedRingBuffer into a single reusable DirectByteBuffer (zero per-frame allocation).
  */
 class MirrorDecoder(
-    private val surfaceProvider: () -> Surface?
+    private val surfaceProvider: () -> Surface?,
+    private val onVideoSizeChanged: ((Int, Int) -> Unit)? = null
 ) : MirrorVideoEngine {
 
     companion object {
@@ -109,6 +110,8 @@ class MirrorDecoder(
 
     private fun createAndConfigureCodec(surface: Surface, cfg: MirrorVideoConfig): MediaCodec? {
         val format = MediaFormat.createVideoFormat(cfg.mimeType, cfg.width, cfg.height)
+        format.setInteger(MediaFormat.KEY_MAX_WIDTH, maxOf(cfg.width, 1920))
+        format.setInteger(MediaFormat.KEY_MAX_HEIGHT, maxOf(cfg.height, 1920))
         // Safe low-latency fallback on API 29+; never force KEY_OPERATING_RATE = 32767.
         format.setInteger(MediaFormat.KEY_PRIORITY, 0)
 
@@ -221,9 +224,19 @@ class MirrorDecoder(
                 continue
             }
 
-            val inputIndex = runCatching { activeCodec.dequeueInputBuffer(DEQUEUE_TIMEOUT_US) }
-                .getOrDefault(-1)
-            if (inputIndex < 0) continue
+            var inputIndex = -1
+            var attempts = 0
+            while (running.get() && attempts < 25) {
+                inputIndex = runCatching { activeCodec.dequeueInputBuffer(DEQUEUE_TIMEOUT_US) }
+                    .getOrDefault(-1)
+                if (inputIndex >= 0) break
+                drainOutputBuffers(activeCodec, bufferInfo)
+                attempts++
+            }
+            if (inputIndex < 0) {
+                frameGate.resetGate()
+                continue
+            }
 
             val inputBuffer = activeCodec.getInputBuffer(inputIndex) ?: continue
             inputBuffer.clear()
@@ -259,6 +272,33 @@ class MirrorDecoder(
                 .getOrDefault(MediaCodec.INFO_TRY_AGAIN_LATER)
             if (outIndex >= 0) {
                 runCatching { activeCodec.releaseOutputBuffer(outIndex, true) }
+            } else if (outIndex == MediaCodec.INFO_OUTPUT_FORMAT_CHANGED) {
+                runCatching {
+                    val outFmt = activeCodec.outputFormat
+                    val w = if (outFmt.containsKey("crop-right") && outFmt.containsKey("crop-left")) {
+                        outFmt.getInteger("crop-right") - outFmt.getInteger("crop-left") + 1
+                    } else if (outFmt.containsKey(MediaFormat.KEY_WIDTH)) {
+                        outFmt.getInteger(MediaFormat.KEY_WIDTH)
+                    } else {
+                        0
+                    }
+                    val h = if (outFmt.containsKey("crop-bottom") && outFmt.containsKey("crop-top")) {
+                        outFmt.getInteger("crop-bottom") - outFmt.getInteger("crop-top") + 1
+                    } else if (outFmt.containsKey(MediaFormat.KEY_HEIGHT)) {
+                        outFmt.getInteger(MediaFormat.KEY_HEIGHT)
+                    } else {
+                        0
+                    }
+                    if (w > 0 && h > 0) {
+                        Log.i(TAG, "Mirror output format changed: ${w}x$h")
+                        onVideoSizeChanged?.let { callback ->
+                            renderListenerHandler.post { callback(w, h) }
+                        }
+                    }
+                }
+                continue
+            } else if (outIndex == MediaCodec.INFO_OUTPUT_BUFFERS_CHANGED) {
+                continue
             } else {
                 break
             }
