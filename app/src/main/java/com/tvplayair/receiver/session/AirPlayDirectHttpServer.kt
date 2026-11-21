@@ -284,7 +284,7 @@ class AirPlayDirectHttpServer(
             method == "POST" && path == "/scrub" -> {
                 val position = AirPlayHttpRequestParser.parseQueryDouble(fullPath, "position")
                 if (position != null) {
-                    playbackEvents.control(sessionKey) { listener.onDirectVideoCommand("seek", position) }
+                    playbackEvents.control(sessionKey) { id -> listener.onDirectVideoCommand("seek", position, id) }
                     writeResponse(output, 200, "OK")
                 } else {
                     writeResponse(output, 400, "Bad Request")
