@@ -99,7 +99,8 @@ class VideoPresentationCoordinator(
     }
 
     fun stopDirectVideo() {
-        if (state != PresentationState.DIRECT_ACTIVE) return
+        if (state != PresentationState.DIRECT_ACTIVE &&
+            state != PresentationState.SWITCHING_TO_DIRECT) return
         restoreAfterDirect()
     }
 
