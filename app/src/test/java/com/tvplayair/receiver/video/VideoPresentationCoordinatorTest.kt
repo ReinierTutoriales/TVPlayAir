@@ -403,4 +403,18 @@ class VideoPresentationCoordinatorTest {
             events.takeLast(4)
         )
     }
+    @Test
+    fun restoredDirectSnapshotQueuesMirrorFallbackWithoutStartingItsDecoder() {
+        val events = mutableListOf<String>()
+        val coordinator = VideoPresentationCoordinator(
+            FakeMirrorEngine(events), FakeDirectEngine(events),
+            FakeAudioController(events), FakeSurfaceController(events)
+        )
+        val video = DirectPlaybackStart("https://example.com/movie.mp4", 0.0, 10)
+        assertTrue(coordinator.switchToDirectVideo(video, mirrorAvailable = true))
+        assertFalse(events.contains("mirror.start"))
+        assertTrue(coordinator.finishDirectPlayback(video.playbackId))
+        assertEquals(PresentationState.MIRROR_ACTIVE, coordinator.state)
+        assertEquals(1, events.count { it == "mirror.start" })
+    }
 }

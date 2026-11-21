@@ -98,11 +98,11 @@ class VideoPresentationCoordinator(
         return switchToMirror()
     }
 
-    fun switchToDirectVideo(video: DirectPlaybackStart): Boolean {
+    fun switchToDirectVideo(video: DirectPlaybackStart, mirrorAvailable: Boolean = false): Boolean {
         if (video.url.isBlank() || !video.airPlayPosition.isFinite()) return false
         val playbackId = video.playbackId
         val replacingDirect = hasDirectPlayback
-        if (state == PresentationState.MIRROR_ACTIVE) resumeMirrorAfterDirect = true
+        if (state == PresentationState.MIRROR_ACTIVE || mirrorAvailable) resumeMirrorAfterDirect = true
         state = PresentationState.SWITCHING_TO_DIRECT
         directPlaybackId = playbackId
         if (!replacingDirect) {

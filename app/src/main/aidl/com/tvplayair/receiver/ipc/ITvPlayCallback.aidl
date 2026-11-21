@@ -5,7 +5,7 @@ import android.os.ParcelFileDescriptor;
 oneway interface ITvPlayCallback {
     void onSharedMemoryReady(in ParcelFileDescriptor videoFd, long videoSize,
                              in ParcelFileDescriptor audioFd, long audioSize,
-                             int generationId);
+                             int generationId, long activeDirectPlaybackId);
     void onSessionUnavailable();
     void onVideoConfigChanged(String mimeType, int width, int height, int generationId);
     void onDirectVideoUrl(String url, double startPosition, long playbackId,

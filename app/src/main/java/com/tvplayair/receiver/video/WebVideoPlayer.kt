@@ -27,14 +27,32 @@ import com.google.common.util.concurrent.ListenableFuture
  * Direct 4K HDR web video player backed by Media3 ExoPlayer on a native SurfaceView.
  * Uses Safari iOS User-Agent and adaptive track selection for direct TV playback.
  */
-class WebVideoPlayer(
-    context: Context,
-    private val surfaceView: SurfaceView,
-    private val onTelemetryChanged: (DirectPlaybackTelemetry) -> Unit = {},
-    private val onMediaReady: (Long) -> Unit = {},
-    private val onPlaybackFinished: (Long) -> Unit = {},
-    private val onSystemPlaybackIntent: (Long, Boolean) -> Unit = { _, _ -> }
-) : DirectVideoEngine {
+class WebVideoPlayer(context: Context) : DirectVideoEngine {
+    interface ViewCallbacks {
+        fun onTelemetryChanged(telemetry: DirectPlaybackTelemetry)
+        fun onMediaReady(playbackId: Long)
+        fun onPlaybackFinished(playbackId: Long)
+        fun onSystemPlaybackIntent(playbackId: Long, playWhenReady: Boolean)
+    }
+
+    private var viewCallbacks: ViewCallbacks? = null
+    private var surfaceView: SurfaceView? = null
+    private var finishedPlaybackId: Long? = null
+
+    var playbackId: Long? = null
+        private set
+
+    fun attachView(surface: SurfaceView, callbacks: ViewCallbacks) {
+        surfaceView = surface
+        viewCallbacks = callbacks
+    }
+
+    fun detachView(surface: SurfaceView) {
+        if (surfaceView !== surface) return
+        viewCallbacks = null
+        player?.clearVideoSurfaceView(surface)
+        surfaceView = null
+    }
 
     companion object {
         private const val TAG = "WebVideoPlayer"
@@ -50,7 +68,6 @@ class WebVideoPlayer(
     private var mediaSession: MediaSession? = null
     private var systemPlayer: Player? = null
     private var pendingStartFraction: Double? = null
-    private var playbackId: Long? = null
     private var prepareStartedMs = 0L
     private val eventWindow = Timeline.Window()
 
@@ -60,18 +77,18 @@ class WebVideoPlayer(
             val id = playbackId ?: return
             val timeline = eventTime.timeline
             val index = eventTime.windowIndex
-            if (renderTimeMs < prepareStartedMs || output != surfaceView.holder.surface ||
+            if (renderTimeMs < prepareStartedMs || output != surfaceView?.holder?.surface ||
                 index !in 0 until timeline.windowCount ||
                 timeline.getWindow(index, eventWindow).mediaItem.mediaId != id.toString()
             ) return
-            onMediaReady(id)
+            viewCallbacks?.onMediaReady(id)
         }
     }
 
     private val telemetryTicker = object : Runnable {
         override fun run() {
             val exo = player ?: return
-            onTelemetryChanged(currentTelemetry())
+            viewCallbacks?.onTelemetryChanged(currentTelemetry())
             if (exo.playbackState == Player.STATE_READY || exo.playbackState == Player.STATE_BUFFERING) {
                 mainHandler.postDelayed(this, TELEMETRY_INTERVAL_MS)
             }
@@ -90,7 +107,7 @@ class WebVideoPlayer(
 
         override fun onPlaybackStateChanged(playbackState: Int) {
             Log.i(TAG, "ExoPlayer state=$playbackState")
-            onTelemetryChanged(currentTelemetry())
+            viewCallbacks?.onTelemetryChanged(currentTelemetry())
             mainHandler.removeCallbacks(telemetryTicker)
             if (playbackState == Player.STATE_READY || playbackState == Player.STATE_BUFFERING) {
                 mainHandler.postDelayed(telemetryTicker, TELEMETRY_INTERVAL_MS)
@@ -99,20 +116,20 @@ class WebVideoPlayer(
                 val tracks = player?.currentTracks
                 if (tracks != null && tracks.isTypeSelected(C.TRACK_TYPE_AUDIO) &&
                     !tracks.containsType(C.TRACK_TYPE_VIDEO)
-                ) playbackId?.let(onMediaReady)
+                ) playbackId?.let { viewCallbacks?.onMediaReady(it) }
             }
             if (playbackState == Player.STATE_ENDED) notifyPlaybackFinished()
         }
 
         override fun onIsPlayingChanged(isPlaying: Boolean) {
             Log.i(TAG, "ExoPlayer isPlaying=$isPlaying")
-            onTelemetryChanged(currentTelemetry())
+            viewCallbacks?.onTelemetryChanged(currentTelemetry())
         }
 
         override fun onPlayerError(error: PlaybackException) {
             pendingStartFraction = null
             Log.e(TAG, "ExoPlayer error (${error.errorCodeName})")
-            onTelemetryChanged(currentTelemetry())
+            viewCallbacks?.onTelemetryChanged(currentTelemetry())
             notifyPlaybackFinished()
         }
     }
@@ -125,7 +142,9 @@ class WebVideoPlayer(
             if (player === exo && playbackId == id && exo.currentMediaItem === item &&
                 (exo.playbackState == Player.STATE_ENDED || exo.playbackState == Player.STATE_IDLE)
             ) {
-                onPlaybackFinished(id)
+                finishedPlaybackId = id
+                releaseSystemControls()
+                viewCallbacks?.onPlaybackFinished(id)
             }
         }
     }
@@ -151,7 +170,6 @@ class WebVideoPlayer(
             .setAudioAttributes(audioAttributes, true)
             .build()
             .also { created ->
-                created.setVideoSurfaceView(surfaceView)
                 created.addListener(playerListener)
                 created.addAnalyticsListener(videoEvents)
                 player = created
@@ -197,14 +215,14 @@ class WebVideoPlayer(
         object : ForwardingSimpleBasePlayer(exo) {
             override fun handleSetPlayWhenReady(playWhenReady: Boolean): ListenableFuture<*> {
                 val id = playbackId
-                if (id != null && mediaSession != null) onSystemPlaybackIntent(id, playWhenReady)
+                if (id != null && mediaSession != null) viewCallbacks?.onSystemPlaybackIntent(id, playWhenReady)
                 return Futures.immediateVoidFuture()
             }
 
             override fun handleStop(): ListenableFuture<*> {
                 val id = playbackId
                 if (id != null && mediaSession != null) {
-                    mainHandler.post { if (playbackId == id) onPlaybackFinished(id) }
+                    mainHandler.post { if (playbackId == id) viewCallbacks?.onPlaybackFinished(id) }
                 }
                 return Futures.immediateVoidFuture()
             }
@@ -217,10 +235,25 @@ class WebVideoPlayer(
     }
 
     override fun prepare(video: DirectPlaybackStart): Boolean {
-        releaseSystemControls()
-        playbackId = video.playbackId
-        prepareStartedMs = SystemClock.elapsedRealtime()
+        if (finishedPlaybackId == video.playbackId) return false
+        val surface = surfaceView ?: return false
         val exo = ensurePlayer()
+        prepareStartedMs = SystemClock.elapsedRealtime()
+        if (playbackId == video.playbackId && exo.playbackState != Player.STATE_IDLE &&
+            exo.playbackState != Player.STATE_ENDED
+        ) {
+            exo.playWhenReady = video.playWhenReady
+            exo.setVideoSurfaceView(surface)
+            val tracks = exo.currentTracks
+            if (exo.playbackState == Player.STATE_READY && tracks.isTypeSelected(C.TRACK_TYPE_AUDIO) &&
+                !tracks.containsType(C.TRACK_TYPE_VIDEO)
+            ) viewCallbacks?.onMediaReady(video.playbackId)
+            return true
+        }
+        releaseSystemControls()
+        finishedPlaybackId = null
+        playbackId = video.playbackId
+        exo.setVideoSurfaceView(surface)
         pendingStartFraction = video.startFraction
         if (!video.playWhenReady) exo.playWhenReady = false
         exo.setMediaItem(
@@ -229,7 +262,7 @@ class WebVideoPlayer(
         )
         exo.playWhenReady = video.playWhenReady
         exo.prepare()
-        onTelemetryChanged(currentTelemetry())
+        viewCallbacks?.onTelemetryChanged(currentTelemetry())
         return true
     }
 
@@ -266,6 +299,7 @@ class WebVideoPlayer(
         // Keep the player and its SurfaceView binding warm for the next AirPlay video.
         // Stop and remove the old media so stale frames/metadata cannot be reused.
         playbackId = null
+        finishedPlaybackId = null
         releaseSystemControls()
         pendingStartFraction = null
         mainHandler.removeCallbacks(telemetryTicker)
@@ -273,7 +307,7 @@ class WebVideoPlayer(
             exo.stop()
             exo.clearMediaItems()
         }
-        onTelemetryChanged(currentTelemetry())
+        viewCallbacks?.onTelemetryChanged(currentTelemetry())
     }
 
     override fun currentTelemetry(): DirectPlaybackTelemetry {
@@ -303,7 +337,9 @@ class WebVideoPlayer(
     }
 
     fun release() {
+        surfaceView?.let(::detachView)
         playbackId = null
+        finishedPlaybackId = null
         releaseSystemControls()
         pendingStartFraction = null
         mainHandler.removeCallbacks(telemetryTicker)

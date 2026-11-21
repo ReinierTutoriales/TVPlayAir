@@ -16,6 +16,7 @@ import android.view.WindowManager
 import android.widget.FrameLayout
 import androidx.activity.ComponentActivity
 import androidx.activity.OnBackPressedCallback
+import androidx.activity.viewModels
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
@@ -34,7 +35,9 @@ import com.tvplayair.receiver.session.RaopNowPlaying
 import com.tvplayair.receiver.session.SessionEventListener
 import com.tvplayair.receiver.ui.TvOverlayMenu
 import com.tvplayair.receiver.ui.TvOverlayState
+import com.tvplayair.receiver.video.DirectPlaybackTelemetry
 import com.tvplayair.receiver.video.DirectPlaybackStart
+import com.tvplayair.receiver.video.DirectVideoViewModel
 import com.tvplayair.receiver.video.MirrorDecoder
 import com.tvplayair.receiver.video.MirrorVideoConfig
 import com.tvplayair.receiver.video.PresentationState
@@ -50,13 +53,16 @@ class MainActivity : ComponentActivity(), SurfaceLayerController {
     private lateinit var directStartupCover: View
     private lateinit var audioConsumer: OboeAudioConsumer
     private lateinit var mirrorDecoder: MirrorDecoder
-    private lateinit var webVideoPlayer: WebVideoPlayer
+    private val directVideoModel: DirectVideoViewModel by viewModels()
+    private val webVideoPlayer: WebVideoPlayer get() = directVideoModel.player
     private lateinit var presentationCoordinator: VideoPresentationCoordinator
     private lateinit var sessionConnection: SessionConnection
     private lateinit var hidBridge: TvRemoteHidBridge
     private lateinit var identityStore: ReceiverIdentityStore
 
     private var sharedMemoryReady = false
+    private var awaitingDirectSnapshot = false
+    private var destroyingView = false
     private var mirrorRequested = false
     private var directPlaybackId = 0L
     private var directStartupTimeout: Runnable? = null
@@ -137,10 +143,8 @@ class MainActivity : ComponentActivity(), SurfaceLayerController {
 
         audioConsumer = OboeAudioConsumer(this)
         mirrorDecoder = MirrorDecoder { mirrorSurfaceView.holder.surface }
-        webVideoPlayer = WebVideoPlayer(
-            context = this,
-            surfaceView = directSurfaceView,
-            onTelemetryChanged = { telemetry ->
+        webVideoPlayer.attachView(directSurfaceView, object : WebVideoPlayer.ViewCallbacks {
+            override fun onTelemetryChanged(telemetry: DirectPlaybackTelemetry) {
                 if (::presentationCoordinator.isInitialized &&
                     presentationCoordinator.state == PresentationState.DIRECT_ACTIVE &&
                     overlayState.showingVideoControls) {
@@ -153,8 +157,9 @@ class MainActivity : ComponentActivity(), SurfaceLayerController {
                         directPlaybackId, telemetry, webVideoPlayer.checkpointPositionMs()
                     )
                 }
-            },
-            onMediaReady = { playbackId ->
+            }
+
+            override fun onMediaReady(playbackId: Long) {
                 if (presentationCoordinator.onDirectMediaReady(playbackId)) {
                     val elapsedMs = SystemClock.elapsedRealtime() - directRequestedAtMs
                     Log.i("TVPlayAir", "direct_startup outcome=ready playbackId=$playbackId elapsedMs=$elapsedMs")
@@ -162,16 +167,18 @@ class MainActivity : ComponentActivity(), SurfaceLayerController {
                     webVideoPlayer.exposeSystemControls(playbackId)
                     saveDirectCheckpoint()
                 }
-            },
-            onPlaybackFinished = { playbackId ->
+            }
+
+            override fun onPlaybackFinished(playbackId: Long) {
                 if (presentationCoordinator.finishDirectPlayback(playbackId)) {
                     finishDirectSession(playbackId)
                 }
-            },
-            onSystemPlaybackIntent = { playbackId, playWhenReady ->
+            }
+
+            override fun onSystemPlaybackIntent(playbackId: Long, playWhenReady: Boolean) {
                 sessionConnection.setDirectPlaybackIntent(playbackId, if (playWhenReady) "play" else "pause")
             }
-        )
+        })
         presentationCoordinator = VideoPresentationCoordinator(
             mirrorEngine = mirrorDecoder,
             directEngine = webVideoPlayer,
@@ -183,11 +190,19 @@ class MainActivity : ComponentActivity(), SurfaceLayerController {
         sessionConnection = SessionConnection(
             context = this,
             listener = object : SessionEventListener {
-                override fun onSharedMemoryReady(generationId: Int) {
+                override fun onSharedMemoryReady(generationId: Int, activeDirectPlaybackId: Long) {
                     sharedMemoryReady = true
+                    awaitingDirectSnapshot = activeDirectPlaybackId != 0L
+                    val retainedId = webVideoPlayer.playbackId
+                    val binder = sessionConnection.remoteBinder
+                    if (retainedId != null &&
+                        (retainedId != activeDirectPlaybackId || binder != directVideoModel.sessionBinder)
+                    ) webVideoPlayer.stopAndClear()
+                    directVideoModel.sessionBinder = binder
+                    if (awaitingDirectSnapshot) audioConsumer.setPausedForExternalPlayer(true)
                     mirrorDecoder.setGeneration(generationId)
                     audioConsumer.setGeneration(generationId)
-                    if (mirrorRequested) {
+                    if (mirrorRequested && !awaitingDirectSnapshot) {
                         presentationCoordinator.startMirror()
                         syncPresentationState()
                     }
@@ -197,7 +212,10 @@ class MainActivity : ComponentActivity(), SurfaceLayerController {
                 }
 
                 override fun onSharedMemoryDetached() {
+                    if (destroyingView) return
                     sharedMemoryReady = false
+                    directVideoModel.sessionBinder = null
+                    awaitingDirectSnapshot = false
                     mirrorRequested = false
                     directPlaybackId = 0L
                     cancelDirectStartupTimeout()
@@ -222,7 +240,7 @@ class MainActivity : ComponentActivity(), SurfaceLayerController {
                     mirrorDecoder.setGeneration(generationId)
                     audioConsumer.setGeneration(generationId)
                     mirrorRequested = true
-                    if (sharedMemoryReady) {
+                    if (sharedMemoryReady && !awaitingDirectSnapshot) {
                         presentationCoordinator.startMirror(reconfigured)
                         if (directPlaybackId != 0L) finishDirectSession(directPlaybackId)
                     }
@@ -231,6 +249,8 @@ class MainActivity : ComponentActivity(), SurfaceLayerController {
 
                 override fun onDirectVideoUrl(video: DirectPlaybackStart) {
                     val playbackId = video.playbackId
+                    val restoringMirror = awaitingDirectSnapshot && mirrorRequested
+                    awaitingDirectSnapshot = false
                     if (video.url.isBlank() || !video.airPlayPosition.isFinite() || playbackId <= 0L) return
                     // A re-registration may replay the current source; do not restart it.
                     if (directPlaybackId == playbackId && presentationCoordinator.hasDirectPlayback) return
@@ -238,7 +258,7 @@ class MainActivity : ComponentActivity(), SurfaceLayerController {
                     cancelDirectStartupTimeout()
                     directPlaybackId = playbackId
                     directRequestedAtMs = SystemClock.elapsedRealtime()
-                    if (!presentationCoordinator.switchToDirectVideo(video)) {
+                    if (!presentationCoordinator.switchToDirectVideo(video, mirrorAvailable = restoringMirror)) {
                         finishDirectSession(playbackId)
                     } else if (presentationCoordinator.state == PresentationState.SWITCHING_TO_DIRECT) {
                         val timeout = Runnable {
@@ -579,6 +599,7 @@ class MainActivity : ComponentActivity(), SurfaceLayerController {
         override fun surfaceChanged(holder: SurfaceHolder, format: Int, width: Int, height: Int) = Unit
 
         override fun surfaceDestroyed(holder: SurfaceHolder) {
+            if (destroyingView || (isDirectSurface && isChangingConfigurations)) return
             if (isDirectSurface) saveDirectCheckpoint()
             presentationCoordinator.onSurfaceDestroyed(isDirectSurface)
             syncPresentationState()
@@ -587,11 +608,17 @@ class MainActivity : ComponentActivity(), SurfaceLayerController {
 
     override fun onDestroy() {
         saveDirectCheckpoint()
+        destroyingView = true
         cancelDirectStartupTimeout()
         mainHandler.removeCallbacks(hideVideoControls)
         hidBridge.release()
-        presentationCoordinator.onSessionDied()
-        webVideoPlayer.release()
+        webVideoPlayer.detachView(directSurfaceView)
+        if (isChangingConfigurations) {
+            mirrorDecoder.stopAndRelease()
+            audioConsumer.stop()
+        } else {
+            presentationCoordinator.onSessionDied()
+        }
         sessionConnection.close()
         super.onDestroy()
     }

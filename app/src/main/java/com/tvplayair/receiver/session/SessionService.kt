@@ -183,7 +183,8 @@ class SessionService : Service() {
                             16L * 1024 * 1024,
                             audioCopy,
                             512L * 1024,
-                            protocolEngine.currentGenerationId()
+                            protocolEngine.currentGenerationId(),
+                            directPlayback?.playbackId ?: 0L
                         )
                     } finally {
                         audioCopy.close()

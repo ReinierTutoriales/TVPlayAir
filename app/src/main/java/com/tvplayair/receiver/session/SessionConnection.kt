@@ -15,7 +15,7 @@ import com.tvplayair.receiver.video.DirectPlaybackTelemetry
 import com.tvplayair.receiver.video.NO_DIRECT_CHECKPOINT_MS
 
 interface SessionEventListener {
-    fun onSharedMemoryReady(generationId: Int) = Unit
+    fun onSharedMemoryReady(generationId: Int, activeDirectPlaybackId: Long) = Unit
     fun onSharedMemoryDetached() = Unit
     fun onVideoConfigChanged(mimeType: String, width: Int, height: Int, generationId: Int) = Unit
     fun onDirectVideoUrl(video: DirectPlaybackStart) = Unit
@@ -33,7 +33,8 @@ class SessionConnection(
     private val appContext = context.applicationContext
     private val handler = Handler(Looper.getMainLooper())
     private var service: ITvPlaySession? = null
-    private var remoteBinder: IBinder? = null
+    var remoteBinder: IBinder? = null
+        private set
     private var activeCallback: ITvPlayCallback? = null
     private var activeDeathRecipient: IBinder.DeathRecipient? = null
     private var activeConnection: ServiceConnection? = null
@@ -56,7 +57,8 @@ class SessionConnection(
             videoSize: Long,
             audioFd: ParcelFileDescriptor,
             audioSize: Long,
-            generationId: Int
+            generationId: Int,
+            activeDirectPlaybackId: Long
         ) {
             // The service closes its ParcelFileDescriptor copies after the Binder call.
             // Take ownership before posting; close both if the connection becomes stale.
@@ -78,7 +80,7 @@ class SessionConnection(
                 if (!videoMapped || !audioMapped) {
                     handleBinderDeath(epoch)
                 } else {
-                    listener.onSharedMemoryReady(generationId)
+                    listener.onSharedMemoryReady(generationId, activeDirectPlaybackId)
                 }
             }
         }
