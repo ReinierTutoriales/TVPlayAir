@@ -71,5 +71,24 @@ jobs:
         uses: gradle/actions/setup-gradle@v6.4.1
       - name: Verify Android dependencies, JVM tests and native build
         run: ./gradlew --no-daemon :app:checkDebugAarMetadata :app:testDebugUnitTest :app:externalNativeBuildDebug
+      - name: Verify Cast-enabled receiver registration
+        run: |
+          ./gradlew --no-daemon -Ptvplayair.castConnect=true :app:processDebugMainManifest :app:generateDebugBuildConfig
+          python3 - <<'PYTHON'
+          from pathlib import Path
+          import re
+          import xml.etree.ElementTree as ET
+
+          android = "{http://schemas.android.com/apk/res/android}"
+          manifest = Path("app/build/intermediates/merged_manifest/debug/processDebugMainManifest/AndroidManifest.xml")
+          application = ET.parse(manifest).getroot().find("application")
+          alias = next(item for item in application.findall("activity-alias")
+                       if item.get(android + "name") == "com.tvplayair.receiver.CastReceiver")
+          assert alias.get(android + "enabled") == "true", "Cast receiver alias is disabled"
+          assert any(action.get(android + "name") == "com.google.android.gms.cast.tv.action.LAUNCH"
+                     for action in alias.findall("intent-filter/action")), "Cast launch action is missing"
+          config = Path("app/build/generated/source/buildConfig/debug/com/tvplayair/receiver/BuildConfig.java")
+          assert re.search(r"CAST_CONNECT_ENABLED\s*=\s*true\s*;", config.read_text()), "Cast flag is disabled"
+          PYTHON
       - name: Report resolved Android runtime dependencies
         run: ./gradlew --no-daemon :app:dependencies --configuration debugRuntimeClasspath
