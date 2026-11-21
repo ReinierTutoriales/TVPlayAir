@@ -219,6 +219,7 @@ class MainActivity : ComponentActivity(), SurfaceLayerController {
                         "pause" -> presentationCoordinator.pauseDirect()
                         "seek" -> presentationCoordinator.seekDirect(value)
                         "stop" -> {
+                            sessionConnection.finishDirectPlayback(directPlaybackId)
                             directPlaybackId = 0L
                             presentationCoordinator.stopDirectVideo()
                         }
