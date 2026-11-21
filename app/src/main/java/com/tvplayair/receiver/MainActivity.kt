@@ -26,6 +26,7 @@ import androidx.core.view.WindowInsetsCompat
 import androidx.core.view.WindowInsetsControllerCompat
 import androidx.tv.material3.MaterialTheme
 import com.tvplayair.receiver.audio.OboeAudioConsumer
+import com.tvplayair.receiver.cast.TvCastReceiver
 import com.tvplayair.receiver.control.DacpCommand
 import com.tvplayair.receiver.control.TvRemoteHidBridge
 import com.tvplayair.receiver.network.ReceiverIdentityHelper
@@ -65,6 +66,9 @@ class MainActivity : ComponentActivity(), SurfaceLayerController {
     private var destroyingView = false
     private var mirrorRequested = false
     private var directPlaybackId = 0L
+    private var nextCastPlaybackId = 0L
+    private var castReceiver: TvCastReceiver? = null
+    private var pendingCastIntent: Intent? = null
     private var directStartupTimeout: Runnable? = null
     private var directRequestedAtMs = 0L
     private var overlayState by mutableStateOf(TvOverlayState())
@@ -152,7 +156,7 @@ class MainActivity : ComponentActivity(), SurfaceLayerController {
                 }
                 if (::presentationCoordinator.isInitialized &&
                     presentationCoordinator.state == PresentationState.DIRECT_ACTIVE &&
-                    ::sessionConnection.isInitialized && directPlaybackId != 0L) {
+                    ::sessionConnection.isInitialized && directPlaybackId > 0L) {
                     sessionConnection.updatePlaybackTelemetry(
                         directPlaybackId, telemetry, webVideoPlayer.checkpointPositionMs()
                     )
@@ -165,6 +169,7 @@ class MainActivity : ComponentActivity(), SurfaceLayerController {
                     Log.i("TVPlayAir", "direct_startup outcome=ready playbackId=$playbackId elapsedMs=$elapsedMs")
                     syncPresentationState()
                     webVideoPlayer.exposeSystemControls(playbackId)
+                    if (playbackId < 0L) castReceiver?.attachSession(webVideoPlayer.platformSessionToken)
                     saveDirectCheckpoint()
                 }
             }
@@ -176,7 +181,9 @@ class MainActivity : ComponentActivity(), SurfaceLayerController {
             }
 
             override fun onSystemPlaybackIntent(playbackId: Long, playWhenReady: Boolean) {
-                sessionConnection.setDirectPlaybackIntent(playbackId, if (playWhenReady) "play" else "pause")
+                if (directPlaybackId == playbackId) {
+                    setDirectPlaybackIntent(if (playWhenReady) "play" else "pause")
+                }
             }
         })
         presentationCoordinator = VideoPresentationCoordinator(
@@ -195,7 +202,7 @@ class MainActivity : ComponentActivity(), SurfaceLayerController {
                     awaitingDirectSnapshot = activeDirectPlaybackId != 0L
                     val retainedId = webVideoPlayer.playbackId
                     val binder = sessionConnection.remoteBinder
-                    if (retainedId != null &&
+                    if (retainedId != null && retainedId > 0L &&
                         (retainedId != activeDirectPlaybackId || binder != directVideoModel.sessionBinder)
                     ) webVideoPlayer.stopAndClear()
                     directVideoModel.sessionBinder = binder
@@ -248,30 +255,14 @@ class MainActivity : ComponentActivity(), SurfaceLayerController {
                 }
 
                 override fun onDirectVideoUrl(video: DirectPlaybackStart) {
-                    val playbackId = video.playbackId
                     val restoringMirror = awaitingDirectSnapshot && mirrorRequested
-                    awaitingDirectSnapshot = false
-                    if (video.url.isBlank() || !video.airPlayPosition.isFinite() || playbackId <= 0L) return
-                    // A re-registration may replay the current source; do not restart it.
-                    if (directPlaybackId == playbackId && presentationCoordinator.hasDirectPlayback) return
-                    dismissVideoControls()
-                    cancelDirectStartupTimeout()
-                    directPlaybackId = playbackId
-                    directRequestedAtMs = SystemClock.elapsedRealtime()
-                    if (!presentationCoordinator.switchToDirectVideo(video, mirrorAvailable = restoringMirror)) {
-                        finishDirectSession(playbackId)
-                    } else if (presentationCoordinator.state == PresentationState.SWITCHING_TO_DIRECT) {
-                        val timeout = Runnable {
-                            if (presentationCoordinator.onDirectStartupTimeout(playbackId)) {
-                                val elapsedMs = SystemClock.elapsedRealtime() - directRequestedAtMs
-                                Log.w("TVPlayAir", "direct_startup outcome=timeout playbackId=$playbackId elapsedMs=$elapsedMs")
-                                finishDirectSession(playbackId)
-                            }
-                        }
-                        directStartupTimeout = timeout
-                        mainHandler.postDelayed(timeout, DIRECT_STARTUP_TIMEOUT_MS)
+                    if (awaitingDirectSnapshot && directPlaybackId < 0L) {
+                        awaitingDirectSnapshot = false
+                        sessionConnection.finishDirectPlayback(video.playbackId)
+                        return
                     }
-                    syncPresentationState()
+                    awaitingDirectSnapshot = false
+                    if (video.playbackId > 0L) startDirectVideo(video, restoringMirror)
                 }
 
                 override fun onDirectVideoCommand(command: String, value: Double, playbackId: Long) {
@@ -327,15 +318,47 @@ class MainActivity : ComponentActivity(), SurfaceLayerController {
             }
         )
         sessionConnection.connect()
+        if (BuildConfig.CAST_CONNECT_ENABLED) {
+            castReceiver = runCatching {
+                TvCastReceiver(this) { request ->
+                    startDirectVideo(
+                        DirectPlaybackStart(
+                            request.url, 0.0, --nextCastPlaybackId, request.startMs, request.autoplay
+                        ),
+                        mirrorAvailable = mirrorRequested
+                    )
+                }
+            }.onFailure { Log.w("TVPlayAir", "Cast Connect unavailable", it) }.getOrNull()
+            pendingCastIntent = intent
+        }
+    }
+
+    override fun onNewIntent(intent: Intent) {
+        super.onNewIntent(intent)
+        castReceiver?.let { receiver ->
+            if (!receiver.handleIntent(intent)) pendingCastIntent = intent
+        }
     }
 
     override fun onStart() {
         super.onStart()
         sessionConnection.setProjectionVisible(true)
+        castReceiver?.let { receiver ->
+            runCatching {
+                receiver.start()
+                pendingCastIntent?.let(receiver::handleIntent)
+            }.onFailure { Log.w("TVPlayAir", "Cast Connect could not start", it) }
+            pendingCastIntent = null
+        }
     }
 
     override fun onStop() {
         saveDirectCheckpoint()
+        if (directPlaybackId < 0L) {
+            val id = directPlaybackId
+            if (presentationCoordinator.finishDirectPlayback(id)) finishDirectSession(id)
+        }
+        castReceiver?.stop()
         dismissVideoControls()
         sessionConnection.setProjectionVisible(false)
         super.onStop()
@@ -359,7 +382,7 @@ class MainActivity : ComponentActivity(), SurfaceLayerController {
             KeyEvent.KEYCODE_MEDIA_PLAY_PAUSE -> {
                 if (inDirectMode) {
                     if (event == null || event.repeatCount == 0) {
-                        sessionConnection.setDirectPlaybackIntent(directPlaybackId, "toggle")
+                        setDirectPlaybackIntent("toggle")
                     }
                 } else {
                     sessionConnection.sendDacpCommand(DacpCommand.PLAY_PAUSE.wirePath)
@@ -368,7 +391,7 @@ class MainActivity : ComponentActivity(), SurfaceLayerController {
             }
             KeyEvent.KEYCODE_MEDIA_PLAY -> {
                 if (inDirectMode) {
-                    sessionConnection.setDirectPlaybackIntent(directPlaybackId, "play")
+                    setDirectPlaybackIntent("play")
                 } else {
                     sessionConnection.sendDacpCommand(DacpCommand.PLAY.wirePath)
                 }
@@ -376,7 +399,7 @@ class MainActivity : ComponentActivity(), SurfaceLayerController {
             }
             KeyEvent.KEYCODE_MEDIA_PAUSE -> {
                 if (inDirectMode) {
-                    sessionConnection.setDirectPlaybackIntent(directPlaybackId, "pause")
+                    setDirectPlaybackIntent("pause")
                 } else {
                     sessionConnection.sendDacpCommand(DacpCommand.PAUSE.wirePath)
                 }
@@ -433,7 +456,7 @@ class MainActivity : ComponentActivity(), SurfaceLayerController {
     private fun handleDirectVideoKey(keyCode: Int, repeatCount: Int): Boolean {
         when {
             isSelectKey(keyCode) -> if (repeatCount == 0) {
-                sessionConnection.setDirectPlaybackIntent(directPlaybackId, "toggle")
+                setDirectPlaybackIntent("toggle")
             }
             keyCode == KeyEvent.KEYCODE_DPAD_LEFT -> if (repeatCount == 0) seekVideoBy(-10.0)
             keyCode == KeyEvent.KEYCODE_DPAD_RIGHT -> if (repeatCount == 0) seekVideoBy(10.0)
@@ -528,8 +551,55 @@ class MainActivity : ComponentActivity(), SurfaceLayerController {
         audioConsumer.setAudioOffsetMs(next.audioOffsetMs)
     }
 
+    private fun startDirectVideo(video: DirectPlaybackStart, mirrorAvailable: Boolean): Boolean {
+        val id = video.playbackId
+        if (video.url.isBlank() || !video.airPlayPosition.isFinite() || id == 0L) return false
+        if (directPlaybackId == id && presentationCoordinator.hasDirectPlayback) return true
+        dismissVideoControls()
+        cancelDirectStartupTimeout()
+        if (directPlaybackId < 0L) castReceiver?.attachSession(null)
+        if (directPlaybackId > 0L && id < 0L) sessionConnection.finishDirectPlayback(directPlaybackId)
+        directPlaybackId = id
+        directRequestedAtMs = SystemClock.elapsedRealtime()
+        if (!presentationCoordinator.switchToDirectVideo(video, mirrorAvailable)) {
+            finishDirectSession(id)
+            return false
+        }
+        if (presentationCoordinator.state == PresentationState.SWITCHING_TO_DIRECT) {
+            val timeout = Runnable {
+                if (presentationCoordinator.onDirectStartupTimeout(id)) {
+                    val elapsedMs = SystemClock.elapsedRealtime() - directRequestedAtMs
+                    Log.w("TVPlayAir", "direct_startup outcome=timeout playbackId=$id elapsedMs=$elapsedMs")
+                    finishDirectSession(id)
+                }
+            }
+            directStartupTimeout = timeout
+            mainHandler.postDelayed(timeout, DIRECT_STARTUP_TIMEOUT_MS)
+        }
+        if (id < 0L) {
+            webVideoPlayer.exposeSystemControls(id)
+            castReceiver?.attachSession(webVideoPlayer.platformSessionToken)
+        }
+        syncPresentationState()
+        return true
+    }
+
+    private fun setDirectPlaybackIntent(command: String) {
+        if (directPlaybackId > 0L) {
+            sessionConnection.setDirectPlaybackIntent(directPlaybackId, command)
+        } else if (directPlaybackId < 0L) {
+            val play = when (command) {
+                "play" -> true
+                "pause" -> false
+                "toggle" -> !webVideoPlayer.wantsPlayback
+                else -> return
+            }
+            if (play) presentationCoordinator.playDirect() else presentationCoordinator.pauseDirect()
+        }
+    }
+
     private fun saveDirectCheckpoint() {
-        if (directPlaybackId == 0L || presentationCoordinator.state != PresentationState.DIRECT_ACTIVE) return
+        if (directPlaybackId <= 0L || presentationCoordinator.state != PresentationState.DIRECT_ACTIVE) return
         sessionConnection.updatePlaybackTelemetry(
             directPlaybackId, presentationCoordinator.directTelemetry(), webVideoPlayer.checkpointPositionMs()
         )
@@ -538,7 +608,8 @@ class MainActivity : ComponentActivity(), SurfaceLayerController {
     private fun finishDirectSession(playbackId: Long) {
         if (directPlaybackId != playbackId) return
         directPlaybackId = 0L
-        sessionConnection.finishDirectPlayback(playbackId)
+        if (playbackId > 0L) sessionConnection.finishDirectPlayback(playbackId)
+        else castReceiver?.attachSession(null)
         syncPresentationState()
     }
 

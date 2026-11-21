@@ -67,6 +67,12 @@ class WebVideoPlayer(context: Context) : DirectVideoEngine {
     private var player: ExoPlayer? = null
     private var mediaSession: MediaSession? = null
     private var systemPlayer: Player? = null
+
+    val platformSessionToken: android.media.session.MediaSession.Token?
+        get() = mediaSession?.platformToken
+
+    val wantsPlayback: Boolean
+        get() = player?.playWhenReady == true
     private var pendingStartFraction: Double? = null
     private var prepareStartedMs = 0L
     private val eventWindow = Timeline.Window()

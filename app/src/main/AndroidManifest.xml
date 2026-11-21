@@ -47,6 +47,21 @@
             </intent-filter>
         </activity-alias>
 
+        <meta-data
+            android:name="com.google.android.gms.cast.tv.RECEIVER_OPTIONS_PROVIDER_CLASS_NAME"
+            android:value="com.tvplayair.receiver.cast.TvCastOptions" />
+
+        <activity-alias
+            android:name=".CastReceiver"
+            android:targetActivity=".MainActivity"
+            android:enabled="${castConnectEnabled}"
+            android:exported="true">
+            <intent-filter>
+                <action android:name="com.google.android.gms.cast.tv.action.LAUNCH" />
+                <category android:name="android.intent.category.DEFAULT" />
+            </intent-filter>
+        </activity-alias>
+
         <service
             android:name=".session.SessionService"
             android:process=":session"
