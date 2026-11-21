@@ -102,8 +102,9 @@ class SessionService : Service() {
 
         override fun onDirectVideoCommand(command: String, value: Double, playbackId: Long) {
             synchronized(callbackLock) {
+                if (pendingDirectUrl?.playbackId != playbackId) return
                 if (command == "stop") pendingDirectUrl = null
-                runCatching { callback?.onDirectVideoCommand(command, value) }
+                runCatching { callback?.onDirectVideoCommand(command, value, playbackId) }
             }
         }
 
