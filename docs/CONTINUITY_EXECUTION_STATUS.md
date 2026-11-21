@@ -44,7 +44,8 @@ Recepción AirPlay en Android TV con presentación automática y minimalista: m�
 
 ### B. Continuidad audiovisual
 
-- [ ] Decidir propiedad de motores fuera de Activity o restauración de estado al recrearla; contrastar con superficies Android y FGS.
+- [x] Conservar referencia del vídeo directo activo en `SessionService` y reenviarla al registrar una Activity nueva (`7becbe52`); recuperación por nueva preparación, no preservación de decoder.
+- [ ] Completar restauración de posición, pausa y controles; invalidar la referencia al finalizar reproducción natural y asegurar no reactivar vídeo antiguo. Contrastar con superficies Android y FGS.
 - [ ] Añadir handshake de primer frame y timeout al cambiar a vídeo; no enseñar frames anteriores.
 - [x] Impedir que `prepareAndPlay` reactive vídeo tras `stop` durante `SWITCHING_TO_DIRECT` (`31b6b4c2`, `793d6e31`); añadida prueba de regresión (`94c7de7b`). Ejecución pendiente.
 - [ ] Verificar recuperación audio→vídeo→audio y espejo→vídeo→espejo, sin audio doble ni estado stale.
@@ -77,3 +78,6 @@ Registrar: **hipótesis → evidencia oficial/código → alternativa más simpl
 - `1ebe8039`: cuatro pruebas unitarias del árbitro AirPlay, incluida secuencia de 100 cambios. Son pruebas de estado, **no** de latencia ni de interoperabilidad iOS. No ejecutadas en esta sesión.
 
 - `793d6e31`: el coordinador comprueba el estado tras la preparación y no declara `DIRECT_ACTIVE` si una parada ya lo cambió. Prueba añadida; no hay workflow PR asociado a ese commit según consulta, por tanto no certificada.
+
+- `7becbe52`: el servicio retiene `pendingDirectUrl` como referencia de vídeo activo, incluso con callback UI presente; la reenvía en `registerCallback`. Limitación: una recreación puede reiniciar la preparación desde la posición inicial y no preservar pausa/posición; debe resolverse antes de certificar continuidad.
+- `db3d4167`: `MainActivity` acepta `stop` durante `SWITCHING_TO_DIRECT`; falta identidad `playbackId` en órdenes para descartar comandos obsoletos.
