@@ -302,9 +302,9 @@ class AirPlayDirectHttpServer(
                 }
             }
             method == "POST" && path == "/stop" -> {
-                playbackEvents.control(sessionKey, stop = true) {
+                playbackEvents.control(sessionKey, stop = true) { id ->
                     latestTelemetry.set(idleTelemetry)
-                    listener.onDirectVideoCommand("stop", 0.0)
+                    listener.onDirectVideoCommand("stop", 0.0, id)
                 }
                 writeResponse(output, 200, "OK")
             }
