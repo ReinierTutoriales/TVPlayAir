@@ -115,7 +115,7 @@ internal class AirPlayPlaybackEvents {
             stopRequested = true
             publish(State.STOPPED)
         }
-        dispatch()
+        dispatch(playbackId)
     }
 
     @Synchronized
