@@ -31,6 +31,21 @@ class AirPlayPlaybackEventsTest {
         assertEquals(2, dispatched)
     }
 
+
+    @Test
+    fun controlsCarryCurrentPlaybackIdentityAcrossTransitions() {
+        val events = AirPlayPlaybackEvents()
+        var first = 0L
+        var second = 0L
+        events.start(peerA) { first = it }
+        val dispatched = mutableListOf<Long>()
+        events.control(peerA) { id -> dispatched.add(id) }
+        events.start(peerA) { second = it }
+        events.control(peerA) { id -> dispatched.add(id) }
+        events.control(peerB, stop = true) { id -> dispatched.add(id) }
+        assertEquals(listOf(first, second), dispatched)
+    }
+
     @Test
     fun staleTelemetryNeverUpdatesActivePlayback() {
         val events = AirPlayPlaybackEvents()
