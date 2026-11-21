@@ -41,6 +41,7 @@ class WebVideoPlayer(
     private val mainHandler = Handler(Looper.getMainLooper())
     private var player: ExoPlayer? = null
     private var pendingStartFraction: Double? = null
+    private var playbackGeneration = 0L
 
     private val telemetryTicker = object : Runnable {
         override fun run() {
@@ -92,8 +93,9 @@ class WebVideoPlayer(
     private fun notifyPlaybackFinished() {
         val exo = player ?: return
         val item = exo.currentMediaItem ?: return
+        val generation = playbackGeneration
         mainHandler.post {
-            if (player === exo && exo.currentMediaItem === item &&
+            if (player === exo && playbackGeneration == generation && exo.currentMediaItem === item &&
                 (exo.playbackState == Player.STATE_ENDED || exo.playbackState == Player.STATE_IDLE)
             ) {
                 onPlaybackFinished()
@@ -137,6 +139,7 @@ class WebVideoPlayer(
 
     override fun prepareAndPlay(url: String, startPosition: Double): Boolean {
         if (url.isBlank()) return false
+        playbackGeneration++
         val exo = ensurePlayer()
         val initialPositionMs = initialDirectPositionMs(startPosition, durationMs = 0L)
         pendingStartFraction = null
@@ -169,7 +172,11 @@ class WebVideoPlayer(
         val exo = player ?: return
         if (!exo.isCommandAvailable(Player.COMMAND_SEEK_IN_CURRENT_MEDIA_ITEM)) return
         pendingStartFraction = null
-        val targetMs = (positionSec.coerceAtLeast(0.0) * 1000.0).toLong()
+        if (!positionSec.isFinite()) return
+        val durationMs = exo.duration
+        val maxMs = if (durationMs == C.TIME_UNSET || durationMs < 0L) Long.MAX_VALUE else durationMs
+        val targetMs = (positionSec.coerceAtLeast(0.0) * 1000.0)
+            .coerceAtMost(maxMs.toDouble()).toLong()
         exo.seekTo(targetMs)
     }
 
@@ -205,6 +212,7 @@ class WebVideoPlayer(
     }
 
     fun release() {
+        playbackGeneration++
         pendingStartFraction = null
         mainHandler.removeCallbacks(telemetryTicker)
         player?.let { exo ->
