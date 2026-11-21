@@ -198,9 +198,12 @@ class MainActivity : ComponentActivity(), SurfaceLayerController {
                 }
 
                 override fun onDirectVideoUrl(url: String, startPosition: Double, playbackId: Long) {
+                    if (url.isBlank() || !startPosition.isFinite()) return
                     dismissVideoControls()
                     directPlaybackId = playbackId
-                    presentationCoordinator.switchToDirectVideo(url, startPosition)
+                    if (!presentationCoordinator.switchToDirectVideo(url, startPosition)) {
+                        directPlaybackId = 0L
+                    }
                     syncPresentationState()
                 }
 
@@ -246,11 +249,9 @@ class MainActivity : ComponentActivity(), SurfaceLayerController {
                 }
 
                 override fun onNowPlaying(metadata: RaopNowPlaying?) {
-                    if (metadata == null && overlayState.audioProjectionActive) audioConsumer.stop()
-                    overlayState = overlayState.copy(
-                        nowPlaying = metadata,
-                        audioProjectionActive = metadata != null
-                    )
+                    // Metadata is not a transport stop signal: artwork/title may disappear
+                    // while the sender keeps its audio stream alive (including on lock).
+                    overlayState = overlayState.copy(nowPlaying = metadata)
                     updateScreenWake()
                 }
             }
