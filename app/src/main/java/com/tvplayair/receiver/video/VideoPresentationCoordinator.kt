@@ -40,9 +40,10 @@ interface DirectVideoEngine {
 internal fun initialDirectPositionMs(startPosition: Double, durationMs: Long): Long? {
     // AirPlay sends a fraction. Some clients send absolute seconds above 1.
     return when {
+        !startPosition.isFinite() -> null
         startPosition <= 0.0 -> 0L
-        startPosition > 1.0 -> (startPosition * 1000).toLong()
-        durationMs > 0L -> (durationMs * startPosition).toLong()
+        startPosition > 1.0 -> (startPosition * 1000).coerceAtMost(Long.MAX_VALUE.toDouble()).toLong()
+        durationMs > 0L -> (durationMs * startPosition).coerceAtMost(durationMs.toDouble()).toLong()
         else -> null
     }
 }
@@ -77,6 +78,7 @@ class VideoPresentationCoordinator(
     }
 
     fun switchToDirectVideo(url: String, startPosition: Double = 0.0): Boolean {
+        if (url.isBlank() || !startPosition.isFinite()) return false
         val replacingDirect = state == PresentationState.DIRECT_ACTIVE
         if (state == PresentationState.MIRROR_ACTIVE) resumeMirrorAfterDirect = true
         state = PresentationState.SWITCHING_TO_DIRECT
@@ -88,6 +90,7 @@ class VideoPresentationCoordinator(
         }
         val prepared = directEngine.prepareAndPlay(url, startPosition)
         if (!prepared) {
+            // A failed replacement must not leave an old direct stream visible.
             restoreAfterDirect()
             return false
         }
