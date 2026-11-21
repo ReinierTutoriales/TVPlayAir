@@ -251,7 +251,7 @@ class VideoPresentationCoordinatorTest {
     }
 
     @Test
-    fun losingDirectSurfaceDoesNotRestartMirrorOnAHiddenWindow() {
+    fun losingDirectSurfaceKeepsPlaybackAndRequiresAFreshFrameOnReturn() {
         val events = mutableListOf<String>()
         val coordinator = VideoPresentationCoordinator(
             FakeMirrorEngine(events),
@@ -262,14 +262,20 @@ class VideoPresentationCoordinatorTest {
 
         assertTrue(coordinator.startMirror())
         assertTrue(coordinator.switchToDirectVideo(DirectPlaybackStart("https://example.com/video.mp4", 0.0, playbackId = 1)))
+        assertTrue(coordinator.onDirectMediaReady(1))
         events.clear()
         coordinator.onSurfaceDestroyed(isDirectSurface = true)
 
-        assertEquals(PresentationState.IDLE, coordinator.state)
-        assertEquals(
-            listOf("direct.stopAndClear", "audio.pausedForExternal(false)", "surface.hideAll"),
-            events
-        )
+        assertEquals(PresentationState.DIRECT_WITHOUT_SURFACE, coordinator.state)
+        assertFalse(coordinator.onDirectStartupTimeout(1))
+        assertFalse(coordinator.onDirectMediaReady(1))
+        assertTrue(events.isEmpty())
+
+        assertTrue(coordinator.onDirectSurfaceCreated())
+        assertFalse(coordinator.onDirectMediaReady(2))
+        assertTrue(coordinator.onDirectMediaReady(1))
+        assertEquals(PresentationState.DIRECT_ACTIVE, coordinator.state)
+        assertEquals(listOf("surface.revealDirect"), events)
     }
 
     @Test

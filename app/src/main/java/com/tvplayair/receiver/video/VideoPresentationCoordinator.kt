@@ -5,6 +5,7 @@ enum class PresentationState {
     MIRROR_ACTIVE,
     SWITCHING_TO_DIRECT,
     DIRECT_ACTIVE,
+    DIRECT_WITHOUT_SURFACE,
     SWITCHING_TO_MIRROR,
     RECOVERING
 }
@@ -71,7 +72,8 @@ class VideoPresentationCoordinator(
     private var directPlaybackId: Long? = null
 
     val hasDirectPlayback: Boolean
-        get() = state == PresentationState.SWITCHING_TO_DIRECT || state == PresentationState.DIRECT_ACTIVE
+        get() = state == PresentationState.SWITCHING_TO_DIRECT ||
+            state == PresentationState.DIRECT_ACTIVE || state == PresentationState.DIRECT_WITHOUT_SURFACE
 
     fun onDirectMediaReady(playbackId: Long): Boolean {
         if (state != PresentationState.SWITCHING_TO_DIRECT || directPlaybackId != playbackId) return false
@@ -127,7 +129,7 @@ class VideoPresentationCoordinator(
     }
 
     private fun restoreAfterDirect() {
-        if (resumeMirrorAfterDirect) {
+        if (resumeMirrorAfterDirect && state != PresentationState.DIRECT_WITHOUT_SURFACE) {
             switchToMirror()
         } else {
             returnToStandbyFromDirect()
@@ -174,12 +176,15 @@ class VideoPresentationCoordinator(
         state = PresentationState.IDLE
     }
 
+    fun onDirectSurfaceCreated(): Boolean {
+        if (state != PresentationState.DIRECT_WITHOUT_SURFACE) return false
+        state = PresentationState.SWITCHING_TO_DIRECT
+        return true
+    }
+
     fun onSurfaceDestroyed(isDirectSurface: Boolean) {
-        if (isDirectSurface &&
-            (state == PresentationState.DIRECT_ACTIVE ||
-                state == PresentationState.SWITCHING_TO_DIRECT)
-        ) {
-            returnToStandbyFromDirect()
+        if (isDirectSurface && hasDirectPlayback) {
+            state = PresentationState.DIRECT_WITHOUT_SURFACE
         } else if (!isDirectSurface &&
             (state == PresentationState.MIRROR_ACTIVE ||
                 state == PresentationState.SWITCHING_TO_MIRROR)

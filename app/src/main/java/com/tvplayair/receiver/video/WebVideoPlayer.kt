@@ -272,6 +272,10 @@ class WebVideoPlayer(context: Context) : DirectVideoEngine {
         return true
     }
 
+    fun onOutputSurfaceRecreated() {
+        prepareStartedMs = SystemClock.elapsedRealtime()
+    }
+
     fun checkpointPositionMs(): Long? {
         val exo = player ?: return null
         if (playbackId == null || pendingStartFraction != null || exo.currentTimeline.isEmpty ||
