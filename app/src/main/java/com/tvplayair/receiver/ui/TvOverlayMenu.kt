@@ -14,8 +14,10 @@ import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.remember
@@ -68,7 +70,7 @@ fun TvOverlayMenu(
 
     val firstControlFocus = remember { FocusRequester() }
     LaunchedEffect(state.visible) {
-        firstControlFocus.requestFocus()
+        runCatching { firstControlFocus.requestFocus() }
     }
 
     Box(
@@ -85,6 +87,7 @@ fun TvOverlayMenu(
                 .clip(RoundedCornerShape(24.dp))
                 .background(DrawerBg)
                 .border(1.dp, CardBorder, RoundedCornerShape(24.dp))
+                .verticalScroll(rememberScrollState())
                 .padding(24.dp),
             verticalArrangement = Arrangement.spacedBy(12.dp)
         ) {
@@ -196,7 +199,7 @@ fun TvOverlayMenu(
                 )
             }
 
-            Spacer(modifier = Modifier.weight(1f))
+            Spacer(modifier = Modifier.height(8.dp))
 
             Button(
                 onClick = onDismiss,
@@ -215,8 +218,8 @@ private fun TvStandbyScreen(
     onCycleReceiverName: () -> Unit
 ) {
     val settingsFocus = remember { FocusRequester() }
-    LaunchedEffect(Unit) {
-        settingsFocus.requestFocus()
+    LaunchedEffect(state.visible, state.presentationState) {
+        runCatching { settingsFocus.requestFocus() }
     }
 
     Box(

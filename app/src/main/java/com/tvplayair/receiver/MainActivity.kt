@@ -50,6 +50,20 @@ class MainActivity : ComponentActivity(), SurfaceLayerController {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        onBackPressedDispatcher.addCallback(
+            this,
+            object : androidx.activity.OnBackPressedCallback(true) {
+                override fun handleOnBackPressed() {
+                    if (overlayState.visible) {
+                        setOverlayVisible(false)
+                    } else {
+                        isEnabled = false
+                        onBackPressedDispatcher.onBackPressed()
+                        isEnabled = true
+                    }
+                }
+            }
+        )
         window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
         identityStore = ReceiverIdentityStore(this)
         val initialIdentity = identityStore.loadOrCreate()
@@ -311,6 +325,7 @@ class MainActivity : ComponentActivity(), SurfaceLayerController {
         if (visible) {
             overlayComposeView.bringToFront()
         }
+        overlayComposeView.requestFocus()
     }
 
     private fun cycleReceiverName() {
