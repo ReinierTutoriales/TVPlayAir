@@ -107,3 +107,17 @@ Esta guía complementa `docs/ENGINEERING_SPEC_v1.0.md`. Cuando contradiga promes
 - `SessionConnection` publica callbacks Binder a un Handler y solo comprueba `bound`: ese booleano no distingue dos vinculaciones consecutivas. Requiere epoch de conexión para impedir eventos tardíos.
 - `SessionService` conserva `pendingDirectUrl` cuando no hay UI, pero una orden stop recibida mientras la UI está ausente solo limpia ese pending; comprobar recuperación de comandos y reproducción al registrar callback.
 - `MainActivity.onDestroy()` destruye el motor audiovisual aunque el proceso del servicio continúe; la recepción del protocolo persiste, pero la reproducción de audio/vídeo dependiente de Activity **no** sobrevive íntegramente a su destrucción. Requiere separar propiedad de motores o restauración explícita antes de certificar continuidad con pantalla TV suspendida.
+
+
+## Integración oficial de reproducción
+
+| API | Qué delegamos | Qué queda en TVPlayAir |
+|---|---|---|
+| Media3 `MediaSession` en Android TV | Publicar el estado del video directo y ofrecer controles de reproducción de Android mediante el ExoPlayer existente. Solo se activa cuando el medio vigente está listo. | Identidad AirPlay, pausa compartida con el iPhone, cambio de modo y acceso al medio. El mando de Android y el iPhone conservan una sola autoridad de reproducción. |
+| Media3 `MediaSessionService` | Candidato a mantener el mismo reproductor durante la recreación de la pantalla. | Validar vinculación de superficies, capacidad de decodificación y comportamiento de segundo plano antes de retirar el mecanismo de restauración existente. |
+| Cast Connect | Receptor nativo de video y audio para emisores Google Cast asociados al ID de la aplicación. | Integración opcional sobre el reproductor existente. El SDK cubre el transporte Cast. La duplicación del iPhone sigue por AirPlay. |
+| `MediaDevice` y `AVSystemRouting` de iOS 27 | Descubrimiento integrado en el selector de iOS, activación de ruta y control mediante las APIs públicas de Apple. | App complementaria de iOS, extensión y protocolo hacia Android TV. Comprobar el modo `.player` para URL y `.application` para app asociada. La compatibilidad depende de la app emisora y su soporte de rutas. |
+
+La primera integración activa una sesión de sistema para video directo y usa la versión estable Media3 1.11.1. Se conserva una sola instancia de ExoPlayer y se filtran los controladores de Android mediante el indicador de confianza de Media3. La sesión se cierra al cambiar de medio o abandonar video directo. Se reservan AirPlay, RAOP y DACP para sus rutas actuales. Cast Connect y la extensión de iOS son integraciones propuestas.
+
+[MediaSession en Android TV](https://developer.android.com/media/implement/surfaces/android-tv) · [MediaSessionService](https://developer.android.com/media/media3/session/background-playback) · [Cast Connect](https://developers.google.com/cast/docs/android_tv_receiver) · [Rutas de medios en iOS](https://developer.apple.com/documentation/avsystemrouting/routing-and-streaming-media-to-remote-devices)

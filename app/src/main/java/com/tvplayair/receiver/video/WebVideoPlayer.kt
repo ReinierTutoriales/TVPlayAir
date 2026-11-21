@@ -9,6 +9,7 @@ import android.view.SurfaceView
 import androidx.annotation.OptIn
 import androidx.media3.common.AudioAttributes
 import androidx.media3.common.C
+import androidx.media3.common.ForwardingSimpleBasePlayer
 import androidx.media3.common.MediaItem
 import androidx.media3.common.PlaybackException
 import androidx.media3.common.Player
@@ -18,7 +19,9 @@ import androidx.media3.datasource.DefaultHttpDataSource
 import androidx.media3.exoplayer.ExoPlayer
 import androidx.media3.exoplayer.analytics.AnalyticsListener
 import androidx.media3.exoplayer.source.DefaultMediaSourceFactory
-import androidx.media3.exoplayer.trackselection.DefaultTrackSelector
+import androidx.media3.session.MediaSession
+import com.google.common.util.concurrent.Futures
+import com.google.common.util.concurrent.ListenableFuture
 
 /**
  * Direct 4K HDR web video player backed by Media3 ExoPlayer on a native SurfaceView.
@@ -29,7 +32,8 @@ class WebVideoPlayer(
     private val surfaceView: SurfaceView,
     private val onTelemetryChanged: (DirectPlaybackTelemetry) -> Unit = {},
     private val onMediaReady: (Long) -> Unit = {},
-    private val onPlaybackFinished: (Long) -> Unit = {}
+    private val onPlaybackFinished: (Long) -> Unit = {},
+    private val onSystemPlaybackIntent: (Long, Boolean) -> Unit = { _, _ -> }
 ) : DirectVideoEngine {
 
     companion object {
@@ -43,6 +47,8 @@ class WebVideoPlayer(
     private val appContext = context.applicationContext
     private val mainHandler = Handler(Looper.getMainLooper())
     private var player: ExoPlayer? = null
+    private var mediaSession: MediaSession? = null
+    private var systemPlayer: Player? = null
     private var pendingStartFraction: Double? = null
     private var playbackId: Long? = null
     private var prepareStartedMs = 0L
@@ -135,18 +141,12 @@ class WebVideoPlayer(
         val mediaSourceFactory = DefaultMediaSourceFactory(appContext)
             .setDataSourceFactory(httpDataSourceFactory)
 
-        val trackSelector = DefaultTrackSelector(appContext).apply {
-            parameters = buildUponParameters()
-                .build()
-        }
-
         val audioAttributes = AudioAttributes.Builder()
             .setUsage(C.USAGE_MEDIA)
             .setContentType(C.AUDIO_CONTENT_TYPE_MOVIE)
             .build()
 
         return ExoPlayer.Builder(appContext)
-            .setTrackSelector(trackSelector)
             .setMediaSourceFactory(mediaSourceFactory)
             .setAudioAttributes(audioAttributes, true)
             .build()
@@ -158,7 +158,66 @@ class WebVideoPlayer(
             }
     }
 
+    @OptIn(UnstableApi::class)
+    fun exposeSystemControls(id: Long) {
+        val exo = player ?: return
+        if (playbackId != id || mediaSession != null) return
+
+        val controls = systemPlayer ?: createSystemPlayer(exo).also { systemPlayer = it }
+        mediaSession = MediaSession.Builder(appContext, controls)
+            .setCallback(object : MediaSession.Callback {
+                override fun onConnectAsync(
+                    session: MediaSession, controller: MediaSession.ControllerInfo
+                ): ListenableFuture<MediaSession.ConnectionResult> {
+                    val result = if (controller.isTrusted) {
+                        MediaSession.ConnectionResult.AcceptedResultBuilder(session, controller)
+                            .setAvailablePlayerCommands(
+                                Player.Commands.Builder()
+                                    .add(Player.COMMAND_GET_CURRENT_MEDIA_ITEM)
+                                    .add(Player.COMMAND_GET_METADATA)
+                                    .add(Player.COMMAND_PLAY_PAUSE)
+                                    .add(Player.COMMAND_SEEK_IN_CURRENT_MEDIA_ITEM)
+                                    .add(Player.COMMAND_SEEK_BACK)
+                                    .add(Player.COMMAND_SEEK_FORWARD)
+                                    .add(Player.COMMAND_STOP)
+                                    .build()
+                            )
+                            .build()
+                    } else {
+                        MediaSession.ConnectionResult.reject()
+                    }
+                    return Futures.immediateFuture(result)
+                }
+            })
+            .build()
+    }
+
+    @OptIn(UnstableApi::class)
+    private fun createSystemPlayer(exo: ExoPlayer): Player =
+        object : ForwardingSimpleBasePlayer(exo) {
+            override fun handleSetPlayWhenReady(playWhenReady: Boolean): ListenableFuture<*> {
+                val id = playbackId
+                if (id != null && mediaSession != null) onSystemPlaybackIntent(id, playWhenReady)
+                return Futures.immediateVoidFuture()
+            }
+
+            override fun handleStop(): ListenableFuture<*> {
+                val id = playbackId
+                if (id != null && mediaSession != null) {
+                    mainHandler.post { if (playbackId == id) onPlaybackFinished(id) }
+                }
+                return Futures.immediateVoidFuture()
+            }
+        }
+
+    private fun releaseSystemControls() {
+        val session = mediaSession
+        mediaSession = null
+        session?.release()
+    }
+
     override fun prepare(video: DirectPlaybackStart): Boolean {
+        releaseSystemControls()
         playbackId = video.playbackId
         prepareStartedMs = SystemClock.elapsedRealtime()
         val exo = ensurePlayer()
@@ -207,6 +266,7 @@ class WebVideoPlayer(
         // Keep the player and its SurfaceView binding warm for the next AirPlay video.
         // Stop and remove the old media so stale frames/metadata cannot be reused.
         playbackId = null
+        releaseSystemControls()
         pendingStartFraction = null
         mainHandler.removeCallbacks(telemetryTicker)
         player?.let { exo ->
@@ -244,6 +304,7 @@ class WebVideoPlayer(
 
     fun release() {
         playbackId = null
+        releaseSystemControls()
         pendingStartFraction = null
         mainHandler.removeCallbacks(telemetryTicker)
         player?.let { exo ->
@@ -251,5 +312,6 @@ class WebVideoPlayer(
             exo.release()
         }
         player = null
+        systemPlayer = null
     }
 }

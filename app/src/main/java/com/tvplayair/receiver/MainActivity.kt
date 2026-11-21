@@ -159,6 +159,7 @@ class MainActivity : ComponentActivity(), SurfaceLayerController {
                     val elapsedMs = SystemClock.elapsedRealtime() - directRequestedAtMs
                     Log.i("TVPlayAir", "direct_startup outcome=ready playbackId=$playbackId elapsedMs=$elapsedMs")
                     syncPresentationState()
+                    webVideoPlayer.exposeSystemControls(playbackId)
                     saveDirectCheckpoint()
                 }
             },
@@ -166,6 +167,9 @@ class MainActivity : ComponentActivity(), SurfaceLayerController {
                 if (presentationCoordinator.finishDirectPlayback(playbackId)) {
                     finishDirectSession(playbackId)
                 }
+            },
+            onSystemPlaybackIntent = { playbackId, playWhenReady ->
+                sessionConnection.setDirectPlaybackIntent(playbackId, if (playWhenReady) "play" else "pause")
             }
         )
         presentationCoordinator = VideoPresentationCoordinator(
