@@ -106,7 +106,7 @@ internal class AirPlayPlaybackEvents {
     }
 
     @Synchronized
-    fun control(key: SessionKey, stop: Boolean = false, dispatch: () -> Unit) {
+    fun control(key: SessionKey, stop: Boolean = false, dispatch: (Long) -> Unit) {
         val active = activeSession ?: return
         // Some senders omit the session header on controls. Preserve same-peer legacy control.
         if (active.peer != key.peer || (key.appleSessionId != null && key != active)) return
