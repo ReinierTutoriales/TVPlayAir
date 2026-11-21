@@ -36,7 +36,8 @@ Recepción AirPlay en Android TV con presentación automática y minimalista: m�
 ### A. Integridad de sesión (bloqueante)
 
 - [ ] Inspeccionar eventos RTSP/RAOP y HTTP y definir qué identificadores son realmente confiables. La IP sola no basta.
-- [ ] Añadir epoch de conexión en `SessionConnection`; impedir callbacks de vínculos antiguos y reconexiones tras `close()`.
+- [x] Añadir cierre terminal y epoch en `SessionConnection` para impedir reconexión tras `close()` y notificaciones `onSharedMemoryReady` encoladas de epochs anteriores (commit `5128f525`).
+- [ ] Completar aislamiento de **todos** los callbacks Binder entre vinculaciones: actualmente el objeto callback sigue siendo compartido y no identifica el origen de cada evento; requiere callback por vínculo y pruebas.
 - [ ] Vincular órdenes directas a `playbackId` y descartar `stop/seek/rate` obsoletos antes de tocar la UI.
 - [ ] Definir señales explícitas de inicio/parada de audio y limpiar estado solo cuando corresponda.
 
@@ -62,3 +63,7 @@ Registrar: **hipótesis → evidencia oficial/código → alternativa más simpl
 
 - [Arquitectura y limitaciones](TVPLAYAIR_CONTINUITY_ARCHITECTURE_2026.md)
 - [Especificación de ingeniería](ENGINEERING_SPEC_v1.0.md)
+
+### Registro de ejecución — 2026-11-21
+
+- `5128f525`: `SessionConnection.close()` se vuelve terminal; `connect()` y backoff no reconectan tras cierre; los avisos de memoria compartida encolados comprueban epoch. **No resuelve todavía callbacks generales de vínculos anteriores.** Compilación y pruebas CI aún sin verificar.
