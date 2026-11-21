@@ -224,8 +224,8 @@ class SessionService : Service() {
         ) {
             synchronized(callbackLock) {
                 pendingDirectUrl = pendingDirectUrl?.let { active ->
-                    if (active.playbackId == playbackId && positionSec.isFinite() &&
-                        positionSec >= 0.0 && durationSec.isFinite()) {
+                    if (active.playbackId == playbackId && isReady &&
+                        positionSec.isFinite() && positionSec > 1.0 && durationSec.isFinite()) {
                         active.copy(position = positionSec)
                     } else active
                 }
