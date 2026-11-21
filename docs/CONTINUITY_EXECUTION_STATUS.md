@@ -81,3 +81,9 @@ Registrar: **hipótesis → evidencia oficial/código → alternativa más simpl
 
 - `7becbe52`: el servicio retiene `pendingDirectUrl` como referencia de vídeo activo, incluso con callback UI presente; la reenvía en `registerCallback`. Limitación: una recreación puede reiniciar la preparación desde la posición inicial y no preservar pausa/posición; debe resolverse antes de certificar continuidad.
 - `db3d4167`: `MainActivity` acepta `stop` durante `SWITCHING_TO_DIRECT`; falta identidad `playbackId` en órdenes para descartar comandos obsoletos.
+
+## Consolidación de identidad y restauración (2026-11-21)
+
+- `a15fea5c`–`bcf736f4`: AIDL incorpora `finishDirectPlayback(playbackId)`; el servicio invalida exclusivamente la referencia del ID coincidente; Activity avisa en fin natural, stop y fallo de preparación. El servicio registra posición a partir de telemetría del mismo ID (`dfaf229c`).
+- **Pendiente crítico**: el callback `onPlaybackFinished` del reproductor no incluye ID de origen; si llega tarde podría afectar una reproducción posterior. Los comandos AirPlay tampoco transportan ID de origen de extremo a extremo. La posición inicial AirPlay usa semántica mixta (fracción/segundos): validar checkpoint para valores ≤1 segundo. Falta restauración de pausa y propiedad persistente del motor.
+- **Verificación**: commits publicados; compilación, pruebas de integración, CI y latencias no verificadas. No declarar terminado ni fusionar a main sin estas evidencias.
