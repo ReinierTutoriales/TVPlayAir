@@ -77,15 +77,11 @@ class MirrorDecoder(
         }
 
         frameGate.resetGate()
-        val createdCodec = createAndConfigureCodec(surface, config) ?: return false
-        codec = createdCodec
-        createdCodec.setOnFrameRenderedListener({ activeCodec, _, _ ->
-            if (codec === activeCodec) {
-                Log.i(TAG, "Mirror first frame rendered (${config.mimeType})")
-                activeCodec.setOnFrameRenderedListener(null, null)
-            }
-        }, renderListenerHandler)
-        reinjectCachedCodecConfig(createdCodec)
+        val initialCsd = frameGate.getCachedCodecConfig()
+        if (initialCsd != null) {
+            val createdCodec = createAndConfigureCodec(surface, config, initialCsd) ?: return false
+            codec = createdCodec
+        }
 
         running.set(true)
         workerThread = Thread(::decodeLoop, "TVPlayAir-MirrorDecoder").apply { start() }
@@ -108,12 +104,19 @@ class MirrorDecoder(
         codec = null
     }
 
-    private fun createAndConfigureCodec(surface: Surface, cfg: MirrorVideoConfig): MediaCodec? {
+    private fun createAndConfigureCodec(
+        surface: Surface,
+        cfg: MirrorVideoConfig,
+        csdBytes: ByteArray? = null
+    ): MediaCodec? {
         val format = MediaFormat.createVideoFormat(cfg.mimeType, cfg.width, cfg.height)
         format.setInteger(MediaFormat.KEY_MAX_WIDTH, maxOf(cfg.width, 1920))
         format.setInteger(MediaFormat.KEY_MAX_HEIGHT, maxOf(cfg.height, 1920))
         // Safe low-latency fallback on API 29+; never force KEY_OPERATING_RATE = 32767.
         format.setInteger(MediaFormat.KEY_PRIORITY, 0)
+        if (csdBytes != null && csdBytes.isNotEmpty()) {
+            format.setByteBuffer("csd-0", ByteBuffer.wrap(csdBytes))
+        }
 
         val decoder = runCatching {
             val codecName = MediaCodecList(MediaCodecList.REGULAR_CODECS)
@@ -139,18 +142,24 @@ class MirrorDecoder(
             Log.i(
                 TAG,
                 "Configured ${decoder.name} (${cfg.mimeType} ${cfg.width}x${cfg.height}) " +
-                    "lowLatency=$lowLatencySupported"
+                    "lowLatency=$lowLatencySupported csd=${csdBytes?.size ?: 0}B"
             )
         } else {
             Log.i(
                 TAG,
                 "Configured ${decoder.name} (${cfg.mimeType} ${cfg.width}x${cfg.height}) " +
-                    "API ${Build.VERSION.SDK_INT} priority=0"
+                    "API ${Build.VERSION.SDK_INT} priority=0 csd=${csdBytes?.size ?: 0}B"
             )
         }
 
         return runCatching {
             decoder.configure(format, surface, null, 0)
+            decoder.setOnFrameRenderedListener({ activeCodec, _, _ ->
+                if (codec === activeCodec) {
+                    Log.i(TAG, "Mirror first frame rendered (${cfg.mimeType})")
+                    activeCodec.setOnFrameRenderedListener(null, null)
+                }
+            }, renderListenerHandler)
             decoder.start()
             decoder
         }.onFailure {
@@ -159,35 +168,14 @@ class MirrorDecoder(
         }.getOrNull()
     }
 
-    private fun reinjectCachedCodecConfig(activeCodec: MediaCodec) {
-        val cached = frameGate.getCachedCodecConfig() ?: return
-        val inputIndex = runCatching { activeCodec.dequeueInputBuffer(DEQUEUE_TIMEOUT_US) }
-            .getOrDefault(-1)
-        if (inputIndex < 0) {
-            Log.w(TAG, "Could not dequeue input buffer to reinject cached SPS/PPS/VPS")
-            return
-        }
-        val inputBuffer = activeCodec.getInputBuffer(inputIndex) ?: return
-        inputBuffer.clear()
-        if (cached.size <= inputBuffer.capacity()) {
-            inputBuffer.put(cached)
-            activeCodec.queueInputBuffer(
-                inputIndex,
-                0,
-                cached.size,
-                0L,
-                MediaCodec.BUFFER_FLAG_CODEC_CONFIG
-            )
-            Log.i(TAG, "Reinjected cached SPS/PPS/VPS (${cached.size} bytes)")
-        }
-    }
-
     private fun decodeLoop() {
         val bufferInfo = MediaCodec.BufferInfo()
-        val activeCodec = codec ?: return
+        var activeCodec = codec
 
         while (running.get()) {
-            drainOutputBuffers(activeCodec, bufferInfo)
+            if (activeCodec != null) {
+                drainOutputBuffers(activeCodec, bufferInfo)
+            }
 
             val readBytes = NativeSharedMemory.nativeReadVideoPacket(
                 packetBuffer,
@@ -217,8 +205,23 @@ class MirrorDecoder(
                 val configBytes = ByteArray(payloadSize)
                 packetBuffer.position(MirrorFrameGate.PACKET_HEADER_BYTES)
                 packetBuffer.get(configBytes)
+                val previousCsd = frameGate.getCachedCodecConfig()
                 frameGate.onCodecConfig(configBytes)
+                if (activeCodec == null) {
+                    val surface = surfaceProvider()
+                    if (surface != null && surface.isValid) {
+                        activeCodec = createAndConfigureCodec(surface, config, configBytes)
+                        codec = activeCodec
+                    }
+                    // csd-0 was already passed into MediaCodec.configure(); skip duplicate queueInputBuffer.
+                    continue
+                } else if (previousCsd != null && previousCsd.contentEquals(configBytes)) {
+                    // Identical SPS/PPS already configured on activeCodec; skip duplicate re-config buffer.
+                    continue
+                }
             }
+
+            val currentCodec = activeCodec ?: continue
 
             if (!frameGate.shouldSubmitFrame(flags)) {
                 continue
@@ -227,21 +230,23 @@ class MirrorDecoder(
             var inputIndex = -1
             var attempts = 0
             while (running.get() && attempts < 25) {
-                inputIndex = runCatching { activeCodec.dequeueInputBuffer(DEQUEUE_TIMEOUT_US) }
+                inputIndex = runCatching { currentCodec.dequeueInputBuffer(DEQUEUE_TIMEOUT_US) }
                     .getOrDefault(-1)
                 if (inputIndex >= 0) break
-                drainOutputBuffers(activeCodec, bufferInfo)
+                drainOutputBuffers(currentCodec, bufferInfo)
                 attempts++
             }
             if (inputIndex < 0) {
+                Log.w(TAG, "MediaCodec input congested; flushing decoder and waiting for next IDR")
+                runCatching { currentCodec.flush() }
                 frameGate.resetGate()
                 continue
             }
 
-            val inputBuffer = activeCodec.getInputBuffer(inputIndex) ?: continue
+            val inputBuffer = currentCodec.getInputBuffer(inputIndex) ?: continue
             inputBuffer.clear()
             if (payloadSize > inputBuffer.capacity()) {
-                activeCodec.queueInputBuffer(inputIndex, 0, 0, 0L, 0)
+                currentCodec.queueInputBuffer(inputIndex, 0, 0, 0L, 0)
                 continue
             }
 
@@ -259,7 +264,7 @@ class MirrorDecoder(
             }
 
             runCatching {
-                activeCodec.queueInputBuffer(inputIndex, 0, payloadSize, ptsUs, codecFlags)
+                currentCodec.queueInputBuffer(inputIndex, 0, payloadSize, ptsUs, codecFlags)
             }.onFailure {
                 Log.w(TAG, "queueInputBuffer failed", it)
             }

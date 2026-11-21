@@ -473,6 +473,14 @@ class RaopRtspServer(
                 } else {
                     rawKey
                 }
+                val extraKeys = buildList {
+                    if (shk != null) {
+                        add(shk)
+                        if (ecdhSecret != null && ecdhSecret.size >= 16) {
+                            add(AirPlayPairingSession.sha512Trunc16(shk, ecdhSecret))
+                        }
+                    }
+                }
                 val codec = when (ct) {
                     8 -> RaopAudioCodec.AAC_ELD
                     4 -> RaopAudioCodec.AAC_LC
@@ -482,7 +490,7 @@ class RaopRtspServer(
                 Log.i(
                     TAG,
                     "SETUP audio stream: ct=$ct sr=$sampleRate spf=$spf codec=$codec " +
-                        "hasKey=${pairedKey != null} hasEcdh=${ecdhSecret != null} hasIv=${sessionEiv != null}"
+                        "hasKey=${pairedKey != null} hasShk=${shk != null} hasEcdh=${ecdhSecret != null} hasIv=${sessionEiv != null} keys=${firstStream.keys}"
                 )
                 audioReceiver.configureSession(
                     codec = codec,
@@ -490,7 +498,8 @@ class RaopRtspServer(
                     sessionAesKey = pairedKey,
                     sessionAesIv = sessionEiv,
                     samplesPerFrame = spf,
-                    alternateAesKey = rawKey
+                    alternateAesKey = rawKey,
+                    extraAesKeys = extraKeys
                 )
                 if (audioReceiver.start(RaopAudioRtpReceiver.DEFAULT_AUDIO_PORT)) {
                     activateAudioSource(source, request)

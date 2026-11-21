@@ -4,18 +4,24 @@ import android.media.MediaFormat
 import android.util.Log
 import com.tvplayair.receiver.video.DirectPlaybackTelemetry
 import java.io.BufferedInputStream
+import java.io.ByteArrayInputStream
 import java.io.ByteArrayOutputStream
 import java.io.IOException
 import java.io.OutputStream
 import java.net.InetSocketAddress
 import java.net.ServerSocket
 import java.net.Socket
+import java.net.URLDecoder
+import java.net.URLEncoder
 import java.nio.charset.StandardCharsets
 import java.util.Locale
+import java.util.concurrent.CompletableFuture
+import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicInteger
 import java.util.concurrent.atomic.AtomicReference
+import java.util.zip.GZIPInputStream
 
 /**
  * Lightweight AirPlay HTTP control endpoint isolated inside :session.
@@ -29,9 +35,10 @@ class AirPlayDirectHttpServer(
     companion object {
         private const val TAG = "AirPlayDirectHttpServer"
         private const val MAX_HEADER_BYTES = 16 * 1024
-        private const val MAX_BODY_BYTES = 64 * 1024
+        private const val MAX_BODY_BYTES = 2 * 1024 * 1024
         private const val CLIENT_SO_TIMEOUT_MS = 30_000
         private const val EVENT_ACK_TIMEOUT_MS = 5_000
+        private const val FCUP_TIMEOUT_MS = 4_000L
     }
 
     private val running = AtomicBoolean(false)
@@ -39,6 +46,10 @@ class AirPlayDirectHttpServer(
     private val playbackEvents = AirPlayPlaybackEvents()
     private val idleTelemetry = DirectPlaybackTelemetry(0.0, 0.0, 0f, isPlaying = false, isBuffering = false)
     private val latestTelemetry = AtomicReference(idleTelemetry)
+    private val nextFcupRequestId = AtomicInteger(1)
+    private val pendingFcupById = ConcurrentHashMap<Int, CompletableFuture<ByteArray>>()
+    private val pendingFcupByUrl = ConcurrentHashMap<String, CompletableFuture<ByteArray>>()
+    private val fcupCache = ConcurrentHashMap<String, ByteArray>()
 
     @Volatile
     private var serverSocket: ServerSocket? = null
@@ -53,13 +64,8 @@ class AirPlayDirectHttpServer(
             val mimeType = if (isHevc) MediaFormat.MIMETYPE_VIDEO_HEVC else MediaFormat.MIMETYPE_VIDEO_AVC
             val defaultWidth = if (isHevc) config.maxWidth else config.maxWidth.coerceAtMost(1920)
             val defaultHeight = if (isHevc) config.maxHeight else config.maxHeight.coerceAtMost(1080)
-            var w = width.takeIf { it > 0 } ?: defaultWidth
-            var h = height.takeIf { it > 0 } ?: defaultHeight
-            if (!isHevc && maxOf(w, h) > 1920) {
-                val scale = 1920.0 / maxOf(w, h).toDouble()
-                w = ((w * scale).toInt() and 1.inv()).coerceAtLeast(16)
-                h = ((h * scale).toInt() and 1.inv()).coerceAtLeast(16)
-            }
+            val w = width.takeIf { it > 0 } ?: defaultWidth
+            val h = height.takeIf { it > 0 } ?: defaultHeight
             listener.onVideoConfigChanged(mimeType, w, h, generation)
         }
     )
@@ -250,15 +256,173 @@ class AirPlayDirectHttpServer(
             output.flush()
             while (running.get() && !socket.isClosed) {
                 val event = channel.events.poll(1, TimeUnit.SECONDS) ?: continue
-                output.write(event.request(key.appleSessionId))
+                val reqBytes = event.request(key.appleSessionId)
+                Log.i(TAG, "-> /reverse POST /event (${reqBytes.size}B fcup=${event.customXmlBody != null})")
+                output.write(reqBytes)
                 output.flush()
                 val acknowledgement = readUntilHeaderEnd(input)?.toString(StandardCharsets.US_ASCII)
                     ?: break
-                val status = acknowledgement.substringBefore("\r\n").split(' ')
-                if (status.getOrNull(0) != "HTTP/1.1" || status.getOrNull(1) != "200") break
+                val firstAckLine = acknowledgement.substringBefore("\r\n")
+                Log.i(TAG, "<- /reverse ack: $firstAckLine")
+                val status = firstAckLine.split(' ')
+                val protoOk = status.getOrNull(0) == "HTTP/1.1" || status.getOrNull(0) == "RTSP/1.0"
+                if (!protoOk || status.getOrNull(1) != "200") break
+                val ackLen = acknowledgement.lineSequence()
+                    .firstOrNull { it.startsWith("Content-Length:", ignoreCase = true) }
+                    ?.substringAfter(':')
+                    ?.trim()
+                    ?.toIntOrNull() ?: 0
+                if (ackLen > 0) {
+                    readExactBytes(input, ackLen.coerceAtMost(MAX_BODY_BYTES))
+                }
             }
         } finally {
             playbackEvents.detach(channel)
+        }
+    }
+
+    private fun buildLocalFcupProxyUrl(customUrl: String): String {
+        val encoded = URLEncoder.encode(customUrl, StandardCharsets.UTF_8.name())
+        return "http://127.0.0.1:${activeConfig.airPlayPort}/__fcup/playlist.m3u8?url=$encoded"
+    }
+
+    private fun resolvePlayableUrl(rawUrl: String): String {
+        if (rawUrl.startsWith("http://", ignoreCase = true) ||
+            rawUrl.startsWith("https://", ignoreCase = true)
+        ) {
+            return rawUrl
+        }
+        requestFcupResourceAsync(rawUrl)
+        return buildLocalFcupProxyUrl(rawUrl)
+    }
+
+    private fun requestFcupResourceAsync(targetUrl: String): CompletableFuture<ByteArray> {
+        pendingFcupByUrl[targetUrl]?.let { return it }
+        val future = CompletableFuture<ByteArray>()
+        val reqId = nextFcupRequestId.getAndIncrement()
+        pendingFcupById[reqId] = future
+        pendingFcupByUrl[targetUrl] = future
+        val sent = playbackEvents.sendFcupRequest(targetUrl, reqId)
+        Log.i(TAG, "-> FCUP request id=$reqId sent=$sent url=$targetUrl")
+        return future
+    }
+
+    private fun handleFcupResponsePlist(bodyBytes: ByteArray): Boolean {
+        val root = BinaryPlistParser.parse(bodyBytes) as? Map<*, *> ?: return false
+        val params = (root["params"] as? Map<*, *>) ?: root
+        val reqId = ((params["FCUP_Response_RequestID"]
+            ?: params["FCUP_Response_ID"]
+            ?: params["requestID"]
+            ?: root["FCUP_Response_RequestID"]
+            ?: root["FCUP_Response_ID"]) as? Number)?.toInt()
+        val respUrl = ((params["FCUP_Response_URL"]
+            ?: params["URL"]
+            ?: params["url"]
+            ?: root["FCUP_Response_URL"]) as? String)?.trim()
+        val rawData = params["FCUP_Response_Data"]
+            ?: params["data"]
+            ?: root["FCUP_Response_Data"]
+            ?: findFirstByteArrayInMap(params)
+        val rawBytes = when (rawData) {
+            is ByteArray -> rawData
+            is String -> rawData.toByteArray(StandardCharsets.UTF_8)
+            else -> null
+        } ?: return false
+
+        val dataBytes = if (rawBytes.size >= 2 &&
+            rawBytes[0] == 0x1f.toByte() &&
+            rawBytes[1] == 0x8b.toByte()
+        ) {
+            runCatching { GZIPInputStream(ByteArrayInputStream(rawBytes)).readBytes() }
+                .getOrDefault(rawBytes)
+        } else {
+            rawBytes
+        }
+
+        val preview = runCatching {
+            dataBytes.toString(StandardCharsets.UTF_8).replace("\r", " ").replace("\n", " | ").take(220)
+        }.getOrDefault("binary(${dataBytes.size}B)")
+        Log.i(TAG, "<- FCUP response id=$reqId url=$respUrl len=${dataBytes.size} preview=$preview")
+
+        if (!respUrl.isNullOrEmpty()) {
+            fcupCache[respUrl] = dataBytes
+            pendingFcupByUrl.remove(respUrl)?.complete(dataBytes)
+        }
+        if (reqId != null) {
+            pendingFcupById.remove(reqId)?.complete(dataBytes)
+        }
+        if (pendingFcupById.size == 1) {
+            val onlyKey = pendingFcupById.keys().nextElement()
+            pendingFcupById.remove(onlyKey)?.complete(dataBytes)
+        }
+        if (pendingFcupByUrl.size == 1) {
+            val onlyUrl = pendingFcupByUrl.keys().nextElement()
+            fcupCache[onlyUrl] = dataBytes
+            pendingFcupByUrl.remove(onlyUrl)?.complete(dataBytes)
+        }
+        return true
+    }
+
+    private fun findFirstByteArrayInMap(map: Map<*, *>): ByteArray? {
+        for ((k, v) in map) {
+            val keyStr = k as? String ?: continue
+            if (keyStr.contains("data", ignoreCase = true) && v is ByteArray && v.isNotEmpty()) {
+                return v
+            }
+        }
+        return null
+    }
+
+    private fun resolveRelativeFcupUri(baseUrl: String, ref: String): String {
+        val trimmed = ref.trim()
+        if (trimmed.contains("://")) return trimmed
+        val schemeEnd = baseUrl.indexOf("://")
+        if (schemeEnd < 0) return trimmed
+        val hostStart = schemeEnd + 3
+        val pathStart = baseUrl.indexOf('/', hostStart)
+        val origin = if (pathStart >= 0) baseUrl.substring(0, pathStart) else baseUrl
+        val baseDir = if (pathStart >= 0) {
+            val lastSlash = baseUrl.lastIndexOf('/')
+            if (lastSlash >= hostStart) baseUrl.substring(0, lastSlash + 1) else "$baseUrl/"
+        } else {
+            "$baseUrl/"
+        }
+        return if (trimmed.startsWith("/")) "$origin$trimmed" else "$baseDir$trimmed"
+    }
+
+    private fun rewriteM3u8ForFcupProxy(m3u8Text: String, baseUrl: String): String {
+        val uriAttrRegex = Regex("""URI="([^"]+)"""")
+        return buildString {
+            for (rawLine in m3u8Text.lineSequence()) {
+                val line = rawLine.trim()
+                if (line.isEmpty()) {
+                    append("\n")
+                    continue
+                }
+                if (line.startsWith("#")) {
+                    val rewrittenTag = uriAttrRegex.replace(rawLine) { match ->
+                        val rawUri = match.groupValues[1]
+                        val resolved = resolveRelativeFcupUri(baseUrl, rawUri)
+                        if (resolved.startsWith("http://", ignoreCase = true) ||
+                            resolved.startsWith("https://", ignoreCase = true)
+                        ) {
+                            match.value
+                        } else {
+                            """URI="${buildLocalFcupProxyUrl(resolved)}""""
+                        }
+                    }
+                    append(rewrittenTag).append("\n")
+                } else {
+                    val resolved = resolveRelativeFcupUri(baseUrl, line)
+                    if (resolved.startsWith("http://", ignoreCase = true) ||
+                        resolved.startsWith("https://", ignoreCase = true)
+                    ) {
+                        append(resolved).append("\n")
+                    } else {
+                        append(buildLocalFcupProxyUrl(resolved)).append("\n")
+                    }
+                }
+            }
         }
     }
 
@@ -271,6 +435,37 @@ class AirPlayDirectHttpServer(
         sessionKey: AirPlayPlaybackEvents.SessionKey
     ) {
         when {
+            method == "GET" && path.startsWith("/__fcup/") -> {
+                val encodedUrl = fullPath.substringAfter("url=", "").substringBefore('&')
+                val targetUrl = runCatching {
+                    URLDecoder.decode(encodedUrl, StandardCharsets.UTF_8.name())
+                }.getOrDefault("")
+                if (targetUrl.isBlank()) {
+                    writeResponse(output, 400, "Bad Request")
+                    return
+                }
+                val cached = fcupCache[targetUrl]
+                val dataBytes = cached ?: runCatching {
+                    requestFcupResourceAsync(targetUrl).get(FCUP_TIMEOUT_MS, TimeUnit.MILLISECONDS)
+                }.onFailure {
+                    Log.w(TAG, "FCUP request timed out for url=$targetUrl")
+                    pendingFcupByUrl.remove(targetUrl)
+                }.getOrNull()
+
+                if (dataBytes == null) {
+                    writeResponse(output, 504, "Gateway Timeout")
+                    return
+                }
+                val text = runCatching { dataBytes.toString(StandardCharsets.UTF_8) }.getOrNull()
+                if (text != null && text.trimStart().startsWith("#EXTM3U")) {
+                    val rewritten = rewriteM3u8ForFcupProxy(text, targetUrl)
+                    Log.i(TAG, "-> /__fcup 200 OK m3u8 (${rewritten.length}B) for $targetUrl")
+                    writeResponse(output, 200, "OK", "application/vnd.apple.mpegurl", rewritten)
+                } else {
+                    Log.i(TAG, "-> /__fcup 200 OK binary (${dataBytes.size}B) for $targetUrl")
+                    writeBinaryResponse(output, 200, "OK", "application/octet-stream", dataBytes)
+                }
+            }
             method == "POST" && path == "/pair-setup" -> {
                 val reply = pairingSession.handlePairSetup(bodyBytes)
                 if (reply != null) {
@@ -304,11 +499,19 @@ class AirPlayDirectHttpServer(
             method == "POST" && path == "/play" -> {
                 val parsed = AirPlayHttpRequestParser.parsePlayBody(bodyBytes)
                 if (parsed != null) {
+                    fcupCache.clear()
+                    pendingFcupById.clear()
+                    pendingFcupByUrl.clear()
                     playbackEvents.start(sessionKey) { playbackId ->
                         latestTelemetry.set(idleTelemetry.copy(isBuffering = true))
-                        listener.onDirectVideoUrl(parsed.url, parsed.startPosition, playbackId)
+                        val playableUrl = resolvePlayableUrl(parsed.url)
+                        listener.onDirectVideoUrl(playableUrl, parsed.startPosition, playbackId)
                     }
-                    Log.i(TAG, "-> /play 200 OK url=${parsed.url} startPosition=${parsed.startPosition}")
+                    Log.i(
+                        TAG,
+                        "-> /play 200 OK url=${parsed.url} startPosition=${parsed.startPosition} " +
+                            "plist=${AirPlayHttpRequestParser.summarizePlist(bodyBytes)}"
+                    )
                     writeResponse(output, 200, "OK")
                 } else {
                     Log.w(TAG, "-> /play had no direct URL (${AirPlayHttpRequestParser.summarizePlist(bodyBytes)})")
@@ -316,18 +519,22 @@ class AirPlayDirectHttpServer(
                 }
             }
             method == "POST" && path == "/action" -> {
-                val parsed = AirPlayHttpRequestParser.parsePlayBody(bodyBytes)
-                if (parsed != null) {
-                    playbackEvents.start(sessionKey) { playbackId ->
-                        latestTelemetry.set(idleTelemetry.copy(isBuffering = true))
-                        listener.onDirectVideoUrl(parsed.url, parsed.startPosition, playbackId)
-                    }
-                    Log.i(TAG, "-> /action started direct video url=${parsed.url} pos=${parsed.startPosition}")
+                if (handleFcupResponsePlist(bodyBytes)) {
+                    writeResponse(output, 200, "OK")
                 } else {
-                    Log.i(TAG, "-> /action 200 OK (${AirPlayHttpRequestParser.summarizePlist(bodyBytes)})")
+                    val parsed = AirPlayHttpRequestParser.parsePlayBody(bodyBytes)
+                    if (parsed != null) {
+                        playbackEvents.start(sessionKey) { playbackId ->
+                            latestTelemetry.set(idleTelemetry.copy(isBuffering = true))
+                            val playableUrl = resolvePlayableUrl(parsed.url)
+                            listener.onDirectVideoUrl(playableUrl, parsed.startPosition, playbackId)
+                        }
+                        Log.i(TAG, "-> /action started direct video url=${parsed.url} pos=${parsed.startPosition}")
+                    } else {
+                        Log.i(TAG, "-> /action 200 OK (${AirPlayHttpRequestParser.summarizePlist(bodyBytes)})")
+                    }
+                    writeResponse(output, 200, "OK")
                 }
-                val reply = BinaryPlistWriter.encode(mapOf("errorCode" to 0L))
-                writeBinaryResponse(output, 200, "OK", "application/x-apple-binary-plist", reply)
             }
             method == "GET" && path == "/scrub" -> {
                 val t = latestTelemetry.get()
@@ -386,15 +593,18 @@ class AirPlayDirectHttpServer(
                 writeResponse(output, 200, "OK", "text/x-apple-plist+xml", plist)
             }
             method == "PUT" && path == "/setProperty" -> {
-                val parsed = AirPlayHttpRequestParser.parsePlayBody(bodyBytes)
-                if (parsed != null) {
-                    playbackEvents.start(sessionKey) { playbackId ->
-                        latestTelemetry.set(idleTelemetry.copy(isBuffering = true))
-                        listener.onDirectVideoUrl(parsed.url, parsed.startPosition, playbackId)
+                if (!handleFcupResponsePlist(bodyBytes)) {
+                    val parsed = AirPlayHttpRequestParser.parsePlayBody(bodyBytes)
+                    if (parsed != null) {
+                        playbackEvents.start(sessionKey) { playbackId ->
+                            latestTelemetry.set(idleTelemetry.copy(isBuffering = true))
+                            val playableUrl = resolvePlayableUrl(parsed.url)
+                            listener.onDirectVideoUrl(playableUrl, parsed.startPosition, playbackId)
+                        }
+                        Log.i(TAG, "-> PUT /setProperty started direct video url=${parsed.url}")
+                    } else if (fullPath.contains("selectedMediaArray", ignoreCase = true)) {
+                        Log.i(TAG, "-> PUT $fullPath (${AirPlayHttpRequestParser.summarizePlist(bodyBytes)})")
                     }
-                    Log.i(TAG, "-> PUT /setProperty started direct video url=${parsed.url}")
-                } else if (fullPath.contains("selectedMediaArray", ignoreCase = true)) {
-                    Log.i(TAG, "-> PUT $fullPath (${AirPlayHttpRequestParser.summarizePlist(bodyBytes)})")
                 }
                 val reply = BinaryPlistWriter.encode(mapOf("errorCode" to 0L))
                 Log.i(TAG, "-> PUT /setProperty 200 OK")

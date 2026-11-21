@@ -21,16 +21,20 @@ internal class AirPlayPlaybackEvents {
         }
     }
 
-    data class Event(val state: State, val playbackId: Long) {
+    data class Event(
+        val state: State,
+        val playbackId: Long,
+        val customXmlBody: String? = null
+    ) {
         fun request(appleSessionId: String?): ByteArray {
-            val body = """
+            val body = (customXmlBody ?: """
                 <?xml version="1.0" encoding="UTF-8"?>
                 <plist version="1.0"><dict>
                 <key>category</key><string>video</string>
                 <key>sessionID</key><integer>$playbackId</integer>
                 <key>state</key><string>${state.value}</string>
                 </dict></plist>
-            """.trimIndent().toByteArray(StandardCharsets.UTF_8)
+            """.trimIndent()).toByteArray(StandardCharsets.UTF_8)
             val header = buildString {
                 append("POST /event HTTP/1.1\r\n")
                 append("Content-Type: application/x-apple-plist\r\n")
@@ -138,6 +142,30 @@ internal class AirPlayPlaybackEvents {
         val event = Event(state, playbackId)
         currentEvent = event
         channel?.takeIf { it.key == activeSession }?.offer(event)
+    }
+
+    @Synchronized
+    fun sendFcupRequest(url: String, requestId: Int, sessionIdOverride: Long? = null): Boolean {
+        val activeChannel = channel ?: standbyChannel ?: return false
+        val escapedUrl = url
+            .replace("&", "&amp;")
+            .replace("<", "&lt;")
+            .replace(">", "&gt;")
+        val sid = sessionIdOverride ?: playbackId.coerceAtLeast(1L)
+        val xml = """
+            <?xml version="1.0" encoding="UTF-8"?>
+            <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+            <plist version="1.0"><dict>
+            <key>FCUP_Request_ClientInfo</key><integer>1</integer>
+            <key>FCUP_Request_Headers</key><dict/>
+            <key>FCUP_Request_ID</key><integer>$requestId</integer>
+            <key>FCUP_Request_URL</key><string>$escapedUrl</string>
+            <key>sessionID</key><integer>$sid</integer>
+            <key>type</key><string>unhandledURL</string>
+            </dict></plist>
+        """.trimIndent()
+        activeChannel.offer(Event(State.LOADING, sid, customXmlBody = xml))
+        return true
     }
 
     @Synchronized
