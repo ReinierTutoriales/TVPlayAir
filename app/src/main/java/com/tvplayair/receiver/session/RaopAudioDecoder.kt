@@ -237,8 +237,8 @@ class RaopAudioDecoder {
         directOut.clear()
         directOut.asShortBuffer().put(resampledSamples, 0, outFrames * 2)
         directOut.limit(byteCount)
-        val ok = NativeSharedMemory.nativeWriteAudioPcm(directOut, byteCount, generationId)
-        if (ok) {
+        val written = NativeSharedMemory.nativeWriteAudioPcm(directOut, byteCount, generationId)
+        if (written > 0) {
             decodedFramesTotal += outFrames
             pcmBytesTotal += byteCount
         }
