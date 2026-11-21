@@ -127,14 +127,17 @@ class MainActivity : ComponentActivity(), SurfaceLayerController {
             context = this,
             surfaceView = directSurfaceView,
             onTelemetryChanged = { telemetry ->
-                if (overlayState.showingVideoControls) {
+                if (presentationCoordinator.state == PresentationState.DIRECT_ACTIVE && overlayState.showingVideoControls) {
                     overlayState = overlayState.copy(videoControls = telemetry)
                 }
-                if (::sessionConnection.isInitialized && directPlaybackId != 0L) {
+                if (::presentationCoordinator.isInitialized &&
+                    presentationCoordinator.state == PresentationState.DIRECT_ACTIVE &&
+                    ::sessionConnection.isInitialized && directPlaybackId != 0L) {
                     sessionConnection.updatePlaybackTelemetry(directPlaybackId, telemetry)
                 }
             },
             onPlaybackFinished = {
+                directPlaybackId = 0L
                 presentationCoordinator.stopDirectVideo()
                 syncPresentationState()
             }
@@ -206,7 +209,10 @@ class MainActivity : ComponentActivity(), SurfaceLayerController {
                         "play" -> presentationCoordinator.playDirect()
                         "pause" -> presentationCoordinator.pauseDirect()
                         "seek" -> presentationCoordinator.seekDirect(value)
-                        "stop" -> presentationCoordinator.stopDirectVideo()
+                        "stop" -> {
+                            directPlaybackId = 0L
+                            presentationCoordinator.stopDirectVideo()
+                        }
                     }
                     syncPresentationState()
                 }
@@ -493,6 +499,7 @@ class MainActivity : ComponentActivity(), SurfaceLayerController {
     }
 
     override fun onDestroy() {
+        mainHandler.removeCallbacks(hideVideoControls)
         hidBridge.release()
         presentationCoordinator.onSessionDied()
         webVideoPlayer.release()
