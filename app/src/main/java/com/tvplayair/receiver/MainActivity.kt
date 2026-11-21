@@ -122,6 +122,11 @@ class MainActivity : ComponentActivity(), SurfaceLayerController {
                     sharedMemoryReady = true
                     mirrorDecoder.setGeneration(generationId)
                     audioConsumer.setGeneration(generationId)
+                    if (overlayState.connectedClient != null &&
+                        presentationCoordinator.state != PresentationState.DIRECT_ACTIVE
+                    ) {
+                        audioConsumer.start(generationId)
+                    }
                     refreshOverlayTelemetry()
                 }
 
@@ -179,6 +184,16 @@ class MainActivity : ComponentActivity(), SurfaceLayerController {
                 override fun onClientDisconnected() {
                     overlayState = overlayState.copy(connectedClient = null)
                     audioConsumer.stop()
+                    refreshOverlayTelemetry()
+                }
+
+                override fun onAudioStreamStarted(generationId: Int) {
+                    audioConsumer.setGeneration(generationId)
+                    if (sharedMemoryReady &&
+                        presentationCoordinator.state != PresentationState.DIRECT_ACTIVE
+                    ) {
+                        audioConsumer.start(generationId)
+                    }
                     refreshOverlayTelemetry()
                 }
             }

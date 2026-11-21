@@ -141,6 +141,7 @@ class RaopAudioRtpReceiver(
 
     private fun receiveLoop(udp: DatagramSocket) {
         val packet = DatagramPacket(rxBuf, rxBuf.size)
+        var rxPackets = 0L
         while (running.get()) {
             val ok = runCatching { udp.receive(packet); true }.getOrDefault(false)
             if (!ok) continue
@@ -148,6 +149,10 @@ class RaopAudioRtpReceiver(
             val key = aesKey
             val iv = aesIv
             val generation = generationProvider()
+            rxPackets++
+            if (rxPackets == 1L || rxPackets % 200L == 0L) {
+                Log.i(TAG, "RAOP audio rx: pkts=$rxPackets len=${parsed.payloadLength} gen=$generation encrypted=${key != null}")
+            }
             if (key != null && iv != null) {
                 val plain = SessionCrypto.decryptRaopAudioCbc(
                     key, iv, rxBuf, parsed.payloadOffset, parsed.payloadLength

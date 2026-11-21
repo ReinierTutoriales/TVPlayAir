@@ -56,7 +56,7 @@ fun TvOverlayMenu(
     onDismiss: () -> Unit
 ) {
     if (!state.visible) {
-        if (state.presentationState == PresentationState.IDLE && state.connectedClient == null) {
+        if (state.presentationState == PresentationState.IDLE) {
             TvStandbyScreen(
                 state = state,
                 onOpenMenu = onOpenMenu,
@@ -259,7 +259,7 @@ private fun TvStandbyScreen(
                         dotColor = AccentCyan
                     )
                     StatusChip(
-                        label = "AirPlay Activo",
+                        label = state.connectedClient?.let { "Conectado: $it" } ?: "AirPlay Activo",
                         dotColor = AccentGreen
                     )
                 }

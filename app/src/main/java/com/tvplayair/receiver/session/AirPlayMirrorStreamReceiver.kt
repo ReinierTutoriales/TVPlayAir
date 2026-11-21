@@ -132,9 +132,11 @@ class AirPlayMirrorStreamReceiver(
     }
 
     private fun handleMirrorClient(client: Socket) {
+        var packetCount = 0L
         client.use { sock ->
             sock.soTimeout = CLIENT_TIMEOUT_MS
             sock.tcpNoDelay = true
+            Log.i(TAG, "Mirror TCP client connected from ${sock.inetAddress?.hostAddress}")
             val input = BufferedInputStream(sock.getInputStream())
             while (running.get()) {
                 if (!readExact(input, headerScratch, AirPlayMirrorHeaderParser.HEADER_BYTES)) {
@@ -149,6 +151,10 @@ class AirPlayMirrorStreamReceiver(
                 val isVideo = header.payloadType == AirPlayMirrorHeaderParser.PAYLOAD_TYPE_VIDEO
                 if (!readIntoDirectBuffer(input, header.payloadSize, decrypt = isVideo)) {
                     break
+                }
+                packetCount++
+                if (packetCount == 1L || packetCount % 120L == 0L) {
+                    Log.i(TAG, "Mirror TCP rx: packets=$packetCount type=${header.payloadType} size=${header.payloadSize} gen=${generationProvider()}")
                 }
                 val extraFlags = if (header.payloadType == AirPlayMirrorHeaderParser.PAYLOAD_TYPE_CODEC_CONFIG) {
                     MirrorFrameGate.FLAG_CODEC_CONFIG
@@ -166,6 +172,7 @@ class AirPlayMirrorStreamReceiver(
                 )
             }
         }
+        Log.i(TAG, "Mirror TCP client closed (packets=$packetCount)")
     }
 
     private fun readExact(input: BufferedInputStream, dst: ByteArray, length: Int): Boolean {

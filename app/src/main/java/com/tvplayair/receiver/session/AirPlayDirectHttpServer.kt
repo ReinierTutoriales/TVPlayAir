@@ -50,7 +50,8 @@ class AirPlayDirectHttpServer(
         listener = listener,
         configProvider = { activeConfig },
         mirrorReceiver = mirrorReceiver,
-        pairingSession = pairingSession
+        pairingSession = pairingSession,
+        sharedGenerationId = generationId
     )
 
     override fun start(config: AirPlayServerConfig): Boolean {

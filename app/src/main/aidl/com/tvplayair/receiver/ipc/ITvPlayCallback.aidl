@@ -12,4 +12,5 @@ oneway interface ITvPlayCallback {
     void onDirectVideoCommand(String command, double value);
     void onClientConnected(String clientName, String dacpId, String activeRemote);
     void onClientDisconnected();
+    void onAudioStreamStarted(int generationId);
 }

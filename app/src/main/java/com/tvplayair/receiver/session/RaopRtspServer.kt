@@ -22,7 +22,8 @@ class RaopRtspServer(
     private val listener: AirPlayProtocolListener,
     private val configProvider: () -> AirPlayServerConfig,
     private val mirrorReceiver: AirPlayMirrorStreamReceiver? = null,
-    private val pairingSession: AirPlayPairingSession = AirPlayPairingSession()
+    private val pairingSession: AirPlayPairingSession = AirPlayPairingSession(),
+    private val sharedGenerationId: AtomicInteger = AtomicInteger(1)
 ) {
     companion object {
         private const val TAG = "RaopRtspServer"
@@ -36,7 +37,8 @@ class RaopRtspServer(
     }
 
     private val running = AtomicBoolean(false)
-    private val generationId = AtomicInteger(1)
+    private val generationId = sharedGenerationId
+    private val activeSessions = AtomicInteger(0)
     private val audioReceiver = RaopAudioRtpReceiver { generationId.get() }
     private val timingAndEventServers = AirPlayTimingAndEventServers()
 
@@ -102,45 +104,50 @@ class RaopRtspServer(
     }
 
     private fun handleSession(client: Socket) {
-        client.use { sock ->
-            sock.soTimeout = CLIENT_SO_TIMEOUT_MS
-            val input = BufferedInputStream(sock.getInputStream())
-            val output = sock.getOutputStream()
+        activeSessions.incrementAndGet()
+        try {
+            client.use { sock ->
+                sock.soTimeout = CLIENT_SO_TIMEOUT_MS
+                val input = BufferedInputStream(sock.getInputStream())
+                val output = sock.getOutputStream()
 
-            while (running.get()) {
-                val headerBytes = readUntilHeaderEnd(input) ?: break
-                val headerText = String(headerBytes, StandardCharsets.UTF_8)
-                val preliminary = RtspMessageParser.parseRequest(headerText) ?: break
-                val contentLength = preliminary.header("content-length")
-                    ?.toIntOrNull()?.coerceIn(0, MAX_DRAIN_BODY_BYTES) ?: 0
-                val body = if (contentLength > 0) {
-                    if (contentLength <= MAX_BUFFERED_BODY_BYTES) {
-                        readExact(input, contentLength)
+                while (running.get()) {
+                    val headerBytes = readUntilHeaderEnd(input) ?: break
+                    val headerText = String(headerBytes, StandardCharsets.UTF_8)
+                    val preliminary = RtspMessageParser.parseRequest(headerText) ?: break
+                    val contentLength = preliminary.header("content-length")
+                        ?.toIntOrNull()?.coerceIn(0, MAX_DRAIN_BODY_BYTES) ?: 0
+                    val body = if (contentLength > 0) {
+                        if (contentLength <= MAX_BUFFERED_BODY_BYTES) {
+                            readExact(input, contentLength)
+                        } else {
+                            drainExact(input, contentLength)
+                            ByteArray(0)
+                        }
                     } else {
-                        drainExact(input, contentLength)
                         ByteArray(0)
                     }
-                } else {
-                    ByteArray(0)
-                }
-                val request = preliminary.copy(body = body)
-                val peer = sock.inetAddress?.hostAddress ?: "unknown"
-                Log.i(
-                    TAG,
-                    "<- $peer ${request.method} ${request.uri} " +
-                        "(cseq=${request.cseq()} ct=${request.header("content-type").orEmpty()} len=${body.size})"
-                )
+                    val request = preliminary.copy(body = body)
+                    val peer = sock.inetAddress?.hostAddress ?: "unknown"
+                    Log.i(
+                        TAG,
+                        "<- $peer ${request.method} ${request.uri} " +
+                            "(cseq=${request.cseq()} ct=${request.header("content-type").orEmpty()} len=${body.size})"
+                    )
 
-                val dacpId = request.header("dacp-id").orEmpty()
-                val activeRemote = request.header("active-remote").orEmpty()
-                val userAgent = request.header("user-agent").orEmpty().ifBlank { "Apple Device" }
-                if (dacpId.isNotEmpty() && activeRemote.isNotEmpty()) {
-                    listener.onClientConnected(userAgent, dacpId, activeRemote)
-                }
+                    val dacpId = request.header("dacp-id").orEmpty()
+                    val activeRemote = request.header("active-remote").orEmpty()
+                    val userAgent = request.header("user-agent").orEmpty().ifBlank { "Apple Device" }
+                    if (dacpId.isNotEmpty() && activeRemote.isNotEmpty()) {
+                        listener.onClientConnected(userAgent, dacpId, activeRemote)
+                    }
 
-                val keepAlive = dispatchRtsp(request, output)
-                if (!keepAlive) break
+                    val keepAlive = dispatchRtsp(request, output)
+                    if (!keepAlive) break
+                }
             }
+        } finally {
+            activeSessions.decrementAndGet()
         }
     }
 
@@ -239,6 +246,7 @@ class RaopRtspServer(
                 } else {
                     val transport = RtspMessageParser.parseTransport(request.header("transport"))
                     audioReceiver.start(RaopAudioRtpReceiver.DEFAULT_AUDIO_PORT)
+                    listener.onAudioStreamStarted(generationId.get())
                     val responseTransport = buildString {
                         append("RTP/AVP/UDP;unicast;mode=record")
                         append(";server_port=").append(RaopAudioRtpReceiver.DEFAULT_AUDIO_PORT)
@@ -254,7 +262,8 @@ class RaopRtspServer(
                 }
             }
             "RECORD" -> {
-                Log.i(TAG, "-> RECORD 200 OK (cseq=$cseq)")
+                listener.onAudioStreamStarted(generationId.get())
+                Log.i(TAG, "-> RECORD 200 OK (cseq=$cseq gen=${generationId.get()})")
                 output.write(
                     RtspMessageParser.formatResponse(
                         200, "OK", cseq, mapOf("Audio-Latency" to "2205")
@@ -292,16 +301,20 @@ class RaopRtspServer(
                 output.write(RtspMessageParser.formatResponse(200, "OK", cseq))
             }
             "FLUSH" -> {
-                generationId.incrementAndGet()
+                val newGen = generationId.incrementAndGet()
+                listener.onAudioStreamStarted(newGen)
+                Log.i(TAG, "-> FLUSH 200 OK (cseq=$cseq gen=$newGen)")
                 output.write(RtspMessageParser.formatResponse(200, "OK", cseq))
             }
             "TEARDOWN" -> {
-                audioReceiver.stop()
-                mirrorReceiver?.clearStreamCipher()
-                fairplayAesKey = null
-                sessionEiv = null
-                FairPlayNative.nativeReset()
-                listener.onClientDisconnected()
+                if (activeSessions.get() <= 1) {
+                    audioReceiver.stop()
+                    mirrorReceiver?.clearStreamCipher()
+                    fairplayAesKey = null
+                    sessionEiv = null
+                    FairPlayNative.nativeReset()
+                    listener.onClientDisconnected()
+                }
                 output.write(RtspMessageParser.formatResponse(200, "OK", cseq))
                 output.flush()
                 return false
@@ -373,6 +386,7 @@ class RaopRtspServer(
                     sessionAesIv = sessionEiv
                 )
                 audioReceiver.start(RaopAudioRtpReceiver.DEFAULT_AUDIO_PORT)
+                listener.onAudioStreamStarted(generationId.get())
                 linkedMapOf(
                     "streams" to listOf(
                         linkedMapOf<String, Any>(
