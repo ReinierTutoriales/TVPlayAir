@@ -96,6 +96,7 @@ class SessionService : Service() {
             synchronized(callbackLock) {
                 val config = MirrorConfig(mimeType, width, height, generationId, codecConfig)
                 latestMirrorConfig = config
+                if (opensProjection) directPlayback = null
                 runCatching { callback?.let { config.sendTo(it, opensProjection) } }
             }
             ensureUiForeground()

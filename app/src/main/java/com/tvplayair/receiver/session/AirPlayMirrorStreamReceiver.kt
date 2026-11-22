@@ -13,6 +13,7 @@ import java.nio.ByteBuffer
 import java.nio.ByteOrder
 import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicInteger
+import java.util.concurrent.atomic.AtomicReference
 import javax.crypto.Cipher
 import javax.crypto.spec.IvParameterSpec
 import javax.crypto.spec.SecretKeySpec
@@ -106,7 +107,7 @@ object AirPlayMirrorHeaderParser {
  */
 class AirPlayMirrorStreamReceiver(
     private val onCodecConfigReady: (
-        isHevc: Boolean, width: Int, height: Int, generationId: Int, codecConfig: ByteArray, opensProjection: Boolean
+        socket: Socket, isHevc: Boolean, width: Int, height: Int, generationId: Int, codecConfig: ByteArray, opensProjection: Boolean
     ) -> Unit,
     private val onStreamEnded: () -> Unit
 ) {
@@ -118,6 +119,7 @@ class AirPlayMirrorStreamReceiver(
 
     private val running = AtomicBoolean(false)
     private val videoGeneration = AtomicInteger()
+    private val activeClient = AtomicReference<Socket?>()
     private val directPayload: ByteBuffer = ByteBuffer.allocateDirect(
         AirPlayMirrorHeaderParser.MAX_MIRROR_PAYLOAD_BYTES
     )
@@ -206,6 +208,7 @@ class AirPlayMirrorStreamReceiver(
     fun stop() {
         running.set(false)
         runCatching { serverSocket?.close() }
+        closeActiveStream()
         serverSocket = null
         acceptThread?.let {
             it.interrupt()
@@ -215,9 +218,19 @@ class AirPlayMirrorStreamReceiver(
         clearStreamCipher()
     }
 
+    fun closeActiveStream() {
+        activeClient.get()?.let { runCatching { it.close() } }
+    }
+
     private fun acceptLoop(socket: ServerSocket) {
         while (!socket.isClosed) {
             val client = runCatching { socket.accept() }.getOrNull() ?: break
+            activeClient.set(client)
+            if (socket.isClosed) {
+                runCatching { client.close() }
+                activeClient.compareAndSet(client, null)
+                break
+            }
             var configPublished = false
             try {
                 handleMirrorClient(client) { configPublished = true }
@@ -226,6 +239,7 @@ class AirPlayMirrorStreamReceiver(
             } catch (error: IOException) {
                 Log.i(TAG, "Mirror TCP connection ended (${error.javaClass.simpleName})")
             } finally {
+                activeClient.compareAndSet(client, null)
                 if (configPublished && !socket.isClosed) onStreamEnded()
             }
         }
@@ -243,7 +257,7 @@ class AirPlayMirrorStreamReceiver(
             sock.tcpNoDelay = true
             Log.i(TAG, "Mirror TCP client connected from ${sock.inetAddress?.hostAddress}")
             val input = BufferedInputStream(sock.getInputStream())
-            while (running.get()) {
+            while (running.get() && !sock.isClosed) {
                 if (!readExact(input, headerScratch, AirPlayMirrorHeaderParser.HEADER_BYTES)) {
                     Log.i(TAG, "Mirror TCP peer reached EOF between packets")
                     break
@@ -282,7 +296,7 @@ class AirPlayMirrorStreamReceiver(
                     generationId = videoGeneration.incrementAndGet()
                     // Publish codec setup even if the frame ring is full or the mirror is suspended.
                     onConfigPublished()
-                    onCodecConfigReady(isHevc, streamWidth, streamHeight, generationId, codecConfig, opensProjection)
+                    onCodecConfigReady(sock, isHevc, streamWidth, streamHeight, generationId, codecConfig, opensProjection)
                     continue
                 }
                 val isHevc = streamIsHevc ?: continue

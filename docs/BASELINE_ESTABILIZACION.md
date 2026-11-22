@@ -35,9 +35,9 @@ Una URL multimedia por sí sola sirve para evaluar reproducción directa. Para a
 
 | Recorrido | Contrato comprobado en código |
 |---|---|
-| Vídeo directo A → B | Una imagen, una orden de parada o un timeout de A no modifica B. Un cambio de formato en una conexión de duplicación ya abierta sólo actualiza su configuración de retorno. |
-| Vídeo directo → duplicación | Una conexión nueva de duplicación puede tomar el TV. Al recuperar una conexión que seguía abierta, se descartan sus frames acumulados y se espera una imagen clave con la configuración vigente. Si el vídeo directo perdió su propia superficie, su parada aún devuelve el TV a la duplicación vigente. |
-| Duplicación → vídeo directo | Se suspende la salida Oboe y se libera MediaCodec antes de preparar Media3. El vídeo directo se descubre al confirmar una imagen del ítem activo. |
+| Vídeo directo A → B | Una imagen, una orden de parada o un timeout de A no modifica B. Una actualización tardía de la ruta anterior no vuelve a activarla. |
+| Vídeo directo → duplicación | Una conexión nueva y configurada de duplicación toma el TV. El receptor invalida el vídeo anterior, cancela FCUP y cierra su canal inverso después del evento de parada. |
+| Duplicación → vídeo directo | Una solicitud explícita de vídeo cierra el flujo TCP anterior de duplicación. Se suspende Oboe y se libera MediaCodec antes de preparar Media3. El vídeo directo se descubre al confirmar una imagen del ítem activo. |
 | Audio AirPlay y audio asociado a duplicación | El cambio de generación descarta tanto los paquetes antiguos del ring como la porción de PCM anterior que quedaba en Oboe. El cambio de generación de audio no altera la generación de vídeo de duplicación. |
 | Fin de duplicación → audio | El cierre TCP retira la proyección. Una sesión RAOP vigente conserva audio y carátula. Se respeta la orden del emisor de retirar la carátula. |
 

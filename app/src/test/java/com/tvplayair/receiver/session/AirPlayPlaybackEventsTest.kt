@@ -13,6 +13,56 @@ class AirPlayPlaybackEventsTest {
     private val peerB = AirPlayPlaybackEvents.SessionKey("192.0.2.2", "session-b")
 
     @Test
+    fun switchingRoutesRetiresThePreviousTransportAndRejectsLateCommands() {
+        val events = AirPlayPlaybackEvents()
+        Socket().use { socket ->
+            val previous = AirPlayPlaybackEvents.Channel(peerA, socket)
+            events.attach(previous)
+            var original = 0L
+            events.start(peerA) { original = it }
+            val reverseReady = events.reverseSignal(original)
+            assertTrue(reverseReady?.isDone == true)
+
+            var directRetired = false
+            events.openMirror { directRetired = true }
+            assertTrue(directRetired)
+            assertNull(events.reverseSignal(original))
+            assertFalse(events.sendFcupRequest("https://example.test/old.m3u8", 1))
+            events.control(peerA, stop = true) { error("Retired direct route received a command") }
+            val terminal = previous.events.poll()
+            assertEquals(AirPlayPlaybackEvents.State.STOPPED, terminal?.state)
+            assertTrue(terminal?.closeAfterDelivery == true)
+            assertNull(previous.events.poll())
+            assertFalse(events.start(peerA.copy(appleSessionId = null), explicit = false))
+            assertFalse(events.start(peerB, explicit = false))
+
+            var replacement = 0L
+            val transition = mutableListOf<String>()
+            assertTrue(events.start(peerA, onMirrorRetired = { transition += "close mirror" }) {
+                transition += "start direct"
+                replacement = it
+            })
+            assertEquals(listOf("close mirror", "start direct"), transition)
+            events.finishMirror { error("Late mirror end cleared the new route") }
+            assertTrue(replacement > original)
+            assertEquals(replacement, events.withPlayback(replacement) { replacement })
+        }
+    }
+
+    @Test
+    fun closingMirrorDoesNotAllowAStaleAuxiliaryRequestToRestartVideo() {
+        val events = AirPlayPlaybackEvents()
+        events.start(peerA)
+        events.openMirror {}
+        var ends = 0
+        events.finishMirror { ends++ }
+        events.finishMirror { ends++ }
+        assertEquals(1, ends)
+        assertFalse(events.start(peerA, explicit = false))
+        assertTrue(events.start(peerA))
+    }
+
+    @Test
     fun rejectsCommandsFromAnotherSession() {
         val events = AirPlayPlaybackEvents()
         events.start(peerA)
