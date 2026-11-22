@@ -7,7 +7,8 @@
     <string name="audio_next">Pista siguiente</string>
     <string name="video_playback">Reproducción de vídeo</string>
     <string name="video_loading">Cargando…</string>
-    <string name="video_pause_hint">OK · Pausar</string>
-    <string name="video_play_hint">OK · Reproducir</string>
-    <string name="video_seek_hint">‹ / › · 10 s</string>
+    <string name="video_pause">Pausar</string>
+    <string name="video_play">Reproducir</string>
+    <string name="video_seek_back">Retroceder 10 s</string>
+    <string name="video_seek_forward">Avanzar 10 s</string>
 </resources>

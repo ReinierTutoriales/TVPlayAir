@@ -35,6 +35,7 @@ import androidx.compose.ui.graphics.ImageBitmap
 import androidx.compose.ui.graphics.Path
 import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
@@ -53,9 +54,15 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 
 @Composable
-internal fun TvNowPlayingScreen(metadata: RaopNowPlaying?, onAudioCommand: (DacpCommand) -> Unit) {
+internal fun TvNowPlayingScreen(
+    metadata: RaopNowPlaying?,
+    controlsAvailable: Boolean,
+    onAudioCommand: (DacpCommand) -> Unit
+) {
     val playFocus = remember { FocusRequester() }
-    LaunchedEffect(Unit) { playFocus.requestFocus() }
+    LaunchedEffect(controlsAvailable) {
+        if (controlsAvailable) playFocus.requestFocus()
+    }
 
     BoxWithConstraints(
         modifier = Modifier
@@ -67,11 +74,12 @@ internal fun TvNowPlayingScreen(metadata: RaopNowPlaying?, onAudioCommand: (Dacp
         val titleStyle = if (maxWidth >= 640.dp) MaterialTheme.typography.displaySmall
             else MaterialTheme.typography.headlineMedium
         val artwork = metadata?.artwork
-        val cover = key(artwork) {
+        val coverPixels = with(LocalDensity.current) { coverSize.roundToPx() }.coerceAtLeast(1)
+        val cover = key(artwork, coverPixels) {
             val bitmap by produceState<ImageBitmap?>(initialValue = null) {
                 if (artwork != null) {
                     value = withContext(Dispatchers.Default) {
-                        BitmapFactory.decodeByteArray(artwork, 0, artwork.size)?.asImageBitmap()
+                        decodeCover(artwork, coverPixels)
                     }
                 }
             }
@@ -121,21 +129,34 @@ internal fun TvNowPlayingScreen(metadata: RaopNowPlaying?, onAudioCommand: (Dacp
             }
             Spacer(Modifier.height(20.dp))
             Box(Modifier.fillMaxWidth().height(1.dp).background(Color(0xFF2B2B2B)))
-            Row(
-                modifier = Modifier.align(Alignment.CenterHorizontally)
-                    .padding(top = 16.dp)
-                    .background(Color(0xFF161616), RoundedCornerShape(22.dp))
-                    .padding(horizontal = 12.dp, vertical = 8.dp),
-                horizontalArrangement = Arrangement.spacedBy(10.dp),
-                verticalAlignment = Alignment.CenterVertically
-            ) {
-                AudioControl(AudioAction.Previous, onAudioCommand)
-                AudioControl(AudioAction.PlayPause, onAudioCommand, Modifier.focusRequester(playFocus))
-                AudioControl(AudioAction.Next, onAudioCommand)
+            if (controlsAvailable) {
+                Row(
+                    modifier = Modifier.align(Alignment.CenterHorizontally)
+                        .padding(top = 16.dp)
+                        .background(Color(0xFF161616), RoundedCornerShape(22.dp))
+                        .padding(horizontal = 12.dp, vertical = 8.dp),
+                    horizontalArrangement = Arrangement.spacedBy(10.dp),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    AudioControl(AudioAction.Previous, onAudioCommand)
+                    AudioControl(AudioAction.PlayPause, onAudioCommand, Modifier.focusRequester(playFocus))
+                    AudioControl(AudioAction.Next, onAudioCommand)
+                }
             }
             Spacer(Modifier.weight(1f))
         }
     }
+}
+
+private fun decodeCover(artwork: ByteArray, coverPixels: Int): ImageBitmap? {
+    val options = BitmapFactory.Options().apply { inJustDecodeBounds = true }
+    BitmapFactory.decodeByteArray(artwork, 0, artwork.size, options)
+    val maxDimension = maxOf(options.outWidth, options.outHeight)
+    if (maxDimension <= 0) return null
+    val ratio = (maxDimension / coverPixels).coerceAtLeast(1)
+    options.inSampleSize = Integer.highestOneBit(ratio)
+    options.inJustDecodeBounds = false
+    return BitmapFactory.decodeByteArray(artwork, 0, artwork.size, options)?.asImageBitmap()
 }
 
 private enum class AudioAction(val label: Int, val command: DacpCommand) {

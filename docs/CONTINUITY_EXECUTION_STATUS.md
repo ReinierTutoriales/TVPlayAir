@@ -163,3 +163,20 @@ El emisor sigue soportando iPhone y iPad desde iOS 16. Para validar este comport
 - La captura de `d5de9bc` registró vídeo directo reproduciendo y un primer fotograma de espejo. Los 51 705 frames RAOP del tramo ALAC eran frames contabilizados al escribir en memoria compartida. Ese contador mezclaba fallos de selección de clave, errores de decodificación y rechazos del anillo.
 - Un paquete inicial sin cabecera ALAC válida podía cerrar la selección de clave con `idx=-1` o aceptar una cabecera de otro códec. ALAC mantiene la selección pendiente hasta observar una cabecera compatible. El log distingue paquetes ALAC sin coincidencia, fallos del decodificador y frames PCM producidos, encolados y rechazados.
 - La prueba JVM cifra un paquete inicial con cabecera de AAC y después una cabecera ALAC con la clave alternativa. Comprueba que el primero deja la selección abierta y que el segundo selecciona la clave correcta. Falta contrastar estos contadores con una sesión real y medir el desfase en un clip con destello y pulso de audio sincronizados. Los contadores globales de AudioFlinger y las correcciones de timestamp por sí solos no cuantifican ese desfase.
+
+## Run #182 — Safari, HLS y retorno a RAOP
+
+Base de la captura: `5599b25`. Esta revisión se apoya en los extractos de ADB compartidos. Los archivos completos permanecen en el equipo donde se capturaron.
+
+| Evento observado | Tratamiento en TVPlayAir |
+|---|---|
+| Safari bloqueado: `/rate=0` → `playlistRemove` → `/stop` | Respetar el cierre explícito del video AirPlay. Si el emisor activa RAOP después, tratarlo como audio entrante. Evitar presentar la carátula o declarar audio activo únicamente porque Oboe volvió a abrirse. |
+| HLS se detuvo tras un `504` del proxy al cargar la variante `itag/270` | La política de carga de Media3 1.11.1 ahora puede excluir temporalmente un manifiesto FCUP con `504` y elegir una variante elegible. Con una sola variante se conserva el reintento predeterminado. El cambio se limita a los manifiestos del proxy local. |
+| SETUP + FLUSH sobre RTSP reutilizado: 5.179 paquetes ALAC sin coincidencia y cero PCM | El servidor comparte el estado de emparejamiento, la clave FairPlay y el IV. Este alcance es un candidato al fallo. Aislar el contexto de negociación por sesión y vincular la configuración del decodificador a la generación del flujo requiere reproducir la reutilización, incluidos los paquetes en tránsito. La prueba debe verificar el primer PCM de la generación nueva y una salida acotada cuando falla. |
+| Realtek rechaza MMAP y luego abre Oboe en modo compartido | El tramo con `pcmProduced=0` se produce antes de la salida de audio. Evaluar el HAL y el sincronismo HDMI por separado con PCM válido. |
+
+La configuración pública de Apple para reproducir con el iPhone bloqueado se aplica a la app iOS que posee la sesión de audio. Para fuentes compatibles que deban seguir sin Safari, la ruta de producto es un envío explícito que transfiera al TV un medio reproducible de forma autónoma. Debe quedar separado de AirPlay convencional, que respeta el `/stop` del emisor.
+
+Fuentes: [Apple AVFoundation](https://developer.apple.com/documentation/avfoundation/configuring-your-app-for-media-playback) · [Interrupciones de audio en iOS](https://developer.apple.com/documentation/avfaudio/handling-audio-interruptions) · [Política de carga de Media3](https://developer.android.com/reference/androidx/media3/exoplayer/upstream/LoadErrorHandlingPolicy) · [Implementación de Media3 1.11.1](https://github.com/androidx/media/blob/1.11.1/libraries/exoplayer/src/main/java/androidx/media3/exoplayer/upstream/DefaultLoadErrorHandlingPolicy.java).
+
+Validación en TV pendiente: Safari con y sin una app de música previa, `/stop` explícito del usuario, cambio ABR con un manifiesto fallido y retorno a ALAC sobre la misma conexión RTSP. Correlacionar el primer PCM válido, el primer frame y la identidad de la carátula con la generación activa.

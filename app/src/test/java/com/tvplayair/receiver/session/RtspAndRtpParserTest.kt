@@ -15,6 +15,21 @@ import javax.crypto.spec.SecretKeySpec
 class RtspAndRtpParserTest {
 
     @Test
+    fun duplicateArtworkDoesNotRepublishButNewTrackStillClearsIt() {
+        val events = mutableListOf<RaopNowPlaying?>()
+        val playback = RaopNowPlayingSession { events += it }
+        val source = Any()
+        playback.activate(source)
+        playback.artwork(source, 1L, byteArrayOf(1))
+        playback.artwork(source, 1L, byteArrayOf(1))
+        assertEquals(2, events.size)
+
+        playback.artwork(source, 2L, null)
+        assertEquals(3, events.size)
+        assertNull(events.last()?.artwork)
+    }
+
+    @Test
     fun parsesTrackFieldsAndRejectsTruncatedDmapRecords() {
         fun record(key: String, value: ByteArray) = ByteBuffer.allocate(8 + value.size)
             .put(key.toByteArray()).putInt(value.size).put(value).array()

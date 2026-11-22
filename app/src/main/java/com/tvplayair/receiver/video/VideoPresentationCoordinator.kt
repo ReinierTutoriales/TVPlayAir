@@ -18,7 +18,8 @@ data class DirectPlaybackTelemetry(
     val isBuffering: Boolean,
     val isReady: Boolean = isPlaying || durationSec > 0.0,
     val title: String? = null,
-    val canSeek: Boolean = false
+    val canSeek: Boolean = false,
+    val playWhenReady: Boolean = isPlaying
 )
 
 interface AudioHandoffController {
@@ -180,6 +181,10 @@ class VideoPresentationCoordinator(
         audioController.setPausedForExternalPlayer(false)
         surfaceController.hideAllSurfaces()
         state = PresentationState.IDLE
+    }
+
+    fun onMirrorSurfaceCreated() {
+        if (!hasDirectPlayback && state != PresentationState.SWITCHING_TO_MIRROR) startMirror()
     }
 
     fun onDirectSurfaceCreated(): Boolean {

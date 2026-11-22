@@ -87,9 +87,11 @@ internal class RaopNowPlayingSession(private val publish: (RaopNowPlaying?) -> U
 
     @Synchronized
     fun artwork(source: Any, at: Long?, artwork: ByteArray?) {
+        val before = current
         if (owner !== source || (timestamp != null && at == null) ||
             (trackTimestampUnconfirmed && at == timestamp) || !advance(at)
         ) return
+        if (current === before && current.artwork.contentEquals(artwork)) return
         current = current.copy(artwork = artwork)
         publish(current)
     }

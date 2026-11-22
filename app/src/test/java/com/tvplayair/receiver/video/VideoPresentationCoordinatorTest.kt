@@ -66,6 +66,29 @@ class VideoPresentationCoordinatorTest {
     }
 
     @Test
+    fun delayedMirrorSurfaceNeverPreemptsSelectedDirectVideo() {
+        val events = mutableListOf<String>()
+        val coordinator = VideoPresentationCoordinator(
+            FakeMirrorEngine(events), FakeDirectEngine(events),
+            FakeAudioController(events), FakeSurfaceController(events)
+        )
+        assertTrue(coordinator.switchToDirectVideo(
+            DirectPlaybackStart("https://example.com/movie", 0.0, playbackId = 1),
+            mirrorAvailable = true
+        ))
+        events.clear()
+        coordinator.onMirrorSurfaceCreated()
+        assertEquals(PresentationState.SWITCHING_TO_DIRECT, coordinator.state)
+        assertTrue(coordinator.onDirectMediaReady(1))
+        coordinator.onMirrorSurfaceCreated()
+        assertEquals(PresentationState.DIRECT_ACTIVE, coordinator.state)
+        assertEquals(listOf("surface.revealDirect"), events)
+
+        assertTrue(coordinator.finishDirectPlayback(1))
+        assertEquals(PresentationState.MIRROR_ACTIVE, coordinator.state)
+    }
+
+    @Test
     fun invalidStartPositionsNeverBecomeSeekCommands() {
         assertNull(initialDirectPositionMs(Double.NaN, 120_000L))
         assertNull(initialDirectPositionMs(Double.POSITIVE_INFINITY, 120_000L))

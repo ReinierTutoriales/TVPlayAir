@@ -9,7 +9,9 @@ import android.content.Context
 import android.content.Intent
 import android.content.pm.ServiceInfo
 import android.os.Build
+import android.os.Handler
 import android.os.IBinder
+import android.os.Looper
 import android.os.ParcelFileDescriptor
 import android.util.Log
 import com.tvplayair.receiver.MainActivity
@@ -73,6 +75,7 @@ class SessionService : Service() {
 
     private lateinit var identityStore: ReceiverIdentityStore
     private lateinit var mdnsAdvertiser: MdnsAdvertiser
+    private val mainHandler = Handler(Looper.getMainLooper())
     private lateinit var dacpController: DacpController
     private lateinit var protocolEngine: AirPlayProtocolEngine
 
@@ -194,6 +197,7 @@ class SessionService : Service() {
                 }
                 callback = cb
                 sendNowPlaying(cb, latestNowPlaying)
+                sendAudioControlsAvailability(cb)
                 activeAudioGeneration?.let { runCatching { cb.onAudioStreamStarted(it) } }
                 latestMirrorConfig?.let { config -> runCatching { config.sendTo(cb, isSnapshot = true) } }
                 directPlayback?.let { video -> runCatching { cb.showDirectVideo(video) } }
@@ -305,7 +309,13 @@ class SessionService : Service() {
             publicKeyHex = identity.ed25519PublicKeyHex
         )
         mdnsAdvertiser = MdnsAdvertiser(this)
-        dacpController = DacpController(this)
+        dacpController = DacpController(this) {
+            mainHandler.post {
+                synchronized(callbackLock) {
+                    callback?.let(::sendAudioControlsAvailability)
+                }
+            }
+        }
         protocolEngine = AirPlayDirectHttpServer(protocolListener)
     }
 
@@ -313,6 +323,10 @@ class SessionService : Service() {
         promoteToForeground()
         startAirPlaySession()
         return START_STICKY
+    }
+
+    private fun sendAudioControlsAvailability(target: ITvPlayCallback) {
+        runCatching { target.onAudioControlsAvailable(dacpController.canSendCommands()) }
     }
 
     private fun sendNowPlaying(target: ITvPlayCallback, metadata: RaopNowPlaying?) {
