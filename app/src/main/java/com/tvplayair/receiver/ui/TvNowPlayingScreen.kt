@@ -1,18 +1,17 @@
 package com.tvplayair.receiver.ui
 
+import android.graphics.Bitmap
 import android.graphics.BitmapFactory
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
+import androidx.compose.foundation.border
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
-import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
-import androidx.compose.foundation.layout.fillMaxWidth
-import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.shape.CircleShape
@@ -26,14 +25,17 @@ import androidx.compose.runtime.remember
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.draw.drawWithCache
 import androidx.compose.ui.focus.FocusRequester
 import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Size
+import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.ImageBitmap
 import androidx.compose.ui.graphics.Path
 import androidx.compose.ui.graphics.asImageBitmap
+import androidx.compose.ui.graphics.lerp
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.res.stringResource
@@ -64,49 +66,47 @@ internal fun TvNowPlayingScreen(
         if (controlsAvailable) playFocus.requestFocus()
     }
 
-    BoxWithConstraints(
-        modifier = Modifier
-            .fillMaxSize()
-            .background(Color.Black)
-            .padding(horizontal = 48.dp, vertical = 28.dp)
-    ) {
-        val coverSize = (maxHeight * 0.24f).coerceIn(72.dp, 144.dp)
-        val titleStyle = if (maxWidth >= 640.dp) MaterialTheme.typography.displaySmall
-            else MaterialTheme.typography.headlineMedium
-        val artwork = metadata?.artwork
+    BoxWithConstraints(Modifier.fillMaxSize()) {
+        val coverSize = minOf(maxWidth * 0.39f, maxHeight * 0.77f, 340.dp)
+        val horizontalInset = maxWidth * 0.055f
         val coverPixels = with(LocalDensity.current) { coverSize.roundToPx() }.coerceAtLeast(1)
+        val artwork = metadata?.artwork
         val cover = key(artwork, coverPixels) {
-            val bitmap by produceState<ImageBitmap?>(initialValue = null) {
+            val image by produceState<AudioArtwork?>(initialValue = null) {
                 if (artwork != null) {
-                    value = withContext(Dispatchers.Default) {
-                        decodeCover(artwork, coverPixels)
-                    }
+                    value = withContext(Dispatchers.Default) { decodeCover(artwork, coverPixels) }
                 }
             }
-            bitmap
+            image
         }
+        val tint = cover?.tint ?: Color(0xFF212530)
+        val compact = maxHeight < 360.dp || maxWidth < 640.dp
+        val titleStyle = if (compact) MaterialTheme.typography.headlineMedium
+            else MaterialTheme.typography.displaySmall
+        val track = metadata?.track
 
-        Column(Modifier.fillMaxSize()) {
-            Spacer(Modifier.weight(3f))
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.spacedBy(24.dp),
-                verticalAlignment = Alignment.CenterVertically
-            ) {
-                if (artwork != null) {
-                    Box(Modifier.size(coverSize)) {
-                        if (cover != null) {
-                            Image(
-                                bitmap = cover,
-                                contentDescription = null,
-                                modifier = Modifier.fillMaxSize().clip(RoundedCornerShape(10.dp)),
-                                contentScale = ContentScale.Fit
-                            )
-                        }
-                    }
+        Row(
+            modifier = Modifier.fillMaxSize()
+                .drawWithCache {
+                    val backdrop = Brush.radialGradient(
+                        0f to tint,
+                        0.53f to lerp(Color.Black, tint, 0.40f),
+                        1f to Color.Black,
+                        center = Offset(size.width * 0.23f, size.height * 0.44f),
+                        radius = size.width * 0.72f
+                    )
+                    onDrawBehind { drawRect(backdrop) }
                 }
-                Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(6.dp)) {
-                    val track = metadata?.track
+                .padding(horizontal = horizontalInset),
+            horizontalArrangement = Arrangement.spacedBy(horizontalInset),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            AlbumCover(cover?.image, Modifier.size(coverSize))
+            Column(
+                modifier = Modifier.weight(1f),
+                verticalArrangement = Arrangement.spacedBy(if (compact) 14.dp else 26.dp)
+            ) {
+                Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
                     Text(
                         text = track?.title ?: stringResource(R.string.audio_airplay),
                         style = titleStyle,
@@ -115,40 +115,74 @@ internal fun TvNowPlayingScreen(
                         maxLines = 2,
                         overflow = TextOverflow.Ellipsis
                     )
-                    val details = listOfNotNull(track?.artist, track?.album).distinct()
-                    if (details.isNotEmpty()) {
+                    track?.artist?.let {
                         Text(
-                            text = details.joinToString(" · "),
-                            color = Color(0xFFB8B8B8),
-                            style = MaterialTheme.typography.titleMedium,
+                            text = it,
+                            color = Color(0xFFD1D3D9),
+                            style = MaterialTheme.typography.titleLarge,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis
+                        )
+                    }
+                    track?.album?.takeUnless { it == track.title || it == track.artist }?.let {
+                        Text(
+                            text = it,
+                            color = Color(0xFFA9ADB7),
+                            style = MaterialTheme.typography.bodyLarge,
                             maxLines = 1,
                             overflow = TextOverflow.Ellipsis
                         )
                     }
                 }
-            }
-            Spacer(Modifier.height(20.dp))
-            Box(Modifier.fillMaxWidth().height(1.dp).background(Color(0xFF2B2B2B)))
-            if (controlsAvailable) {
-                Row(
-                    modifier = Modifier.align(Alignment.CenterHorizontally)
-                        .padding(top = 16.dp)
-                        .background(Color(0xFF161616), RoundedCornerShape(22.dp))
-                        .padding(horizontal = 12.dp, vertical = 8.dp),
-                    horizontalArrangement = Arrangement.spacedBy(10.dp),
-                    verticalAlignment = Alignment.CenterVertically
-                ) {
-                    AudioControl(AudioAction.Previous, onAudioCommand)
-                    AudioControl(AudioAction.PlayPause, onAudioCommand, Modifier.focusRequester(playFocus))
-                    AudioControl(AudioAction.Next, onAudioCommand)
+                if (controlsAvailable) {
+                    Row(
+                        modifier = Modifier
+                            .background(Color.Black.copy(alpha = 0.42f), CircleShape)
+                            .padding(horizontal = 8.dp, vertical = 6.dp),
+                        horizontalArrangement = Arrangement.spacedBy(8.dp),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        AudioControl(AudioAction.Previous, onAudioCommand)
+                        AudioControl(AudioAction.PlayPause, onAudioCommand, Modifier.focusRequester(playFocus))
+                        AudioControl(AudioAction.Next, onAudioCommand)
+                    }
                 }
             }
-            Spacer(Modifier.weight(1f))
         }
     }
 }
 
-private fun decodeCover(artwork: ByteArray, coverPixels: Int): ImageBitmap? {
+@Composable
+private fun AlbumCover(image: ImageBitmap?, modifier: Modifier) {
+    val shape = RoundedCornerShape(18.dp)
+    Box(
+        modifier = modifier.clip(shape)
+            .background(Color(0xFF16181E))
+            .border(1.dp, Color.White.copy(alpha = 0.14f), shape),
+        contentAlignment = Alignment.Center
+    ) {
+        if (image != null) {
+            Image(
+                bitmap = image,
+                contentDescription = null,
+                modifier = Modifier.fillMaxSize(),
+                contentScale = ContentScale.Fit
+            )
+        } else {
+            Canvas(Modifier.size(44.dp)) {
+                val note = Color(0xFFA6A9B3)
+                val unit = size.width / 12f
+                drawLine(note, Offset(7f * unit, 2f * unit), Offset(7f * unit, 9f * unit), unit)
+                drawLine(note, Offset(7f * unit, 2f * unit), Offset(10f * unit, 3.5f * unit), unit)
+                drawOval(note, Offset(3f * unit, 8f * unit), Size(4.5f * unit, 3f * unit))
+            }
+        }
+    }
+}
+
+private data class AudioArtwork(val image: ImageBitmap, val tint: Color)
+
+private fun decodeCover(artwork: ByteArray, coverPixels: Int): AudioArtwork? {
     val options = BitmapFactory.Options().apply { inJustDecodeBounds = true }
     BitmapFactory.decodeByteArray(artwork, 0, artwork.size, options)
     val maxDimension = maxOf(options.outWidth, options.outHeight)
@@ -156,7 +190,36 @@ private fun decodeCover(artwork: ByteArray, coverPixels: Int): ImageBitmap? {
     val ratio = (maxDimension / coverPixels).coerceAtLeast(1)
     options.inSampleSize = Integer.highestOneBit(ratio)
     options.inJustDecodeBounds = false
-    return BitmapFactory.decodeByteArray(artwork, 0, artwork.size, options)?.asImageBitmap()
+    options.inPreferredConfig = Bitmap.Config.ARGB_8888
+    val bitmap = BitmapFactory.decodeByteArray(artwork, 0, artwork.size, options) ?: return null
+    val grid = 7
+    var red = 0
+    var green = 0
+    var blue = 0
+    var totalWeight = 0
+    repeat(grid) { row ->
+        repeat(grid) sample@{ column ->
+            val pixel = bitmap.getPixel(
+                (2 * column + 1) * bitmap.width / (2 * grid),
+                (2 * row + 1) * bitmap.height / (2 * grid)
+            )
+            if (pixel ushr 24 < 128) return@sample
+            val r = (pixel ushr 16) and 0xFF
+            val g = (pixel ushr 8) and 0xFF
+            val b = pixel and 0xFF
+            val weight = 16 + maxOf(r, g, b) - minOf(r, g, b)
+            red += r * weight
+            green += g * weight
+            blue += b * weight
+            totalWeight += weight
+        }
+    }
+    val tint = if (totalWeight == 0) Color(0xFF212530) else Color(
+        red = 18 + red * 57 / (255 * totalWeight),
+        green = 19 + green * 57 / (255 * totalWeight),
+        blue = 24 + blue * 57 / (255 * totalWeight)
+    )
+    return AudioArtwork(bitmap.asImageBitmap(), tint)
 }
 
 private enum class AudioAction(val label: Int, val command: DacpCommand) {
@@ -175,16 +238,16 @@ private fun AudioControl(
     val primary = action == AudioAction.PlayPause
     IconButton(
         onClick = { onAudioCommand(action.command) },
-        modifier = modifier.size(if (primary) 56.dp else 48.dp)
+        modifier = modifier.size(if (primary) 64.dp else 52.dp)
             .semantics { contentDescription = label },
         shape = IconButtonDefaults.shape(shape = CircleShape),
-        scale = IconButtonDefaults.scale(focusedScale = 1.08f),
+        scale = IconButtonDefaults.scale(focusedScale = 1f),
         colors = IconButtonDefaults.colors(
-            containerColor = if (primary) Color(0xFFEAEAEA) else Color.Transparent,
-            contentColor = if (primary) Color.Black else Color.White,
-            focusedContainerColor = Color(0xFF9BE4CF),
+            containerColor = if (primary) Color(0xFF303743) else Color.Transparent,
+            contentColor = Color.White,
+            focusedContainerColor = Color.White,
             focusedContentColor = Color.Black,
-            pressedContainerColor = Color.White,
+            pressedContainerColor = Color(0xFFB5CAEA),
             pressedContentColor = Color.Black
         )
     ) {
