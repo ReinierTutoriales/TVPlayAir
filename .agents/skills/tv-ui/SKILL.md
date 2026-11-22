@@ -5,6 +5,8 @@ description: Use for UI, focus, navigation, or layout work. Ensures polished And
 
 # TV UI & Remote
 
+Read `../media-continuity/SKILL.md` before implementing transitions. Render only immutable snapshots from the central coordinator. Never let Compose retain artwork, progress, controls or the final video frame from a previous generation. Transitions must be cancellable; media preparation cannot wait on animations. Show a bounded neutral preparing state rather than indefinite black. In audio, keep album art and controls readable; in video, use immersive playback with transient D-pad HUD; in mirror, show the stream unobstructed. Validate focus ownership and long-press key repeats across state changes.
+
 - Optimize for Android TV remote: proper focus handling, D-pad navigation, clear focus indicators, and accessibility.
 - Prefer Jetpack Compose for TV for the overlay menu and HUD. Keep the two SurfaceViews as the video presentation layer.
 - Respect compact TV-oriented design. Avoid heavy animations or memory-intensive views.

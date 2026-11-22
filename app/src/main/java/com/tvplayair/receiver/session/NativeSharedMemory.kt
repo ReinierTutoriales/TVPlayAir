@@ -3,6 +3,8 @@ package com.tvplayair.receiver.session
 import java.nio.ByteBuffer
 
 object NativeSharedMemory {
+    const val VIDEO_WRITE_OK = 0 // Native RingResult::Ok.
+
     init {
         System.loadLibrary("tvplayair_native")
     }
@@ -26,6 +28,13 @@ object NativeSharedMemory {
     ): Int
     external fun nativeGetVideoDroppedPackets(): Long
     external fun nativeGetAudioDroppedPackets(): Long
+    external fun nativeConfigureAlac(samplesPerFrame: Int, sampleRate: Int): Boolean
+    external fun nativeDecodeAlacToPcm(
+        alacPacket: ByteArray,
+        offset: Int,
+        length: Int,
+        outPcmShorts: ShortArray
+    ): Int
     external fun nativeDetachConsumerBuffers()
     external fun nativeDestroyProducerBuffers()
 }

@@ -2,10 +2,12 @@ plugins {
     alias(libs.plugins.android.application)
     alias(libs.plugins.kotlin.compose)
 }
+val enableCastConnect = providers.gradleProperty("tvplayair.castConnect").orNull == "true"
+
 android {
     namespace = "com.tvplayair.receiver"
     compileSdk = 36
-    ndkVersion = "28.2.13676358"
+    ndkVersion = "30.0.16248370"
 
     defaultConfig {
         applicationId = "com.tvplayair.receiver"
@@ -13,6 +15,8 @@ android {
         targetSdk = 35
         versionCode = 1
         versionName = "0.1.0"
+        buildConfigField("boolean", "CAST_CONNECT_ENABLED", enableCastConnect.toString())
+        manifestPlaceholders["castConnectEnabled"] = enableCastConnect.toString()
 
         externalNativeBuild {
             cmake {
@@ -22,6 +26,7 @@ android {
     }
 
     buildFeatures {
+        buildConfig = true
         compose = true
         aidl = true
         prefab = true
@@ -35,7 +40,7 @@ android {
     externalNativeBuild {
         cmake {
             path = file("src/main/cpp/CMakeLists.txt")
-            version = "3.22.1"
+            version = "4.1.2"
         }
     }
 }
@@ -45,6 +50,9 @@ dependencies {
     implementation(libs.androidx.activity.compose)
     implementation(libs.androidx.tv.material)
     implementation(libs.oboe)
+    implementation(libs.androidx.media3.session)
+    implementation(libs.google.cast.tv)
+    implementation(libs.google.cast.core)
     implementation(libs.androidx.media3.exoplayer)
     implementation(libs.androidx.media3.exoplayer.hls)
     implementation(libs.androidx.media3.exoplayer.dash)

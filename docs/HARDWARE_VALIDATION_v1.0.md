@@ -1,6 +1,6 @@
 # TVPlayAir v1.0 — Hardware Validation Checklist
 
-CI validates native SPSC ring integrity, audio PCM pipeline behavior, JVM unit tests and `assembleDebug`, but **cannot** prove physical Android TV hardware behavior. Record every run below before claiming device support.
+CI validates native SPSC ring integrity, audio PCM pipeline behavior, JVM unit tests and the Android native build, but **cannot** prove physical Android TV hardware behavior. Record every run below before claiming device support.
 
 ## Test Environment
 - **TV / Box Model & SoC:** `PENDING`

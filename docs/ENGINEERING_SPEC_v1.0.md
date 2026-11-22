@@ -4,6 +4,21 @@
 
 **Objetivo**: Construir un receptor AirPlay independiente, libre y modular para Android TV que entregue calidad nativa 4K/HEVC/HDR, transición limpia entre espejo de pantalla y reproducción directa de video web, audio estable sin cortes y control desde el mando de la TV, respetando las limitaciones reales de hardware (VPU, Binder, fragmentación Bluetooth).
 
+La experiencia objetivo es conectar el iPhone una vez y manejar la sesión desde la TV. En espejo, cambiar de app o girar el iPhone debe mantener la conexión. En video directo, la TV reproduce el contenido compatible en ExoPlayer mientras el iPhone puede pasar a otra app. Abrir los ajustes o cambiar el tema de la TV debe dejar la sesión y la reproducción activas. Estas transiciones se verifican de extremo a extremo con iPhone, TV y mando.
+
+### Modo de proyección del televisor
+
+La pantalla de espera cede el espacio al video, al espejo o a **Ahora suena** cuando llega contenido. En audio, la sesión RTSP propietaria aporta título, artista, álbum y destino DACP. Los metadatos y la carátula se asocian por `rtptime` cuando el emisor lo incluye. Cambiar de canción retira la carátula anterior y una respuesta atrasada de otra conexión no puede reemplazarla. Los controles de pista de la TV usan DACP y requieren que el emisor publique un destino válido.
+
+La TV muestra **Ahora suena** en negro con carátula, título, artista y tres controles para el mando. El video directo abre a pantalla completa. Arriba o abajo muestran el estado y el avance, OK alterna reproducción y pausa, e izquierda o derecha saltan diez segundos cuando la fuente lo permite. La franja se cierra con Atrás o tras cuatro segundos de inactividad. En espejo se muestra la pantalla del iPhone y se conserva el control HID cuando está disponible. Referencias de diseño [CarPlay en iOS 27](https://developer.apple.com/videos/play/wwdc2026/212/?time=382) y [controles de Android TV](https://developer.android.com/training/tv/playback/controls).
+
+Al cambiar de app con video directo, el reproductor reutiliza la superficie y el canal inverso de la app entrante puede abrirse antes de pedir el video. Los controles con ID de sesión y las actualizaciones del reproductor se verifican contra el video activo. Los emisores que omiten ese ID conservan el control desde la misma dirección IP. Un `FLUSH` de una conexión RAOP reemplazada se descarta. Si llega audio mientras ExoPlayer usa la salida, Oboe registra la sesión y puede reanudarla al terminar el video. La latencia de estas transiciones se mide en el televisor.
+
+- **Instalación normal.** El receptor solicita abrir la proyección cuando empieza el contenido si su ventana está oculta. Android decide si admite la apertura desde segundo plano. La notificación del receptor ofrece una entrada manual. Android 15 y superior impiden iniciar este servicio de reproducción desde `BOOT_COMPLETED` con el SDK objetivo actual. [Límites de apertura](https://developer.android.com/guide/components/activities/secure-bal) · [Inicio de servicios en Android 15](https://developer.android.com/about/versions/15/changes/foreground-service-types)
+- **Equipo dedicado.** El componente opcional `com.tvplayair.receiver/.ProjectionHome` está deshabilitado de fábrica. En equipos de desarrollo o administrados puede habilitarse con `adb shell pm enable com.tvplayair.receiver/.ProjectionHome` y elegirse como aplicación Inicio donde el firmware lo permita. Inicio espera en negro y entra directo a la proyección. En espera, OK abre Ajustes. Para volver, selecciona el lanzador anterior y deshabilita el componente con `adb shell pm disable com.tvplayair.receiver/.ProjectionHome`. [Contrato de Android para Inicio](https://developer.android.com/reference/android/content/Intent#CATEGORY_HOME)
+
+El arranque directo depende de que el equipo permita seleccionar Inicio y de que el iPhone inicie AirPlay. Los fabricantes pueden integrar el receptor en su propia imagen del sistema. [Conexión automática en el iPhone](https://support.apple.com/guide/iphone/stream-video-and-audio-from-your-iphone-iphd668e80e6/ios)
+
 | Incluido en v1.0 (Producción) | Excluido de v1.0 (Diferido a v2.0) |
 |----------------------------------|-------------------------------------|
 | Proceso aislado `:session` + SharedMemory SPSC | Reemplazo del motor C por Rust/Kotlin puro |
@@ -54,13 +69,13 @@ El sistema separa estrictamente la red/protocolo del renderizado y la UI mediant
 - **Video (Cero OpenGL en v1.0)**: Dos `SurfaceView` nativos superpuestos gestionados por SurfaceFlinger. Garantiza paso directo al Hardware Composer y preserva metadatos HDR10 / HLG / Dolby Vision en ExoPlayer.
 - **Gestión de VPU (Límite de Hardware)**: Los SoCs de Android TV (Amlogic/MediaTek) no soportan doble decodificación 4K HEVC simultánea.
   - Al entrar `POST /play` (video web maximizado), ExoPlayer prepara el stream con User-Agent de Safari iOS y `setForceHighestSupportedBitrate(true)`.
-  - Al dispararse `onRenderedFirstFrame` en ExoPlayer, se sube su SurfaceView al frente y se libera MediaCodec del espejo.
+  - Se libera MediaCodec del espejo antes de preparar ExoPlayer. `onRenderedFirstFrame` registra cuándo ExoPlayer muestra imagen.
 - **Retorno limpio al Espejo (Caché SPS/PPS + Compuerta IDR)**: Al detener ExoPlayer, se recrea MediaCodec (`KEY_LOW_LATENCY = 1`), se inyectan los últimos headers SPS/PPS/VPS cacheados y se descartan todos los paquetes entrantes hasta recibir el primer frame IDR limpio (evita corrupción/pantalla verde).
 - **Audio**: Google Oboe (C++) lee directamente del SharedRingBuffer de audio con ajuste manual de sincronización (-200 ms a +200 ms). AudioFocus nativo arbitra la transición con ExoPlayer.
 
 ### Capa 3: Capa de Interacción (Proceso Principal)
 
-- **DACP (Obligatorio)**: Captura DACP-ID y Active-Remote al conectar. Traduce las teclas multimedia del mando a comandos HTTP `GET /ctrl-int/1/...` hacia el dispositivo Apple y reporta el progreso de ExoPlayer en `GET /playback-info`.
+- **DACP (Obligatorio)**: Captura DACP-ID y Active-Remote al conectar. Traduce las teclas multimedia del mando a comandos HTTP `GET /ctrl-int/1/...` hacia el dispositivo Apple. El video directo informa el progreso en `GET /playback-info` y envía cambios de estado a la misma sesión AirPlay por `/reverse`.
 - **Bluetooth HID (Opcional)**: Implementado con `BluetoothHidDevice` (perfil teclado estándar). Al iniciar la app, verifica soporte del stack Bluetooth del televisor; si falla o no existe, se desactiva silenciosamente sin afectar el resto del sistema.
 - **UI (Jetpack Compose for TV)**: Overlay lateral mínimo (invocado con tecla Menú) para cambiar resolución anunciada, activar/desactivar HEVC, ajustar offset de audio (ms) y mostrar HUD de telemetría (FPS, códec, drops).
 
@@ -117,5 +132,5 @@ TVPlay/app/src/main/
 |------|----------------------|-----------------------------------------------|
 | **Hito 1: Tubería Base** | Proceso `:session` + SharedRingBuffer + MirrorDecoder (1 SurfaceView) + Oboe. | Conexión estable desde iOS en 4K/HEVC a 60fps durante 30 min continuos sin crash, sin fuga de memoria y con audio PCM sincronizado. Prueba de estrés matando `:session` (`adb shell am crash`) con recuperación automática de la UI. |
 | **Hito 2: Salto Web 4K HDR** | Segundo SurfaceView + WebVideoPlayer (ExoPlayer) + liberación de MediaCodec + compuerta IDR. | Maximizar un video web en Safari dispara ExoPlayer en máxima resolución/HDR sin saturar la VPU. Al salir de pantalla completa, el espejo regresa limpio sin pantalla verde ni congelamientos. |
-| **Hito 3: Control y UI v1.0** | DacpController + TvRemoteHidBridge (opcional) + TvOverlayMenu (Compose TV). | Play/Pausa/Seek funcionan desde el mando en cualquier Android TV. Si el TV soporta BT HID, el D-Pad navega por Safari. El menú permite ajustar offset de audio (± ms) en caliente. |
+| **Hito 3: Control y UI v1.0** | Inicio dedicado opcional, Ahora suena, DACP y ajustes de Compose TV. | Arrancar en Inicio en un equipo compatible, iniciar audio desde el iPhone, cambiar de app y avanzar con el mando. Confirmar que la carátula anterior desaparece, que una respuesta atrasada no la recupera y que video y espejo ocupan la pantalla sin pasar por Ajustes. |
 | **v2.0 (Post-estabilidad)** | GLSurfaceView (PiP/Split con espejo a 1080p), USB CDC-NCM y evaluación de motor Rust. | Solo se inicia tras cerrar los 3 hitos anteriores sin regresiones. |

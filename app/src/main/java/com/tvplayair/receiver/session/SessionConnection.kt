@@ -10,196 +10,265 @@ import android.os.Looper
 import android.os.ParcelFileDescriptor
 import com.tvplayair.receiver.ipc.ITvPlayCallback
 import com.tvplayair.receiver.ipc.ITvPlaySession
+import com.tvplayair.receiver.video.DirectPlaybackStart
 import com.tvplayair.receiver.video.DirectPlaybackTelemetry
+import com.tvplayair.receiver.video.NO_DIRECT_CHECKPOINT_MS
 
 interface SessionEventListener {
-    fun onSharedMemoryReady(generationId: Int) = Unit
+    fun onSharedMemoryReady(generationId: Int, activeDirectPlaybackId: Long) = Unit
     fun onSharedMemoryDetached() = Unit
-    fun onVideoConfigChanged(mimeType: String, width: Int, height: Int, generationId: Int) = Unit
-    fun onDirectVideoUrl(url: String, startPositionSec: Double) = Unit
-    fun onDirectVideoCommand(command: String, value: Double) = Unit
+    fun onVideoConfigChanged(mimeType: String, width: Int, height: Int, generationId: Int, isSnapshot: Boolean) = Unit
+    fun onDirectVideoUrl(video: DirectPlaybackStart) = Unit
+    fun onDirectVideoCommand(command: String, value: Double, playbackId: Long) = Unit
     fun onClientConnected(clientName: String, dacpId: String, activeRemote: String) = Unit
     fun onClientDisconnected() = Unit
+    fun onAudioStreamStarted(generationId: Int) = Unit
+    fun onNowPlaying(metadata: RaopNowPlaying?) = Unit
 }
 
 class SessionConnection(
     context: Context,
-    private val listener: SessionEventListener = object : SessionEventListener {}
+    private var listener: SessionEventListener = object : SessionEventListener {}
 ) {
     private val appContext = context.applicationContext
     private val handler = Handler(Looper.getMainLooper())
     private var service: ITvPlaySession? = null
-    private var remoteBinder: IBinder? = null
+    var remoteBinder: IBinder? = null
+        private set
+    private var activeCallback: ITvPlayCallback? = null
+    private var activeDeathRecipient: IBinder.DeathRecipient? = null
+    private var activeConnection: ServiceConnection? = null
     private var bound = false
+    private var closed = false
+    private var bindingEpoch = 0L
     private var retryDelayMs = 250L
-    private var lastGenerationId = 0
+    private var projectionVisible = false
 
-    private val callback = object : ITvPlayCallback.Stub() {
+    private fun isCurrent(epoch: Long): Boolean =
+        !closed && bound && bindingEpoch == epoch
+
+    private fun deliver(epoch: Long, action: () -> Unit) {
+        handler.post { if (isCurrent(epoch)) action() }
+    }
+
+    private fun callbackFor(epoch: Long): ITvPlayCallback = object : ITvPlayCallback.Stub() {
         override fun onSharedMemoryReady(
             videoFd: ParcelFileDescriptor,
             videoSize: Long,
             audioFd: ParcelFileDescriptor,
             audioSize: Long,
-            generationId: Int
+            generationId: Int,
+            activeDirectPlaybackId: Long
         ) {
-            val videoMapped = NativeSharedMemory.nativeMapConsumerBuffer(
-                0, videoFd.detachFd(), videoSize
-            )
-            val audioMapped = NativeSharedMemory.nativeMapConsumerBuffer(
-                1, audioFd.detachFd(), audioSize
-            )
-            if (!videoMapped || !audioMapped) {
-                handleBinderDeath()
-            } else {
-                lastGenerationId = generationId
-                handler.removeCallbacks(notifyReady)
-                handler.post(notifyReady)
+            // The service closes its ParcelFileDescriptor copies after the Binder call.
+            // Take ownership before posting; close both if the connection becomes stale.
+            val videoRawFd = videoFd.detachFd()
+            val audioRawFd = audioFd.detachFd()
+            handler.post {
+                if (!isCurrent(epoch)) {
+                    ParcelFileDescriptor.adoptFd(videoRawFd).close()
+                    ParcelFileDescriptor.adoptFd(audioRawFd).close()
+                    return@post
+                }
+                // Mapping and unmapping are serialized on the main thread.
+                val videoMapped = NativeSharedMemory.nativeMapConsumerBuffer(
+                    0, videoRawFd, videoSize
+                )
+                val audioMapped = NativeSharedMemory.nativeMapConsumerBuffer(
+                    1, audioRawFd, audioSize
+                )
+                if (!videoMapped || !audioMapped) {
+                    handleBinderDeath(epoch)
+                } else {
+                    listener.onSharedMemoryReady(generationId, activeDirectPlaybackId)
+                }
             }
         }
 
-        override fun onSessionUnavailable() = handleBinderDeath()
+        override fun onSessionUnavailable() = deliver(epoch) { handleBinderDeath(epoch) }
 
         override fun onVideoConfigChanged(
-            mimeType: String,
-            width: Int,
-            height: Int,
-            generationId: Int
+            mimeType: String, width: Int, height: Int, generationId: Int, isSnapshot: Boolean
+        ) = deliver(epoch) {
+            listener.onVideoConfigChanged(mimeType, width, height, generationId, isSnapshot)
+        }
+
+        override fun onDirectVideoUrl(
+            url: String, startPosition: Double, playbackId: Long, resumePositionMs: Long, playWhenReady: Boolean
+        ) = deliver(epoch) {
+            listener.onDirectVideoUrl(
+                DirectPlaybackStart(url, startPosition, playbackId, resumePositionMs.takeIf { it >= 0L }, playWhenReady)
+            )
+        }
+
+        override fun onDirectVideoCommand(command: String, value: Double, playbackId: Long) =
+            deliver(epoch) { listener.onDirectVideoCommand(command, value, playbackId) }
+
+        override fun onClientConnected(clientName: String, dacpId: String, activeRemote: String) =
+            deliver(epoch) { listener.onClientConnected(clientName, dacpId, activeRemote) }
+
+        override fun onClientDisconnected() =
+            deliver(epoch) { listener.onClientDisconnected() }
+
+        override fun onAudioStreamStarted(generationId: Int) =
+            deliver(epoch) { listener.onAudioStreamStarted(generationId) }
+
+        override fun onNowPlaying(
+            available: Boolean, title: String, artist: String, album: String, artwork: ByteArray
         ) {
-            handler.post {
-                if (bound) listener.onVideoConfigChanged(mimeType, width, height, generationId)
-            }
-        }
-
-        override fun onDirectVideoUrl(url: String, startPositionSec: Double) {
-            handler.post {
-                if (bound) listener.onDirectVideoUrl(url, startPositionSec)
-            }
-        }
-
-        override fun onDirectVideoCommand(command: String, value: Double) {
-            handler.post {
-                if (bound) listener.onDirectVideoCommand(command, value)
-            }
-        }
-
-        override fun onClientConnected(clientName: String, dacpId: String, activeRemote: String) {
-            handler.post {
-                if (bound) listener.onClientConnected(clientName, dacpId, activeRemote)
-            }
-        }
-
-        override fun onClientDisconnected() {
-            handler.post {
-                if (bound) listener.onClientDisconnected()
-            }
+            val metadata = if (available) RaopNowPlaying(
+                RaopTrack(title.ifBlank { null }, artist.ifBlank { null }, album.ifBlank { null }),
+                artwork.takeIf { it.isNotEmpty() }
+            ) else null
+            deliver(epoch) { listener.onNowPlaying(metadata) }
         }
     }
 
-    private val deathRecipient = IBinder.DeathRecipient {
-        handler.post { handleBinderDeath() }
-    }
-
-    private val connection = object : ServiceConnection {
+    private fun connectionFor(epoch: Long): ServiceConnection = object : ServiceConnection {
         override fun onServiceConnected(name: ComponentName?, binder: IBinder?) {
+            if (!isCurrent(epoch)) return
             if (binder == null) {
-                handleBinderDeath()
+                handleBinderDeath(epoch)
                 return
             }
+            val recipient = IBinder.DeathRecipient {
+                handler.post { handleBinderDeath(epoch) }
+            }
             try {
-                binder.linkToDeath(deathRecipient, 0)
+                binder.linkToDeath(recipient, 0)
+                if (!isCurrent(epoch)) {
+                    runCatching { binder.unlinkToDeath(recipient, 0) }
+                    return
+                }
+                activeDeathRecipient = recipient
                 remoteBinder = binder
                 service = ITvPlaySession.Stub.asInterface(binder)
+                val callback = callbackFor(epoch)
+                activeCallback = callback
                 service?.registerCallback(callback)
+                service?.setProjectionVisible(projectionVisible)
                 service?.startServer()
                 retryDelayMs = 250L
             } catch (_: Exception) {
-                handleBinderDeath()
+                handleBinderDeath(epoch)
             }
         }
 
-        override fun onServiceDisconnected(name: ComponentName?) = handleBinderDeath()
+        override fun onServiceDisconnected(name: ComponentName?) = handleBinderDeath(epoch)
+    }
+
+    internal fun replaceListener(listener: SessionEventListener, replay: Boolean = false) {
+        this.listener = listener
+        if (!replay) return
+        val callback = activeCallback ?: return
+        runCatching { service?.registerCallback(callback) }
+            .onFailure { handleBinderDeath(bindingEpoch) }
     }
 
     fun connect() {
-        if (bound) return
+        if (closed || bound) return
+        handler.removeCallbacks(reconnect)
         runCatching { SessionService.startInBackground(appContext) }
-        bound = appContext.bindService(
-            Intent(appContext, SessionService::class.java),
-            connection,
-            Context.BIND_AUTO_CREATE
-        )
-        if (!bound) scheduleReconnect()
+        val epoch = ++bindingEpoch
+        val connection = connectionFor(epoch)
+        activeConnection = connection
+        bound = runCatching {
+            appContext.bindService(
+                Intent(appContext, SessionService::class.java),
+                connection,
+                Context.BIND_AUTO_CREATE
+            )
+        }.getOrDefault(false)
+        if (!bound) {
+            activeConnection = null
+            scheduleReconnect()
+        }
+    }
+
+    fun finishDirectPlayback(playbackId: Long) {
+        val source = activeCallback ?: return
+        if (playbackId != 0L) runCatching { service?.finishDirectPlayback(source, playbackId) }
     }
 
     fun sendDacpCommand(command: String) {
         runCatching { service?.sendDacpCommand(command) }
     }
 
-    fun updatePlaybackTelemetry(telemetry: DirectPlaybackTelemetry) {
+    fun setProjectionVisible(visible: Boolean) {
+        projectionVisible = visible
+        runCatching { service?.setProjectionVisible(visible) }
+    }
+
+    fun setDirectPlaybackIntent(playbackId: Long, command: String) {
+        val source = activeCallback ?: return
+        runCatching { service?.setDirectPlaybackIntent(source, playbackId, command) }
+    }
+
+    fun updatePlaybackTelemetry(playbackId: Long, telemetry: DirectPlaybackTelemetry, positionMs: Long?) {
+        val source = activeCallback ?: return
         runCatching {
             service?.updatePlaybackTelemetry(
-                telemetry.durationSec,
-                telemetry.positionSec,
-                telemetry.rate,
-                telemetry.isPlaying,
-                telemetry.isBuffering
+                source, playbackId, positionMs ?: NO_DIRECT_CHECKPOINT_MS,
+                telemetry.durationSec, telemetry.positionSec,
+                telemetry.rate, telemetry.isPlaying, telemetry.isBuffering, telemetry.isReady
             )
         }
     }
 
     fun configureAdvertising(
-        maxWidth: Int,
-        maxHeight: Int,
-        hevcEnabled: Boolean,
-        serviceName: String
+        maxWidth: Int, maxHeight: Int, hevcEnabled: Boolean, serviceName: String
     ) {
         runCatching { service?.configureAdvertising(maxWidth, maxHeight, hevcEnabled, serviceName) }
     }
 
-    private fun handleBinderDeath() {
+    private fun handleBinderDeath(epoch: Long) {
         if (Looper.myLooper() != Looper.getMainLooper()) {
-            handler.post { handleBinderDeath() }
+            handler.post { handleBinderDeath(epoch) }
             return
         }
-        handler.removeCallbacks(notifyReady)
-        listener.onSharedMemoryDetached()
-        NativeSharedMemory.nativeDetachConsumerBuffers()
-        service = null
-        remoteBinder?.let { runCatching { it.unlinkToDeath(deathRecipient, 0) } }
-        remoteBinder = null
-        if (bound) {
-            runCatching { appContext.unbindService(connection) }
-            bound = false
-        }
+        if (!isCurrent(epoch)) return
+        bindingEpoch++
+        detach()
         scheduleReconnect()
     }
 
+    private fun detach() {
+        val oldService = service
+        val oldCallback = activeCallback
+        service = null
+        activeCallback = null
+        if (oldCallback != null) runCatching { oldService?.unregisterCallback(oldCallback) }
+        val binder = remoteBinder
+        val recipient = activeDeathRecipient
+        remoteBinder = null
+        activeDeathRecipient = null
+        if (binder != null && recipient != null) {
+            runCatching { binder.unlinkToDeath(recipient, 0) }
+        }
+        val connection = activeConnection
+        activeConnection = null
+        if (bound && connection != null) {
+            runCatching { appContext.unbindService(connection) }
+        }
+        bound = false
+        listener.onSharedMemoryDetached()
+        NativeSharedMemory.nativeDetachConsumerBuffers()
+    }
+
     private fun scheduleReconnect() {
+        if (closed) return
         handler.removeCallbacks(reconnect)
         handler.postDelayed(reconnect, retryDelayMs)
         retryDelayMs = (retryDelayMs * 2).coerceAtMost(2000L)
     }
 
-    private val notifyReady = Runnable {
-        if (bound) listener.onSharedMemoryReady(lastGenerationId)
-    }
-
     private val reconnect = Runnable { connect() }
 
     fun close() {
+        if (closed) return
+        closed = true
+        bindingEpoch++
         handler.removeCallbacks(reconnect)
-        handler.removeCallbacks(notifyReady)
-        runCatching {
-            service?.unregisterCallback(callback)
-        }
-        listener.onSharedMemoryDetached()
-        NativeSharedMemory.nativeDetachConsumerBuffers()
-        service = null
-        remoteBinder?.let { runCatching { it.unlinkToDeath(deathRecipient, 0) } }
-        remoteBinder = null
-        if (bound) {
-            runCatching { appContext.unbindService(connection) }
-            bound = false
-        }
+        detach()
     }
 }

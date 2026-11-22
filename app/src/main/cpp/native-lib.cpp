@@ -30,7 +30,7 @@ extern "C" JNIEXPORT jint JNICALL
 Java_com_tvplayair_receiver_session_NativeSharedMemory_nativeCreateProducerBuffer(
     JNIEnv*, jobject, jint kind) {
     if (kind == 0) return createProducerBuffer("tvplayair-video", 16 * 1024 * 1024,
-                                                128, 64 * 1024, gProducerVideo);
+                                                32, 480 * 1024, gProducerVideo);
     if (kind == 1) return createProducerBuffer("tvplayair-audio", 512 * 1024,
                                                 64, 4 * 1024, gProducerAudio);
     return -1;

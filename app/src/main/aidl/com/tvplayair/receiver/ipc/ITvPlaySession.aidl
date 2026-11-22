@@ -6,10 +6,14 @@ import com.tvplayair.receiver.ipc.ITvPlayCallback;
 interface ITvPlaySession {
     void registerCallback(ITvPlayCallback callback);
     void unregisterCallback(ITvPlayCallback callback);
+    oneway void setProjectionVisible(boolean visible);
     void startServer();
     void stopServer();
-    void updatePlaybackTelemetry(double durationSec, double positionSec,
-                                 float rate, boolean isPlaying, boolean isBuffering);
+    void updatePlaybackTelemetry(ITvPlayCallback source, long playbackId, long resumePositionMs,
+                                 double durationSec, double positionSec,
+                                 float rate, boolean isPlaying, boolean isBuffering, boolean isReady);
+    void setDirectPlaybackIntent(ITvPlayCallback source, long playbackId, String command);
+    oneway void finishDirectPlayback(ITvPlayCallback source, long playbackId);
     void sendDacpCommand(String command);
-    void configureAdvertising(int maxWidth, int maxHeight, boolean hevcEnabled, String serviceName);
+    oneway void configureAdvertising(int maxWidth, int maxHeight, boolean hevcEnabled, String serviceName);
 }

@@ -75,6 +75,7 @@ class OboeAudioConsumer(context: Context) : AudioHandoffController {
     fun start(generationId: Int = currentGenerationId): Boolean {
         currentGenerationId = generationId
         active = true
+        Log.i(TAG, "start(gen=$generationId) pausedForExternal=$pausedForExternalPlayer running=${isRunning()}")
         if (pausedForExternalPlayer) {
             return false
         }
@@ -82,6 +83,7 @@ class OboeAudioConsumer(context: Context) : AudioHandoffController {
     }
 
     override fun stop() {
+        Log.i(TAG, "stop(gen=$currentGenerationId)")
         active = false
         nativeStop()
         abandonAudioFocus()

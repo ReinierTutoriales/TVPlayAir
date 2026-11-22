@@ -11,6 +11,49 @@ import java.nio.ByteOrder
 class AirPlayMirrorAndInfoTest {
 
     @Test
+    fun distinguishesCodecConfigurationBeforeStartingTheDecoder() {
+        val avc = byteArrayOf(1, 100, 0, 40, 0xFF.toByte(), 0xE1.toByte(), 0)
+        val hevc = ByteArray(23).apply { this[0] = 1 }
+
+        assertEquals(false, AirPlayMirrorHeaderParser.isHevcCodecConfig(ByteBuffer.wrap(avc)))
+        assertEquals(true, AirPlayMirrorHeaderParser.isHevcCodecConfig(ByteBuffer.wrap(hevc)))
+        assertNull(AirPlayMirrorHeaderParser.isHevcCodecConfig(ByteBuffer.wrap(hevc.copyOf(22))))
+    }
+
+    @Test
+    fun recognizesTheEncryptedIdrSubtypeAsVideo() {
+        val raw = ByteArray(AirPlayMirrorHeaderParser.HEADER_BYTES)
+        val packet = ByteBuffer.wrap(raw).order(ByteOrder.LITTLE_ENDIAN)
+        packet.putInt(0, 32)
+        packet.put(5, 0x10)
+
+        assertEquals(AirPlayMirrorHeaderParser.PAYLOAD_TYPE_VIDEO, AirPlayMirrorHeaderParser.parse(raw)?.payloadType)
+    }
+
+    @Test
+    fun unwrapsHevcConfigAndReadsSourceDimensions() {
+        val header = ByteBuffer.allocate(128).order(ByteOrder.LITTLE_ENDIAN)
+        val sampleEntry = ByteBuffer.allocate(86 + 8 + 23)
+        sampleEntry.putInt(sampleEntry.capacity()).putInt(0x68766331)
+        sampleEntry.position(86)
+        sampleEntry.putInt(31).putInt(0x68766343).put(1)
+        sampleEntry.position(0)
+
+        val config = AirPlayMirrorHeaderParser.unwrapCodecConfig(sampleEntry)!!
+        assertEquals(23, config.remaining())
+        assertEquals(true, AirPlayMirrorHeaderParser.isHevcCodecConfig(config))
+        sampleEntry.putInt(86, 32)
+        assertNull(AirPlayMirrorHeaderParser.unwrapCodecConfig(sampleEntry))
+
+        header.putInt(0, sampleEntry.capacity())
+        header.put(4, AirPlayMirrorHeaderParser.PAYLOAD_TYPE_CODEC_CONFIG.toByte())
+        header.putFloat(40, 1170f).putFloat(44, 2532f)
+        val parsed = AirPlayMirrorHeaderParser.parse(header.array())!!
+        assertEquals(1170, parsed.width)
+        assertEquals(2532, parsed.height)
+    }
+
+    @Test
     fun formatsInfoPlistWith4kHevcCapabilities() {
         val xml = AirPlayInfoPlist.formatInfoXml(
             deviceId = "AA:BB:CC:DD:EE:FF",
@@ -22,6 +65,21 @@ class AirPlayMirrorAndInfoTest {
         assertTrue(xml.contains("<key>widthPixels</key><integer>3840</integer>"))
         assertTrue(xml.contains("<key>heightPixels</key><integer>2160</integer>"))
         assertTrue(xml.contains("<key>preferredCodec</key><string>HEVC</string>"))
+
+        val bplist = AirPlayInfoPlist.formatInfoBinary(
+            deviceId = "AA:BB:CC:DD:EE:FF",
+            maxWidth = 3840,
+            maxHeight = 2160,
+            hevcEnabled = true
+        )
+        val decoded = BinaryPlistParser.parse(bplist) as? Map<*, *>
+        assertNotNull(decoded)
+        assertEquals("AA:BB:CC:DD:EE:FF", decoded!!["macAddress"])
+        val displays = decoded["displays"] as? List<*>
+        val display0 = displays?.firstOrNull() as? Map<*, *>
+        assertNotNull(display0)
+        assertEquals(14L, display0!!["features"])
+        assertNotNull(display0["uuid"])
     }
 
     @Test

@@ -22,7 +22,7 @@ data class AirPlayAdvertiseConfig(
 object MdnsTxtRecords {
     const val AIRPLAY_SERVICE_TYPE = "_airplay._tcp."
     const val RAOP_SERVICE_TYPE = "_raop._tcp."
-    const val AIRPLAY_FEATURES = "0x5A7FFFF7,0x1E"
+    const val AIRPLAY_FEATURES = "0x5A7FFFF3,0x1C"
     const val AIRPLAY_FLAGS = "0x44"
     const val AIRPLAY_MODEL = "AppleTV3,2"
 
@@ -48,7 +48,7 @@ object MdnsTxtRecords {
     fun buildRaopTxt(config: AirPlayAdvertiseConfig): Map<String, String> = linkedMapOf(
         "am" to AIRPLAY_MODEL,
         "ch" to "2",
-        "cn" to "0,1,2,3",
+        "cn" to "0,2,3",
         "da" to "true",
         "et" to "0,3,5",
         "ft" to AIRPLAY_FEATURES,
@@ -88,7 +88,10 @@ class MdnsAdvertiser(context: Context) {
 
     @Synchronized
     fun start(config: AirPlayAdvertiseConfig) {
-        if (started && activeConfig == config) return
+        if (started && isSameMdnsAdvertisement(activeConfig, config)) {
+            activeConfig = config
+            return
+        }
         if (started) stop()
         activeConfig = config
         acquireLocks()
@@ -119,6 +122,17 @@ class MdnsAdvertiser(context: Context) {
         raopListener = null
         releaseLocks()
     }
+
+    private fun isSameMdnsAdvertisement(
+        a: AirPlayAdvertiseConfig?,
+        b: AirPlayAdvertiseConfig
+    ): Boolean = a != null &&
+        a.serviceName == b.serviceName &&
+        a.deviceId == b.deviceId &&
+        a.airPlayPort == b.airPlayPort &&
+        a.raopPort == b.raopPort &&
+        a.piUuid == b.piUuid &&
+        a.publicKeyHex == b.publicKeyHex
 
     private fun registerService(
         serviceName: String,

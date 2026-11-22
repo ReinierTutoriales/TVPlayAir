@@ -2,15 +2,80 @@ package com.tvplayair.receiver.session
 
 import org.junit.Assert.assertArrayEquals
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
+import java.nio.ByteBuffer
 import javax.crypto.Cipher
 import javax.crypto.spec.IvParameterSpec
 import javax.crypto.spec.SecretKeySpec
 
 class RtspAndRtpParserTest {
+
+    @Test
+    fun parsesTrackFieldsAndRejectsTruncatedDmapRecords() {
+        fun record(key: String, value: ByteArray) = ByteBuffer.allocate(8 + value.size)
+            .put(key.toByteArray()).putInt(value.size).put(value).array()
+        val record = record("mlit", record("minm", "Canción".toByteArray()) +
+            record("asar", "Artista".toByteArray()) + record("asal", "Álbum".toByteArray()))
+        assertEquals(RaopTrack("Canción", "Artista", "Álbum"), RaopMetadataParser.track(record))
+        assertEquals(42L, RaopMetadataParser.timestamp("seq=10; rtptime=42"))
+        assertNull(RaopMetadataParser.track(record.copyOf(record.size - 1)))
+    }
+
+    @Test
+    fun rejectsLateArtworkFromAnEarlierTrackOrSource() {
+        var visible: RaopNowPlaying? = null
+        val playback = RaopNowPlayingSession { visible = it }
+        val source1 = Any()
+        val source2 = Any()
+        val track1 = RaopTrack("Primera", null, null)
+        val track2 = RaopTrack("Segunda", null, null)
+        val art1 = byteArrayOf(1)
+        val art2 = byteArrayOf(2)
+        val remote1 = RaopRemote("AAAA", "1")
+        val remote2 = RaopRemote("BBBB", "2")
+        playback.activate(source1, remote1)
+        playback.track(source1, 0xFFFF_FF00L, track1)
+        playback.artwork(source1, 0xFFFF_FF00L, art1)
+        assertArrayEquals(art1, visible?.artwork)
+
+        playback.track(source1, null, track2)
+        playback.artwork(source1, 0xFFFF_FF00L, art1)
+        assertNull(visible?.artwork)
+        playback.track(source1, 100L, track2)
+        playback.artwork(source1, 0xFFFF_FF00L, art1)
+        assertEquals(track2, visible?.track)
+        assertNull(visible?.artwork)
+
+        var generationBumps = 0
+        playback.activate(source2, remote2) { generationBumps++ }
+        playback.withOwner(source1) { generationBumps++ }
+        playback.withOwner(source2) { generationBumps++ }
+        assertEquals(2, generationBumps)
+        assertEquals(remote2, visible?.remote)
+        assertNull(visible?.track)
+        assertNull(visible?.artwork)
+        playback.artwork(source2, 10L, art2)
+        playback.track(source2, 10L, track2)
+        playback.artwork(source1, 100L, art1)
+        playback.updateRemote(source1, remote1)
+        playback.clear(source1)
+        assertArrayEquals(art2, visible?.artwork)
+        assertEquals(remote2, visible?.remote)
+        playback.clear(source2)
+        assertNull(visible)
+    }
+
+    @Test
+    fun identifiesRtspFromVersionInsteadOfMethodOrPath() {
+        assertTrue(RtspMessageParser.isRtspRequestLine("SETUP rtsp://localhost/stream RTSP/1.0"))
+        assertTrue(RtspMessageParser.isRtspRequestLine("GET /info RTSP/1.0"))
+        assertFalse(RtspMessageParser.isRtspRequestLine("GET /info HTTP/1.1"))
+        assertFalse(RtspMessageParser.isRtspRequestLine("GET /RTSP/1.0 HTTP/1.1"))
+    }
 
     @Test
     fun parsesRtspRequestTransportAndVolume() {
@@ -98,5 +163,21 @@ class RtspAndRtpParserTest {
         assertEquals(480, outFrames)
         assertEquals(1000.toShort(), dst[0])
         assertEquals(1000.toShort(), dst[(outFrames - 1) * 2])
+    }
+
+    @Test
+    fun buildsAirPlayTimingResponseAndVolumeGetParameterBody() {
+        val req = ByteArray(AirPlayTimingPacket.PACKET_BYTES)
+        req[0] = 0x80.toByte()
+        req[1] = AirPlayTimingPacket.PT_TIMING_REQUEST.toByte()
+        for (i in 24..31) req[i] = (i - 20).toByte()
+
+        val resp = AirPlayTimingPacket.buildResponse(req, req.size, 1_700_000_000_000L)
+        assertNotNull(resp)
+        assertEquals(AirPlayTimingPacket.PT_TIMING_RESPONSE, resp!![1].toInt() and 0xFF)
+        assertArrayEquals(req.copyOfRange(24, 32), resp.copyOfRange(8, 16))
+
+        val vol = String(RtspMessageParser.formatVolumeBody(-12.5f), Charsets.US_ASCII)
+        assertEquals("volume: -12.500000\r\n", vol)
     }
 }

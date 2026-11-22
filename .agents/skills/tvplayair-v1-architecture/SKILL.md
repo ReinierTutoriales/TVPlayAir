@@ -5,6 +5,10 @@ description: Mandatory product and architecture guardrails for TVPlayAir v1.0. U
 
 # TVPlayAir v1.0 — Product and Architecture Guardrails
 
+## Continuity is the first product acceptance gate
+
+Read `../media-continuity/SKILL.md` and `docs/TVPLAYAIR_CONTINUITY_ARCHITECTURE_2026.md` before designing any media transition. The transport, active media item, rendering pipeline and TV presentation are separate lifecycles. One coordinator arbitrates session generations and rejects stale callbacks; every transition must have a timeout and explicit recovery. Audio->video->audio, video->video, app->app and mirror->direct transitions must be covered with deterministic reordered-event tests.
+
 ## Product outcome
 
 Deliver an independent AirPlay multimedia receiver for Android TV with four fixed outcomes:
@@ -51,12 +55,16 @@ These are product targets. Hardware support varies by SoC, firmware, Android rel
 - Bluetooth HID is capability-checked and optional. If profile/service support is absent or registration fails, disable HID cleanly; never make it a dependency for DACP or playback.
 - Test real device interoperability; do not infer support from Android API presence alone.
 
-## Deterministic build pins
+## Technology freshness
+
+Follow `docs/DEPENDENCY_UPDATE_POLICY.md`; the historical pins below describe a former baseline, **not a ban on upgrades**. Migrate SDK, Compose, AGP and Kotlin in compatible groups with verified artifacts and exact-SHA checks.
+
+## Historical deterministic build pins
 
 - minSdk 29; compileSdk 36; targetSdk 35.
-- NDK 28.2.13676358; CMake 3.22.1.
-- Oboe 1.11.0; Compose BOM 2026.04.01.
-- No floating versions or dependencies requiring API 37+. Resolve and inspect the complete dependency graph; use Gradle dependencyInsight for unexpected Compose/AndroidX artifacts.
+- NDK 30.0.16248370; CMake 4.1.2.
+- Oboe 1.11.0; Compose BOM 2026.06.01.
+- No floating versions; adopt newer compile SDK when officially required and compatible. Resolve and inspect the complete dependency graph; use Gradle dependencyInsight for unexpected Compose/AndroidX artifacts.
 - Change pins only with explicit compatibility evidence and CI proof. Do not upgrade compileSdk as a workaround for a dependency mismatch.
 
 ## v1.0 scope firewall

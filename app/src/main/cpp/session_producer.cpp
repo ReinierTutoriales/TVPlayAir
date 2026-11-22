@@ -1,11 +1,19 @@
 #include "session_producer.hpp"
 
+#include "ALACBitUtilities.h"
+#include "ALACDecoder.h"
+#include "EndianPortable.h"
+
 #include <jni.h>
+#include <memory>
 #include <mutex>
 
 namespace {
 std::mutex gVideoProducerMutex;
+std::mutex gAlacMutex;
 tvplayair::SessionProducer gSessionProducer;
+std::unique_ptr<ALACDecoder> gAlacDecoder;
+uint32_t gAlacFramesPerPacket = 352;
 } // namespace
 
 extern "C" {
@@ -68,6 +76,81 @@ JNIEXPORT jlong JNICALL
 Java_com_tvplayair_receiver_session_NativeSharedMemory_nativeGetAudioDroppedPackets(
     JNIEnv*, jobject) {
     return static_cast<jlong>(tvplayair::producerAudioRing().droppedPackets());
+}
+
+JNIEXPORT jboolean JNICALL
+Java_com_tvplayair_receiver_session_NativeSharedMemory_nativeConfigureAlac(
+    JNIEnv*, jobject, jint samplesPerFrame, jint sampleRate) {
+    std::lock_guard<std::mutex> lock(gAlacMutex);
+    const uint32_t frames = samplesPerFrame > 0 ? static_cast<uint32_t>(samplesPerFrame) : 352u;
+    const uint32_t rate = sampleRate > 0 ? static_cast<uint32_t>(sampleRate) : 44100u;
+
+    ALACSpecificConfig cookie{};
+    cookie.frameLength = Swap32NtoB(frames);
+    cookie.compatibleVersion = 0;
+    cookie.bitDepth = 16;
+    cookie.pb = 40;
+    cookie.mb = 10;
+    cookie.kb = 14;
+    cookie.numChannels = 2;
+    cookie.maxRun = Swap16NtoB(255);
+    cookie.maxFrameBytes = 0;
+    cookie.avgBitRate = 0;
+    cookie.sampleRate = Swap32NtoB(rate);
+
+    auto decoder = std::make_unique<ALACDecoder>();
+    if (decoder->Init(&cookie, sizeof(cookie)) != ALAC_noErr) {
+        return JNI_FALSE;
+    }
+    gAlacFramesPerPacket = frames;
+    gAlacDecoder = std::move(decoder);
+    return JNI_TRUE;
+}
+
+JNIEXPORT jint JNICALL
+Java_com_tvplayair_receiver_session_NativeSharedMemory_nativeDecodeAlacToPcm(
+    JNIEnv* env,
+    jobject,
+    jbyteArray alacPacket,
+    jint offset,
+    jint length,
+    jshortArray outPcmShorts) {
+    if (!alacPacket || !outPcmShorts || offset < 0 || length <= 0) return 0;
+    const jsize packetLen = env->GetArrayLength(alacPacket);
+    const jsize outCapShorts = env->GetArrayLength(outPcmShorts);
+    if (offset + length > packetLen || outCapShorts < 2) return 0;
+
+    std::lock_guard<std::mutex> lock(gAlacMutex);
+    if (!gAlacDecoder) return 0;
+
+    const uint32_t maxFrames = std::min(
+        gAlacFramesPerPacket,
+        static_cast<uint32_t>(outCapShorts / 2));
+
+    jbyte* inBytes = env->GetByteArrayElements(alacPacket, nullptr);
+    if (!inBytes) return 0;
+    jshort* outShorts = env->GetShortArrayElements(outPcmShorts, nullptr);
+    if (!outShorts) {
+        env->ReleaseByteArrayElements(alacPacket, inBytes, JNI_ABORT);
+        return 0;
+    }
+
+    BitBuffer bits{};
+    BitBufferInit(
+        &bits,
+        reinterpret_cast<uint8_t*>(inBytes + offset),
+        static_cast<uint32_t>(length));
+    uint32_t outFrames = 0;
+    const int32_t status = gAlacDecoder->Decode(
+        &bits,
+        reinterpret_cast<uint8_t*>(outShorts),
+        maxFrames,
+        2,
+        &outFrames);
+
+    env->ReleaseShortArrayElements(outPcmShorts, outShorts, 0);
+    env->ReleaseByteArrayElements(alacPacket, inBytes, JNI_ABORT);
+    return (status == ALAC_noErr && outFrames <= maxFrames) ? static_cast<jint>(outFrames) : 0;
 }
 
 } // extern "C"

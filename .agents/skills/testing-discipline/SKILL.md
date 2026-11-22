@@ -12,13 +12,19 @@ description: Use for TVPlayAir product changes, dependency/build fixes and miles
 - Classify the failure first: product logic, dependency graph, Gradle/SDK configuration, test fixture or CI runner/environment.
 - Do not change unrelated product code or weaken assertions to make CI green.
 
+## Mandatory multimedia continuity regression matrix
+
+For changes affecting playback, transport, metadata, UI or process boundaries, read `../media-continuity/SKILL.md`. Add deterministic tests for: audio A->audio B (same transport and new transport), audio->video->audio, video A->video B, mirror->video->mirror, rapid app switching, delayed artwork, reordered metadata, duplicated stop/flush, outdated reverse-channel commands, first-frame timeout, disconnect/reconnect, binder death, background/foreground and D-pad long-press. Assert that no stale generation can update the UI or receive controls; no state can remain in Preparing/Recovering forever.
+
+Instrument request-to-first-frame, first-audio, artwork freshness, A/V drift, dropped frames, underruns, p50/p95/p99 transition latency and error recovery. Run at least 100 simulated transitions in CI; publish actual measurements rather than inventing latency guarantees.
+
 ## Required verification
 
 - Run the focused test first, then affected neighboring suites.
 - Run `testDebugUnitTest`, `lintDebug` and `assembleDebug` when supported locally; state clearly when unavailable.
 - Inspect the exact GitHub Actions run and SHA. A queued, in-progress, cancelled, failed or older-SHA run is not a pass.
-- Baseline integration gate: `assembleDebug = success` on exact PR HEAD.
-- From IPC milestone onward: `assembleDebug = success` and native SPSC stress tests = success on exact PR HEAD.
+- Integration gate: dependency metadata, JVM unit tests, Android native build and native host suites on exact PR HEAD.
+- Verify `assembleDebug` separately when APK packaging is requested.
 - Run native tests for SPSC correctness: concurrent producer/consumer, wrap-around, full-buffer nonblocking drop, packet integrity, oversized packet handling and generation replacement.
 - Inspect resolved dependencies when a build fails due to minimum compile SDK. Use `dependencyInsight` to identify the path introducing the incompatible artifact; do not guess from declared dependencies.
 

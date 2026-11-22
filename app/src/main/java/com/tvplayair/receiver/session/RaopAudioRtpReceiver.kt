@@ -91,7 +91,17 @@ class RaopAudioRtpReceiver(
     @Volatile
     private var aesKey: ByteArray? = null
     @Volatile
+    private var candidateAesKeys: List<ByteArray> = emptyList()
+    @Volatile
+    private var keyConfirmed: Boolean = false
+    @Volatile
     private var aesIv: ByteArray? = null
+    @Volatile
+    private var lastSeqNumber: Int = -1
+    @Volatile
+    private var unencryptedPrefix0: Int = -1
+    @Volatile
+    private var unencryptedPrefix1: Int = -1
     private var workerThread: Thread? = null
 
     fun configureSession(
@@ -99,11 +109,30 @@ class RaopAudioRtpReceiver(
         sampleRate: Int,
         csd0: ByteArray? = null,
         sessionAesKey: ByteArray? = null,
-        sessionAesIv: ByteArray? = null
+        sessionAesIv: ByteArray? = null,
+        samplesPerFrame: Int = 480,
+        alternateAesKey: ByteArray? = null,
+        extraAesKeys: List<ByteArray> = emptyList()
     ) {
-        aesKey = sessionAesKey?.takeIf { it.size == 16 }?.copyOf()
+        val primary = sessionAesKey?.takeIf { it.size == 16 }?.copyOf()
+        val alt = alternateAesKey?.takeIf { it.size == 16 }?.copyOf()
+        val candidates = buildList {
+            if (primary != null) add(primary)
+            if (alt != null && (primary == null || !primary.contentEquals(alt))) add(alt)
+            for (extra in extraAesKeys) {
+                if (extra.size == 16 && none { it.contentEquals(extra) }) {
+                    add(extra.copyOf())
+                }
+            }
+        }
+        aesKey = primary
+        candidateAesKeys = candidates
+        keyConfirmed = candidates.size <= 1
         aesIv = sessionAesIv?.takeIf { it.size == 16 }?.copyOf()
-        decoder.configure(codec, sampleRate, csd0)
+        lastSeqNumber = -1
+        unencryptedPrefix0 = -1
+        unencryptedPrefix1 = -1
+        decoder.configure(codec, sampleRate, csd0, samplesPerFrame)
     }
 
     fun start(port: Int = DEFAULT_AUDIO_PORT): Boolean {
@@ -141,17 +170,70 @@ class RaopAudioRtpReceiver(
 
     private fun receiveLoop(udp: DatagramSocket) {
         val packet = DatagramPacket(rxBuf, rxBuf.size)
+        var rxPackets = 0L
         while (running.get()) {
             val ok = runCatching { udp.receive(packet); true }.getOrDefault(false)
             if (!ok) continue
             val parsed = RtpAudioPacketParser.parse(rxBuf, packet.length) ?: continue
+            // Only process RTP payloadType 96 (audio data); ignore RTCP/Sync (84) and retransmit headers (86).
+            if (parsed.payloadType != 96) continue
+            val prevSeq = lastSeqNumber
+            if (prevSeq != -1) {
+                val delta = (parsed.sequenceNumber - prevSeq + 65536) % 65536
+                if (delta == 0 || delta > 32768) continue
+            }
+            lastSeqNumber = parsed.sequenceNumber
+
             val key = aesKey
             val iv = aesIv
             val generation = generationProvider()
+            rxPackets++
+            if (rxPackets == 1L || rxPackets % 200L == 0L) {
+                Log.i(
+                    TAG,
+                    "RAOP audio rx: pkts=$rxPackets len=${parsed.payloadLength} gen=$generation " +
+                        "encrypted=${key != null} pcmFrames=${decoder.decodedFramesTotal} pcmBytes=${decoder.pcmBytesTotal}"
+                )
+            }
             if (key != null && iv != null) {
-                val plain = SessionCrypto.decryptRaopAudioCbc(
+                if (parsed.payloadLength < 16) {
+                    if (parsed.payloadLength >= 2 && unencryptedPrefix0 == -1) {
+                        unencryptedPrefix0 = rxBuf[parsed.payloadOffset].toInt() and 0xFF
+                        unencryptedPrefix1 = rxBuf[parsed.payloadOffset + 1].toInt() and 0xFF
+                    }
+                    decoder.decodeAndPublish(rxBuf, parsed.payloadOffset, parsed.payloadLength, generation)
+                    continue
+                }
+                var plain = SessionCrypto.decryptRaopAudioCbc(
                     key, iv, rxBuf, parsed.payloadOffset, parsed.payloadLength
                 )
+                if (!keyConfirmed && plain.size >= 16) {
+                    val candidates = candidateAesKeys
+                    var matchedIdx = -1
+                    for (idx in candidates.indices) {
+                        val cand = candidates[idx]
+                        val candPlain = if (idx == 0) plain else SessionCrypto.decryptRaopAudioCbc(
+                            cand, iv, rxBuf, parsed.payloadOffset, parsed.payloadLength
+                        )
+                        val b0 = candPlain[0].toInt() and 0xFF
+                        val b1 = candPlain[1].toInt() and 0xFF
+                        val b2 = candPlain[2].toInt() and 0xFF
+                        val looksAlac = b0 == 0x20 && b1 == 0x00 && (b2 and 0xE0) == 0x00
+                        val looksAacEld = (unencryptedPrefix0 != -1 && b0 == unencryptedPrefix0 && (b1 and 0xF0) == (unencryptedPrefix1 and 0xF0)) ||
+                            (b0 == 0x00 && (b1 and 0xF0) == 0x60)
+                        if (looksAlac || looksAacEld) {
+                            matchedIdx = idx
+                            aesKey = cand
+                            plain = candPlain
+                            break
+                        }
+                    }
+                    Log.i(
+                        TAG,
+                        "Selected RAOP AES key idx=$matchedIdx (len=${plain.size} hdr=${plain[0].toInt() and 0xFF},${plain[1].toInt() and 0xFF})"
+                    )
+                    keyConfirmed = true
+                }
                 decoder.decodeAndPublish(plain, 0, plain.size, generation)
             } else {
                 decoder.decodeAndPublish(rxBuf, parsed.payloadOffset, parsed.payloadLength, generation)

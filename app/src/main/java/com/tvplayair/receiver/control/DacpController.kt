@@ -96,6 +96,8 @@ class DacpController(context: Context) {
     private var resolvedPort: Int = -1
 
     private var discoveryListener: NsdManager.DiscoveryListener? = null
+    @Volatile
+    private var targetGeneration = 0L
 
     @Synchronized
     fun onClientConnected(dacpId: String, activeRemote: String) {
@@ -103,6 +105,7 @@ class DacpController(context: Context) {
         if (activeRemote.isBlank()) return
         if (expectedName == targetServiceName && activeRemote == activeRemoteToken) return
 
+        targetGeneration++
         stopDiscovery()
         targetServiceName = expectedName
         activeRemoteToken = activeRemote
@@ -113,6 +116,7 @@ class DacpController(context: Context) {
 
     @Synchronized
     fun onClientDisconnected() {
+        targetGeneration++
         stopDiscovery()
         targetServiceName = null
         activeRemoteToken = null
@@ -120,14 +124,17 @@ class DacpController(context: Context) {
         resolvedPort = -1
     }
 
+    @Synchronized
     fun sendCommand(commandName: String): Boolean {
         val command = DacpCommand.fromWireName(commandName) ?: return false
         val host = resolvedHost ?: return false
         val port = resolvedPort
         val token = activeRemoteToken ?: return false
         val request = DacpRequestBuilder.buildRequest(host, port, token, command) ?: return false
+        val generation = targetGeneration
 
         executor.execute {
+            if (generation != targetGeneration) return@execute
             var connection: HttpURLConnection? = null
             runCatching {
                 connection = (URL(request.url).openConnection() as HttpURLConnection).apply {
@@ -154,27 +161,31 @@ class DacpController(context: Context) {
 
     private fun startDiscovery() {
         val manager = nsdManager ?: return
+        val generation = targetGeneration
         val listener = object : NsdManager.DiscoveryListener {
             override fun onDiscoveryStarted(regType: String) = Unit
             override fun onDiscoveryStopped(serviceType: String) = Unit
             override fun onStartDiscoveryFailed(serviceType: String, errorCode: Int) {
                 Log.w(TAG, "DACP discovery start failed: $errorCode")
-                stopDiscovery()
+                synchronized(this@DacpController) {
+                    if (generation == targetGeneration) stopDiscovery()
+                }
             }
 
             override fun onStopDiscoveryFailed(serviceType: String, errorCode: Int) = Unit
 
             override fun onServiceFound(serviceInfo: NsdServiceInfo) {
                 val expected = targetServiceName ?: return
-                if (!serviceInfo.serviceName.equals(expected, ignoreCase = true)) return
-                resolveService(manager, serviceInfo)
+                if (generation != targetGeneration || !serviceInfo.serviceName.equals(expected, ignoreCase = true)) return
+                resolveService(manager, serviceInfo, generation)
             }
 
             override fun onServiceLost(serviceInfo: NsdServiceInfo) {
-                val expected = targetServiceName ?: return
-                if (serviceInfo.serviceName.equals(expected, ignoreCase = true)) {
-                    resolvedHost = null
-                    resolvedPort = -1
+                synchronized(this@DacpController) {
+                    if (generation == targetGeneration && serviceInfo.serviceName.equals(targetServiceName, true)) {
+                        resolvedHost = null
+                        resolvedPort = -1
+                    }
                 }
             }
         }
@@ -191,7 +202,7 @@ class DacpController(context: Context) {
     }
 
     @Suppress("DEPRECATION")
-    private fun resolveService(manager: NsdManager, serviceInfo: NsdServiceInfo) {
+    private fun resolveService(manager: NsdManager, serviceInfo: NsdServiceInfo, generation: Long) {
         runCatching {
             manager.resolveService(serviceInfo, object : NsdManager.ResolveListener {
                 override fun onResolveFailed(info: NsdServiceInfo, errorCode: Int) {
@@ -200,8 +211,11 @@ class DacpController(context: Context) {
 
                 override fun onServiceResolved(info: NsdServiceInfo) {
                     val addr: InetAddress = info.host ?: return
-                    resolvedHost = addr.hostAddress
-                    resolvedPort = info.port
+                    synchronized(this@DacpController) {
+                        if (generation != targetGeneration) return
+                        resolvedHost = addr.hostAddress
+                        resolvedPort = info.port
+                    }
                     Log.i(
                         TAG,
                         String.format(

@@ -14,10 +14,12 @@ data class AirPlayServerConfig(
 
 interface AirPlayProtocolListener {
     fun onVideoConfigChanged(mimeType: String, width: Int, height: Int, generationId: Int)
-    fun onDirectVideoUrl(url: String, startPositionSec: Double)
-    fun onDirectVideoCommand(command: String, value: Double)
+    fun onDirectVideoUrl(url: String, startPosition: Double, playbackId: Long)
+    fun onDirectVideoCommand(command: String, value: Double, playbackId: Long)
     fun onClientConnected(clientName: String, dacpId: String, activeRemote: String)
     fun onClientDisconnected()
+    fun onNowPlaying(metadata: RaopNowPlaying?) = Unit
+    fun onAudioStreamStarted(generationId: Int) = Unit
 }
 
 /**
@@ -27,13 +29,14 @@ interface AirPlayProtocolListener {
 interface AirPlayProtocolEngine {
     fun start(config: AirPlayServerConfig): Boolean
     fun stop()
-    fun updatePlaybackTelemetry(telemetry: DirectPlaybackTelemetry)
+    fun updatePlaybackTelemetry(playbackId: Long, telemetry: DirectPlaybackTelemetry)
+    fun finishDirectPlayback(playbackId: Long)
     fun currentGenerationId(): Int
 }
 
 data class ParsedDirectPlayRequest(
     val url: String,
-    val startPositionSec: Double
+    val startPosition: Double
 )
 
 object AirPlayHttpRequestParser {
@@ -46,7 +49,106 @@ object AirPlayHttpRequestParser {
         setOf(RegexOption.IGNORE_CASE, RegexOption.DOT_MATCHES_ALL)
     )
 
-    fun parsePlayBody(body: String): ParsedDirectPlayRequest? {
+    fun parsePlayBody(body: ByteArray): ParsedDirectPlayRequest? {
+        if (!BinaryPlistParser.isBinaryPlist(body)) {
+            return parseTextPlayBody(body.toString(Charsets.UTF_8))
+        }
+
+        val root = BinaryPlistParser.parse(body) ?: return null
+        val url = findUrlInPlist(root) ?: return null
+        val position = findNumberInPlist(root, setOf("start-position", "startposition", "bookmark-time"))
+        return ParsedDirectPlayRequest(url, normalizeStartPosition(position))
+    }
+
+    fun summarizePlist(body: ByteArray): String {
+        if (!BinaryPlistParser.isBinaryPlist(body)) {
+            return body.toString(Charsets.UTF_8).replace("\r", " ").replace("\n", " ").take(240)
+        }
+        val root = BinaryPlistParser.parse(body)
+        return summarizeObject(root).take(300)
+    }
+
+    private fun summarizeObject(node: Any?, depth: Int = 0): String {
+        if (depth > 4) return "..."
+        return when (node) {
+            null -> "null"
+            is Map<*, *> -> node.entries.joinToString(prefix = "{", postfix = "}") { (k, v) ->
+                "$k:${summarizeObject(v, depth + 1)}"
+            }
+            is List<*> -> node.joinToString(prefix = "[", postfix = "]") { summarizeObject(it, depth + 1) }
+            is ByteArray -> "bytes(${node.size})"
+            is String -> if (node.length > 80) node.take(77) + "..." else node
+            else -> node.toString()
+        }
+    }
+
+    private fun findUrlInPlist(node: Any?, depth: Int = 0): String? {
+        if (depth > 8 || node == null) return null
+        when (node) {
+            is Map<*, *> -> {
+                for (keyName in listOf("Content-Location", "content-location", "URL", "url", "URI", "uri")) {
+                    for ((k, v) in node) {
+                        if (k is String && k.equals(keyName, ignoreCase = true) && v is String) {
+                            val trimmed = v.trim()
+                            if (trimmed.isNotEmpty()) {
+                                return trimmed
+                            }
+                        }
+                    }
+                }
+                for ((_, v) in node) {
+                    findUrlInPlist(v, depth + 1)?.let { return it }
+                }
+            }
+            is List<*> -> {
+                for (item in node) {
+                    findUrlInPlist(item, depth + 1)?.let { return it }
+                }
+            }
+            is String -> {
+                val trimmed = node.trim()
+                if (trimmed.startsWith("http://", ignoreCase = true) ||
+                    trimmed.startsWith("https://", ignoreCase = true)
+                ) {
+                    return trimmed
+                }
+            }
+            is ByteArray -> {
+                if (BinaryPlistParser.isBinaryPlist(node)) {
+                    findUrlInPlist(BinaryPlistParser.parse(node), depth + 1)?.let { return it }
+                } else {
+                    val text = runCatching { node.toString(Charsets.UTF_8) }.getOrNull().orEmpty()
+                    Regex("https?://[^\\s\"'<>\\u0000]+", RegexOption.IGNORE_CASE)
+                        .find(text)?.value?.let { return it }
+                }
+            }
+        }
+        return null
+    }
+
+    private fun findNumberInPlist(node: Any?, keysLower: Set<String>, depth: Int = 0): Double? {
+        if (depth > 8 || node == null) return null
+        when (node) {
+            is Map<*, *> -> {
+                for ((k, v) in node) {
+                    if (k is String && k.lowercase(Locale.US) in keysLower && v is Number) {
+                        return v.toDouble()
+                    }
+                }
+                for ((_, v) in node) {
+                    findNumberInPlist(v, keysLower, depth + 1)?.let { return it }
+                }
+            }
+            is List<*> -> {
+                for (item in node) {
+                    findNumberInPlist(item, keysLower, depth + 1)?.let { return it }
+                }
+            }
+        }
+        return null
+    }
+
+    private fun parseTextPlayBody(body: String): ParsedDirectPlayRequest? {
         val trimmed = body.trim()
         if (trimmed.isEmpty()) return null
 
@@ -54,9 +156,8 @@ object AirPlayHttpRequestParser {
             val url = xmlLocationRegex.find(trimmed)?.groupValues?.get(1)?.trim()
                 ?.replace("&amp;", "&")
                 ?: return null
-            val pos = xmlStartPosRegex.find(trimmed)?.groupValues?.get(1)?.trim()
-                ?.toDoubleOrNull()?.coerceAtLeast(0.0) ?: 0.0
-            return if (url.isNotEmpty()) ParsedDirectPlayRequest(url, pos) else null
+            val pos = xmlStartPosRegex.find(trimmed)?.groupValues?.get(1)?.trim()?.toDoubleOrNull()
+            return if (url.isNotEmpty()) ParsedDirectPlayRequest(url, normalizeStartPosition(pos)) else null
         }
 
         var url: String? = null
@@ -68,11 +169,14 @@ object AirPlayHttpRequestParser {
             val value = line.substring(idx + 1).trim()
             when (key) {
                 "content-location" -> if (value.isNotEmpty()) url = value
-                "start-position" -> startPosition = value.toDoubleOrNull()?.coerceAtLeast(0.0) ?: 0.0
+                "start-position" -> startPosition = normalizeStartPosition(value.toDoubleOrNull())
             }
         }
         return url?.let { ParsedDirectPlayRequest(it, startPosition) }
     }
+
+    private fun normalizeStartPosition(position: Double?): Double =
+        position?.takeIf { it.isFinite() && it > 0.0 } ?: 0.0
 
     fun parseQueryDouble(pathWithQuery: String, paramName: String): Double? {
         val qIdx = pathWithQuery.indexOf('?')
@@ -95,7 +199,7 @@ object AirPlayPlaybackInfoFormatter {
         val duration = telemetry.durationSec.coerceAtLeast(0.0)
         val position = telemetry.positionSec.coerceIn(0.0, if (duration > 0.0) duration else Double.MAX_VALUE)
         val rate = telemetry.rate.coerceAtLeast(0f)
-        val readyToPlay = duration > 0.0 || telemetry.isPlaying
+        val readyToPlay = telemetry.isReady
         val bufferEmpty = telemetry.isBuffering
         val likelyToKeepUp = readyToPlay && !bufferEmpty
 

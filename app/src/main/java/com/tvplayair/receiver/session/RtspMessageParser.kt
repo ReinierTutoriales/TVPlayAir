@@ -23,6 +23,9 @@ data class RtspTransportParams(
 )
 
 object RtspMessageParser {
+    fun isRtspRequestLine(line: String): Boolean =
+        line.trimEnd().substringAfterLast(' ', missingDelimiterValue = "") == "RTSP/1.0"
+
     fun parseRequest(headerText: String, body: ByteArray = ByteArray(0)): RtspRequest? {
         val lines = headerText.split("\r\n").filter { it.isNotEmpty() }
         if (lines.isEmpty()) return null
@@ -83,6 +86,9 @@ object RtspMessageParser {
         }
         return null
     }
+
+    fun formatVolumeBody(volumeDb: Float = 0.0f): ByteArray =
+        String.format(Locale.US, "volume: %.6f\r\n", volumeDb).toByteArray(Charsets.US_ASCII)
 
     fun formatResponse(
         statusCode: Int,
