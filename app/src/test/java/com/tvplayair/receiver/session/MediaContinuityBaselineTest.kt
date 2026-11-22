@@ -161,7 +161,7 @@ class MediaContinuityBaselineTest {
             return true
         }
 
-        override fun stopAndClear() { preparedVideo = null }
+        override fun stopAndClear(releasePlayer: Boolean) { preparedVideo = null }
         override fun play() = Unit
         override fun pause() = Unit
         override fun seekTo(positionSec: Double) = Unit

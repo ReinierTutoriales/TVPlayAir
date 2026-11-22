@@ -134,7 +134,7 @@ class VideoPresentationCoordinatorTest {
         assertTrue(coordinator.startMirror(reconfigured = true, opensProjection = true))
         assertEquals(PresentationState.MIRROR_ACTIVE, coordinator.state)
         assertEquals(
-            listOf("direct.stopAndClear", "surface.showMirror", "mirror.start", "audio.pausedForExternal(false)"),
+            listOf("direct.release", "surface.showMirror", "mirror.start", "audio.pausedForExternal(false)"),
             events
         )
         assertFalse(coordinator.finishDirectPlayback(video.playbackId))
@@ -183,8 +183,8 @@ class VideoPresentationCoordinatorTest {
             events += "direct.seekTo($positionSec)"
         }
 
-        override fun stopAndClear() {
-            events += "direct.stopAndClear"
+        override fun stopAndClear(releasePlayer: Boolean) {
+            events += if (releasePlayer) "direct.release" else "direct.stopAndClear"
         }
 
         override fun currentTelemetry() = DirectPlaybackTelemetry(
@@ -281,7 +281,7 @@ class VideoPresentationCoordinatorTest {
     }
 
     @Test
-    fun switchToMirrorStopsExoPlayerBeforeRestartingMirrorAndAudio() {
+    fun switchToMirrorReleasesExoPlayerBeforeRestartingMirrorAndAudio() {
         val events = mutableListOf<String>()
         val coordinator = VideoPresentationCoordinator(
             FakeMirrorEngine(events),
@@ -301,7 +301,7 @@ class VideoPresentationCoordinatorTest {
         assertEquals(PresentationState.MIRROR_ACTIVE, coordinator.state)
         assertEquals(
             listOf(
-                "direct.stopAndClear",
+                "direct.release",
                 "surface.showMirror",
                 "mirror.start",
                 "audio.pausedForExternal(false)"
@@ -377,7 +377,7 @@ class VideoPresentationCoordinatorTest {
         assertEquals(PresentationState.MIRROR_ACTIVE, coordinator.state)
         assertTrue(mirror.discardedPendingFrames)
         assertEquals(
-            listOf("direct.stopAndClear", "surface.showMirror", "mirror.start", "audio.pausedForExternal(false)"),
+            listOf("direct.release", "surface.showMirror", "mirror.start", "audio.pausedForExternal(false)"),
             events
         )
     }
@@ -460,7 +460,7 @@ class VideoPresentationCoordinatorTest {
             override fun play() = Unit
             override fun pause() = Unit
             override fun seekTo(positionSec: Double) = Unit
-            override fun stopAndClear() { events += "direct.stopAndClear" }
+            override fun stopAndClear(releasePlayer: Boolean) { events += "direct.stopAndClear" }
             override fun currentTelemetry() = DirectPlaybackTelemetry(0.0, 0.0, 0f, false, false)
         }
         coordinator = VideoPresentationCoordinator(
@@ -509,7 +509,7 @@ class VideoPresentationCoordinatorTest {
         assertEquals(PresentationState.MIRROR_ACTIVE, coordinator.state)
         assertFalse(coordinator.onDirectMediaReady(1))
         assertEquals(
-            listOf("direct.stopAndClear", "surface.showMirror", "mirror.start", "audio.pausedForExternal(false)"),
+            listOf("direct.release", "surface.showMirror", "mirror.start", "audio.pausedForExternal(false)"),
             events.takeLast(4)
         )
     }

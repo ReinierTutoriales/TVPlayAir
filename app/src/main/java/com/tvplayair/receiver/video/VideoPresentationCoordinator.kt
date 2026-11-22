@@ -38,7 +38,7 @@ interface DirectVideoEngine {
     fun play()
     fun pause()
     fun seekTo(positionSec: Double)
-    fun stopAndClear()
+    fun stopAndClear(releasePlayer: Boolean = false)
     fun currentTelemetry(): DirectPlaybackTelemetry
 }
 
@@ -148,7 +148,7 @@ class VideoPresentationCoordinator(
         resumeMirrorAfterDirect = false
         directPlaybackId = null
         state = PresentationState.SWITCHING_TO_MIRROR
-        directEngine.stopAndClear()
+        directEngine.stopAndClear(releasePlayer = true)
         surfaceController.showMirrorSurface()
         val started = mirrorEngine.start(discardPendingFrames)
         audioController.setPausedForExternalPlayer(false)

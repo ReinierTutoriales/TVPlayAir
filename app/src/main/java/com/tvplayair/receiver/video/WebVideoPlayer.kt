@@ -330,19 +330,34 @@ class WebVideoPlayer(context: Context) : DirectVideoEngine {
         exo.seekTo(targetMs)
     }
 
-    override fun stopAndClear() {
-        // Keep the player and its SurfaceView binding warm for the next AirPlay video.
-        // Stop and remove the old media so stale frames/metadata cannot be reused.
+    override fun stopAndClear(releasePlayer: Boolean) {
+        resetPlaybackState()
+        if (releasePlayer) {
+            // Media3 stop() is asynchronous. Release before another decoder needs the VPU.
+            releasePlayerInstance()
+        } else {
+            player?.let { exo ->
+                exo.stop()
+                exo.clearMediaItems()
+            }
+        }
+        viewCallbacks?.onTelemetryChanged(currentTelemetry())
+    }
+
+    private fun resetPlaybackState() {
         playbackId = null
         finishedPlaybackId = null
         releaseSystemControls()
         pendingStartFraction = null
         mainHandler.removeCallbacks(telemetryTicker)
-        player?.let { exo ->
-            exo.stop()
-            exo.clearMediaItems()
-        }
-        viewCallbacks?.onTelemetryChanged(currentTelemetry())
+    }
+
+    private fun releasePlayerInstance() {
+        val exo = player
+        player = null
+        systemPlayer = null
+        exo?.removeListener(playerListener)
+        exo?.release()
     }
 
     override fun currentTelemetry(): DirectPlaybackTelemetry {
@@ -380,16 +395,7 @@ class WebVideoPlayer(context: Context) : DirectVideoEngine {
     fun release() {
         surfaceView?.let(::detachView)
         viewCallbacks = null
-        playbackId = null
-        finishedPlaybackId = null
-        releaseSystemControls()
-        pendingStartFraction = null
-        mainHandler.removeCallbacks(telemetryTicker)
-        player?.let { exo ->
-            exo.removeListener(playerListener)
-            exo.release()
-        }
-        player = null
-        systemPlayer = null
+        resetPlaybackState()
+        releasePlayerInstance()
     }
 }
