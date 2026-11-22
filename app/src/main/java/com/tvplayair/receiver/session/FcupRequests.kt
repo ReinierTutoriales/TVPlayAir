@@ -1,5 +1,6 @@
 package com.tvplayair.receiver.session
 
+import java.io.IOException
 import java.util.concurrent.CompletableFuture
 
 /** Shares concurrent loads of one resource. Each later HLS reload gets a new request. */
@@ -34,12 +35,18 @@ internal class FcupRequests {
         return null
     }
 
+    class MissingResponseData : IOException("FCUP response has no data")
+
     @Synchronized
-    fun complete(id: Int?, url: String?, data: ByteArray): Boolean {
+    fun isPending(id: Int): Boolean = byId.containsKey(id)
+
+    @Synchronized
+    fun complete(id: Int?, url: String?, data: ByteArray?): Boolean {
         val request = (if (id != null) byId[id] else byUrl[url]) ?: return false
         if (url != null && request.url != url) return false
         remove(request)
-        return request.result.complete(data)
+        return if (data == null || data.isEmpty()) request.result.completeExceptionally(MissingResponseData())
+        else request.result.complete(data)
     }
 
     @Synchronized

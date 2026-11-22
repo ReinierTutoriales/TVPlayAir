@@ -277,6 +277,7 @@ class AirPlayDirectHttpServer(
             output.flush()
             while (running.get() && !socket.isClosed) {
                 val event = channel.events.poll(1, TimeUnit.SECONDS) ?: continue
+                if (event.fcupRequestId?.let { !fcupRequests.isPending(it) } == true) continue
                 val reqBytes = event.request(key.appleSessionId)
                 Log.i(TAG, "-> /reverse POST /event (${reqBytes.size}B fcup=${event.customXmlBody != null})")
                 output.write(reqBytes)
@@ -337,6 +338,11 @@ class AirPlayDirectHttpServer(
             ?: params["URL"]
             ?: params["url"]
             ?: root["FCUP_Response_URL"]) as? String)?.trim()?.takeIf(String::isNotEmpty)
+        if (reqId == null && respUrl == null) return false
+        val identifiedFcupResponse = params.containsKey("FCUP_Response_RequestID") ||
+            params.containsKey("FCUP_Response_ID") || root.containsKey("FCUP_Response_RequestID") ||
+            root.containsKey("FCUP_Response_ID") ||
+            params.containsKey("FCUP_Response_URL") || root.containsKey("FCUP_Response_URL")
         val rawData = params["FCUP_Response_Data"]
             ?: params["data"]
             ?: root["FCUP_Response_Data"]
@@ -345,9 +351,10 @@ class AirPlayDirectHttpServer(
             is ByteArray -> rawData
             is String -> rawData.toByteArray(StandardCharsets.UTF_8)
             else -> null
-        } ?: return false
+        }
+        if (rawBytes == null && !identifiedFcupResponse) return false
 
-        val dataBytes = if (rawBytes.size >= 2 &&
+        val dataBytes = if (rawBytes != null && rawBytes.size >= 2 &&
             rawBytes[0] == 0x1f.toByte() &&
             rawBytes[1] == 0x8b.toByte()
         ) {
@@ -357,7 +364,7 @@ class AirPlayDirectHttpServer(
             rawBytes
         }
 
-        Log.i(TAG, "<- FCUP response id=$reqId len=${dataBytes.size}")
+        Log.i(TAG, "<- FCUP response id=$reqId len=${dataBytes?.size ?: 0}")
 
         if (!fcupRequests.complete(reqId, respUrl, dataBytes)) {
             Log.i(TAG, "Ignoring unmatched FCUP response id=$reqId")
@@ -505,18 +512,19 @@ class AirPlayDirectHttpServer(
                     else writeResponse(output, 410, "Gone")
                     return
                 }
-                val dataBytes = runCatching {
+                val response = runCatching {
                     pending.result.get(deadline - System.nanoTime(), TimeUnit.NANOSECONDS)
-                }.onFailure { error ->
+                }
+                val dataBytes = response.getOrElse { error ->
                     fcupRequests.cancel(pending)
-                    Log.w(TAG, "FCUP request id=${pending.id} ended: ${error.javaClass.simpleName}")
-                }.getOrNull()
-
-                if (dataBytes == null) {
-                    if (playbackEvents.reverseSignal(playbackId) != null) {
-                        writeResponse(output, 504, "Gateway Timeout")
-                    } else {
+                    if (playbackEvents.reverseSignal(playbackId) == null) {
                         writeResponse(output, 410, "Gone")
+                    } else if (error.cause is FcupRequests.MissingResponseData) {
+                        Log.w(TAG, "FCUP request id=${pending.id} returned no response data")
+                        writeResponse(output, 502, "Bad Gateway")
+                    } else {
+                        Log.w(TAG, "FCUP request id=${pending.id} ended: ${error.javaClass.simpleName}")
+                        writeResponse(output, 504, "Gateway Timeout")
                     }
                     return
                 }

@@ -26,7 +26,8 @@ internal class AirPlayPlaybackEvents {
         val state: State,
         val playbackId: Long,
         val customXmlBody: String? = null,
-        val closeAfterDelivery: Boolean = false
+        val closeAfterDelivery: Boolean = false,
+        val fcupRequestId: Int? = null
     ) {
         fun request(appleSessionId: String?): ByteArray {
             val body = (customXmlBody ?: """
@@ -261,7 +262,7 @@ internal class AirPlayPlaybackEvents {
             </dict>
             </plist>
         """.trimIndent()
-        activeChannel.offer(Event(State.LOADING, sid, customXmlBody = xml))
+        activeChannel.offer(Event(State.LOADING, sid, customXmlBody = xml, fcupRequestId = requestId))
         return true
     }
 

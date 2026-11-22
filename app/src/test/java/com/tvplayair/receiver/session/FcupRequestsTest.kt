@@ -31,6 +31,29 @@ class FcupRequestsTest {
     }
 
     @Test
+    fun identifiedResponseWithoutDataFailsOnlyItsOwnRequest() {
+        val requests = FcupRequests()
+        requests.reset(1)
+        val audio = requests.acquire(1, audioUrl) { true }!!
+        val video = requests.acquire(1, videoUrl) { true }!!
+
+        assertFalse(requests.complete(audio.id, videoUrl, null))
+        assertTrue(requests.isPending(audio.id))
+        assertTrue(requests.complete(audio.id, audioUrl, null))
+        assertFalse(requests.isPending(audio.id))
+        val failure = runCatching { audio.result.join() }.exceptionOrNull()
+        assertTrue(failure?.cause is FcupRequests.MissingResponseData)
+        assertTrue(requests.isPending(video.id))
+
+        val retry = requests.acquire(1, audioUrl) { true }!!
+        assertNotEquals(audio.id, retry.id)
+        assertFalse(requests.complete(audio.id, audioUrl, byteArrayOf(1)))
+        assertFalse(retry.result.isDone)
+        assertTrue(requests.complete(video.id, videoUrl, byteArrayOf(2)))
+        assertArrayEquals(byteArrayOf(2), video.result.join())
+    }
+
+    @Test
     fun concurrentReadersShareARequestButLaterReloadGetsFreshPlaylist() {
         val requests = FcupRequests()
         requests.reset(1)
