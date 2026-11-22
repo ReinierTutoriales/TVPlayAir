@@ -68,3 +68,15 @@ La JVM comprueba los contratos entre componentes mediante dobles de motor. Andro
 - [Capacidades de MediaCodec](https://developer.android.com/reference/android/media/MediaCodecInfo.CodecCapabilities) · [Métricas de Media3](https://developer.android.com/media/media3/exoplayer/analytics) · [AIDL](https://developer.android.com/develop/background-work/services/aidl)
 - [Google Cast Connect](https://developers.google.com/cast/docs/android_tv_receiver) · [Android App Links](https://developer.android.com/training/app-links) · [Enviar YouTube al TV](https://support.google.com/youtube/answer/7640706)
 - [Selección de ruta AirPlay en iOS](https://developer.apple.com/documentation/avfoundation/supporting-airplay-in-your-app) · [Uso de AirPlay y duplicación](https://support.apple.com/en-us/102661)
+
+### Diagnóstico local de cortes
+
+```sh
+adb logcat -v threadtime -d -s TVPlayAirDiag TVPlayAirOboe RaopAudioRtpReceiver
+```
+
+- Vídeo directo y FCUP comparten `id`. En errores del proxy, `request` enlaza la carga Media3 con la entrega FCUP: `QUEUED` indica que el evento estaba en cola, `WRITTEN` que se escribió al socket y `ACKNOWLEDGED` que se observó el acuse. `retired_load` identifica una carga local que recibió 410 al quedar retirada su reproducción.
+- `load_summary` conserva el primer error y cuenta los fallos observados hasta completar esa carga, volver al estado de reproducción efectiva o cerrar el intento. `load_completed` indica éxito de la carga; `first_frame` confirma salida de imagen. Los eventos que Media3 no permite atribuir se registran sin asignarlos al medio activo por suposición.
+- Duplicación usa `generation` para enlazar configuración y cierre TCP con errores y primer fotograma del decodificador. Tras reconstruir el decodificador, el siguiente `first_frame` confirma que volvió a haber imagen.
+- `default_lost` registra lo que Android observó sobre la ruta de red predeterminada del televisor. Es contexto temporal, no prueba de que la conexión con el iPhone usara esa red. Los eventos de IPC muestran la vinculación y reconexión del servicio. Los eventos de RAOP identifican la generación de audio; Oboe conserva su registro de recuperación.
+- Las líneas `TVPlayAirDiag` omiten IP, URL completa, tokens, claves y metadatos del contenido. Los demás tags de aplicación o Android pueden incluir datos de red.

@@ -1,6 +1,8 @@
 package com.tvplayair.receiver.session
 
+import android.os.SystemClock
 import android.util.Log
+import com.tvplayair.receiver.diagnostics.PLAYBACK_DIAGNOSTICS_TAG
 import com.tvplayair.receiver.video.MirrorFrameGate
 import java.io.BufferedInputStream
 import java.io.EOFException
@@ -120,6 +122,14 @@ class AirPlayMirrorStreamReceiver(
     private val videoGeneration = AtomicInteger()
     private val streamLock = Any()
     private var activeClient: Socket? = null
+    private var activeCloseReason: String? = null
+
+    private class ConnectionTrace {
+        val startedMs = SystemClock.elapsedRealtime()
+        var generation = 0
+        var packets = 0L
+        var reason = "loop_ended"
+    }
     private var activeSetup: CipherSetup? = null
     private var pendingSetup: CipherSetup? = null
 
@@ -176,7 +186,7 @@ class AirPlayMirrorStreamReceiver(
             return@synchronized
         }
         pendingSetup = setup
-        closeActiveStream()
+        closeActiveStream("new_setup")
     }
 
     internal fun closeStreamForOwner(owner: AirPlayConnectionCrypto) {
@@ -184,7 +194,7 @@ class AirPlayMirrorStreamReceiver(
             if (pendingSetup?.owner === owner) pendingSetup = null
             if (activeSetup?.owner === owner) {
                 Log.i(TAG, "Closing mirror TCP stream after its RTSP control ended")
-                closeActiveStream()
+                closeActiveStream("rtsp_control_ended")
             }
         }
     }
@@ -218,7 +228,7 @@ class AirPlayMirrorStreamReceiver(
     fun stop() {
         running.set(false)
         runCatching { serverSocket?.close() }
-        closeActiveStream()
+        closeActiveStream("receiver_stopped")
         serverSocket = null
         acceptThread?.let {
             it.interrupt()
@@ -228,8 +238,15 @@ class AirPlayMirrorStreamReceiver(
         synchronized(streamLock) { pendingSetup = null }
     }
 
-    fun closeActiveStream() {
-        synchronized(streamLock) { activeClient?.let { runCatching { it.close() } } }
+    internal fun closeActiveStream(reason: String) {
+        synchronized(streamLock) {
+            activeClient?.let { socket ->
+                if (!socket.isClosed) {
+                    activeCloseReason = reason
+                    runCatching { socket.close() }
+                }
+            }
+        }
     }
 
     private fun acceptLoop(socket: ServerSocket) {
@@ -241,37 +258,41 @@ class AirPlayMirrorStreamReceiver(
                     return
                 }
                 activeClient = client
+                activeCloseReason = null
                 pendingSetup.also {
                     activeSetup = it
                     pendingSetup = null
                 }
             }
-            var configPublished = false
+            val trace = ConnectionTrace()
             try {
-                handleMirrorClient(client, setup?.state ?: CipherState(null, emptyList())) { configPublished = true }
+                handleMirrorClient(client, setup?.state ?: CipherState(null, emptyList()), trace)
             } catch (_: SocketTimeoutException) {
-                Log.i(TAG, "Mirror TCP connection ended: read timeout after ${CLIENT_TIMEOUT_MS}ms")
+                trace.reason = "read_timeout"
             } catch (error: IOException) {
-                Log.i(TAG, "Mirror TCP connection ended (${error.javaClass.simpleName})")
+                trace.reason = error.javaClass.simpleName
             } finally {
-                synchronized(streamLock) {
-                    if (activeClient === client) {
-                        activeClient = null
-                        activeSetup = null
-                    }
+                val reason = synchronized(streamLock) {
+                    if (activeClient !== client) return@synchronized trace.reason
+                    val reason = activeCloseReason ?: trace.reason
+                    activeClient = null
+                    activeSetup = null
+                    activeCloseReason = null
+                    reason
                 }
-                if (configPublished && !socket.isClosed) onStreamEnded()
+                Log.i(PLAYBACK_DIAGNOSTICS_TAG,
+                    "route=mirror_transport generation=${trace.generation} event=closed reason=$reason " +
+                        "packets=${trace.packets} elapsedMs=${SystemClock.elapsedRealtime() - trace.startedMs}")
+                if (trace.generation != 0 && !socket.isClosed) onStreamEnded()
             }
         }
     }
 
-    private fun handleMirrorClient(client: Socket, cipherState: CipherState, onConfigPublished: () -> Unit) {
-        var packetCount = 0L
+    private fun handleMirrorClient(client: Socket, cipherState: CipherState, trace: ConnectionTrace) {
         var streamIsHevc: Boolean? = null
         var streamWidth = 0
         var streamHeight = 0
         var streamConfig: ByteArray? = null
-        var generationId = 0
         client.use { sock ->
             sock.soTimeout = CLIENT_TIMEOUT_MS
             sock.tcpNoDelay = true
@@ -279,11 +300,12 @@ class AirPlayMirrorStreamReceiver(
             val input = BufferedInputStream(sock.getInputStream())
             while (running.get() && !sock.isClosed) {
                 if (!readExact(input, headerScratch, AirPlayMirrorHeaderParser.HEADER_BYTES)) {
-                    Log.i(TAG, "Mirror TCP peer reached EOF between packets")
+                    trace.reason = "header_eof"
                     break
                 }
                 val header = AirPlayMirrorHeaderParser.parse(headerScratch)
                 if (header == null) {
+                    trace.reason = "invalid_header"
                     val hdrBuf = ByteBuffer.wrap(headerScratch, 0, AirPlayMirrorHeaderParser.HEADER_BYTES)
                         .order(ByteOrder.LITTLE_ENDIAN)
                     Log.w(
@@ -296,6 +318,7 @@ class AirPlayMirrorStreamReceiver(
                 val isVideo = header.payloadType == AirPlayMirrorHeaderParser.PAYLOAD_TYPE_VIDEO
                 val isConfig = header.payloadType == AirPlayMirrorHeaderParser.PAYLOAD_TYPE_CODEC_CONFIG
                 if (!readIntoDirectBuffer(input, header.payloadSize, cipherState.takeIf { isVideo })) {
+                    trace.reason = "payload_eof"
                     break
                 }
                 if (isConfig) {
@@ -313,17 +336,19 @@ class AirPlayMirrorStreamReceiver(
                     streamWidth = header.width
                     streamHeight = header.height
                     streamConfig = codecConfig
-                    generationId = videoGeneration.incrementAndGet()
+                    trace.generation = videoGeneration.incrementAndGet()
                     // Publish codec setup even if the frame ring is full or the mirror is suspended.
-                    onConfigPublished()
-                    onCodecConfigReady(sock, isHevc, streamWidth, streamHeight, generationId, codecConfig, opensProjection)
+                    Log.i(PLAYBACK_DIAGNOSTICS_TAG,
+                        "route=mirror_transport generation=${trace.generation} event=config " +
+                            "width=$streamWidth height=$streamHeight hevc=$isHevc")
+                    onCodecConfigReady(sock, isHevc, streamWidth, streamHeight, trace.generation, codecConfig, opensProjection)
                     continue
                 }
                 val isHevc = streamIsHevc ?: continue
                 if (!isVideo) continue
-                packetCount++
+                val packetCount = ++trace.packets
                 if (packetCount == 1L || packetCount % 120L == 0L) {
-                    Log.i(TAG, "Mirror TCP rx: packets=$packetCount size=${header.payloadSize} gen=$generationId")
+                    Log.i(TAG, "Mirror TCP rx: packets=$packetCount size=${header.payloadSize} gen=${trace.generation}")
                 }
                 val writeRes = NativeSharedMemory.nativeWriteVideoFrame(
                     directBuffer = directPayload,
@@ -331,7 +356,7 @@ class AirPlayMirrorStreamReceiver(
                     ptsUs = header.ptsUs,
                     isHevc = isHevc,
                     isLengthPrefixed = true,
-                    generationId = generationId,
+                    generationId = trace.generation,
                     extraFlags = 0
                 )
                 if (writeRes != NativeSharedMemory.VIDEO_WRITE_OK &&
@@ -341,7 +366,6 @@ class AirPlayMirrorStreamReceiver(
                 }
             }
         }
-        Log.i(TAG, "Mirror TCP client closed (packets=$packetCount)")
     }
 
     private fun readExact(input: BufferedInputStream, dst: ByteArray, length: Int): Boolean {

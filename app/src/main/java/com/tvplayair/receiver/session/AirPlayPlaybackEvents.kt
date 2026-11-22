@@ -143,7 +143,7 @@ internal class AirPlayPlaybackEvents {
     }
 
     @Synchronized
-    fun openMirror(onDirectRetired: () -> Unit) {
+    fun openMirror(onDirectRetired: (Long) -> Unit) {
         mirrorActive = true
         val active = activeSession ?: return
         retiredDirectSession = active
@@ -154,7 +154,7 @@ internal class AirPlayPlaybackEvents {
         stopRequested = true
         currentEvent = null
         reverseReady.cancel(false)
-        onDirectRetired()
+        onDirectRetired(playbackId)
         previousChannel?.let {
             it.events.clear()
             it.offer(Event(State.STOPPED, playbackId, closeAfterDelivery = true))

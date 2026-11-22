@@ -2,6 +2,8 @@ package com.tvplayair.receiver.session
 
 import android.media.MediaFormat
 import android.util.Log
+import com.tvplayair.receiver.diagnostics.FCUP_REQUEST_HEADER
+import com.tvplayair.receiver.diagnostics.PLAYBACK_DIAGNOSTICS_TAG
 import com.tvplayair.receiver.video.DirectPlaybackTelemetry
 import java.io.BufferedInputStream
 import java.io.ByteArrayInputStream
@@ -69,8 +71,9 @@ class AirPlayDirectHttpServer(
             synchronized(playbackEvents) {
                 if (!socket.isClosed) {
                     if (opensProjection) {
-                        playbackEvents.openMirror {
-                            Log.i(TAG, "Retiring direct video for a new mirroring stream")
+                        playbackEvents.openMirror { id ->
+                            Log.i(PLAYBACK_DIAGNOSTICS_TAG,
+                                "route=direct id=$id event=handoff next=mirror generation=$generation")
                             fcupRequests.reset()
                             latestTelemetry.set(idleTelemetry)
                         }
@@ -277,16 +280,34 @@ class AirPlayDirectHttpServer(
             output.flush()
             while (running.get() && !socket.isClosed) {
                 val event = channel.events.poll(1, TimeUnit.SECONDS) ?: continue
-                if (event.fcupRequestId?.let { !fcupRequests.isPending(it) } == true) continue
+                val fcupId = event.fcupRequestId
+                val fcup = if (fcupId != null) fcupRequests.pending(fcupId) ?: continue else null
                 val reqBytes = event.request(key.appleSessionId)
                 Log.i(TAG, "-> /reverse POST /event (${reqBytes.size}B fcup=${event.customXmlBody != null})")
                 output.write(reqBytes)
                 output.flush()
-                val acknowledgement = readAirPlayHttpHeader(input)?.toString(StandardCharsets.US_ASCII)
-                    ?: break
+                fcup?.markWritten()
+                val acknowledgement = try {
+                    readAirPlayHttpHeader(input)?.toString(StandardCharsets.US_ASCII)
+                } catch (error: IOException) {
+                    Log.w(PLAYBACK_DIAGNOSTICS_TAG,
+                        "route=reverse id=${event.playbackId} event=ack_read_failed request=${fcupId ?: "-"} " +
+                            "error=${error.javaClass.simpleName}")
+                    throw error
+                }
+                if (acknowledgement == null) {
+                    Log.i(PLAYBACK_DIAGNOSTICS_TAG,
+                        "route=reverse id=${event.playbackId} event=closed reason=eof request=${fcupId ?: "-"}")
+                    break
+                }
                 val firstAckLine = acknowledgement.substringBefore("\r\n")
                 Log.i(TAG, "<- /reverse ack: $firstAckLine")
-                if (!isAirPlayReverseAck(firstAckLine)) break
+                if (!isAirPlayReverseAck(firstAckLine)) {
+                    Log.i(PLAYBACK_DIAGNOSTICS_TAG,
+                        "route=reverse id=${event.playbackId} event=closed reason=invalid_ack request=${fcupId ?: "-"}")
+                    break
+                }
+                fcup?.markAcknowledged()
                 val ackLen = acknowledgement.lineSequence()
                     .firstOrNull { it.startsWith("Content-Length:", ignoreCase = true) }
                     ?.substringAfter(':')
@@ -314,7 +335,7 @@ class AirPlayDirectHttpServer(
     ): Boolean {
         return playbackEvents.start(sessionKey, explicit, onMirrorRetired = {
             Log.i(TAG, "Closing active mirroring stream for direct video")
-            mirrorReceiver.closeActiveStream()
+            mirrorReceiver.closeActiveStream("direct_handoff")
             listener.onMirrorStreamEnded()
         }) { playbackId ->
             fcupRequests.reset(playbackId)
@@ -322,6 +343,7 @@ class AirPlayDirectHttpServer(
             val playableUrl = if (parsed.url.startsWith("http://", ignoreCase = true) ||
                 parsed.url.startsWith("https://", ignoreCase = true)
             ) parsed.url else buildLocalFcupProxyUrl(parsed.url, playbackId)
+            Log.i(PLAYBACK_DIAGNOSTICS_TAG, "route=airplay id=$playbackId event=accepted")
             listener.onDirectVideoUrl(playableUrl, parsed.startPosition, playbackId)
         }
     }
@@ -494,8 +516,10 @@ class AirPlayDirectHttpServer(
                 val ready = runCatching { reverseReady.get(FCUP_TIMEOUT_MS, TimeUnit.MILLISECONDS) }
                 if (ready.isFailure) {
                     val active = playbackEvents.reverseSignal(playbackId) != null
-                    if (active) writeResponse(output, 504, "Gateway Timeout")
-                    else writeResponse(output, 410, "Gone")
+                    if (active) {
+                        Log.w(PLAYBACK_DIAGNOSTICS_TAG, "route=fcup id=$playbackId event=reverse_unavailable")
+                        writeResponse(output, 504, "Gateway Timeout")
+                    } else writeResponse(output, 410, "Gone")
                     return
                 }
                 // Match the lock order used by startDirectPlayback.
@@ -508,8 +532,10 @@ class AirPlayDirectHttpServer(
                 }
                 if (pending == null) {
                     val active = playbackEvents.reverseSignal(playbackId) != null
-                    if (active) writeResponse(output, 503, "Service Unavailable")
-                    else writeResponse(output, 410, "Gone")
+                    if (active) {
+                        Log.w(PLAYBACK_DIAGNOSTICS_TAG, "route=fcup id=$playbackId event=enqueue_failed")
+                        writeResponse(output, 503, "Service Unavailable")
+                    } else writeResponse(output, 410, "Gone")
                     return
                 }
                 val response = runCatching {
@@ -518,13 +544,16 @@ class AirPlayDirectHttpServer(
                 val dataBytes = response.getOrElse { error ->
                     fcupRequests.cancel(pending)
                     if (playbackEvents.reverseSignal(playbackId) == null) {
-                        writeResponse(output, 410, "Gone")
+                        writeResponse(output, 410, "Gone", fcupRequestId = pending.id)
                     } else if (error.cause is FcupRequests.MissingResponseData) {
-                        Log.w(TAG, "FCUP request id=${pending.id} returned no response data")
-                        writeResponse(output, 502, "Bad Gateway")
+                        Log.w(PLAYBACK_DIAGNOSTICS_TAG,
+                            "route=fcup id=$playbackId event=response_empty request=${pending.id}")
+                        writeResponse(output, 502, "Bad Gateway", fcupRequestId = pending.id)
                     } else {
-                        Log.w(TAG, "FCUP request id=${pending.id} ended: ${error.javaClass.simpleName}")
-                        writeResponse(output, 504, "Gateway Timeout")
+                        Log.w(PLAYBACK_DIAGNOSTICS_TAG,
+                            "route=fcup id=$playbackId event=wait_failed request=${pending.id} " +
+                                "delivery=${pending.delivery} error=${error.javaClass.simpleName}")
+                        writeResponse(output, 504, "Gateway Timeout", fcupRequestId = pending.id)
                     }
                     return
                 }
@@ -628,6 +657,7 @@ class AirPlayDirectHttpServer(
             }
             method == "POST" && path == "/stop" -> {
                 playbackEvents.control(sessionKey, stop = true) { id ->
+                    Log.i(PLAYBACK_DIAGNOSTICS_TAG, "route=direct id=$id event=sender_stop")
                     fcupRequests.reset()
                     latestTelemetry.set(idleTelemetry)
                     listener.onDirectVideoCommand("stop", 0.0, id)
@@ -698,14 +728,16 @@ class AirPlayDirectHttpServer(
         statusCode: Int,
         reason: String,
         contentType: String = "text/plain",
-        body: String = ""
+        body: String = "",
+        fcupRequestId: Int? = null
     ) {
         writeBinaryResponse(
             output,
             statusCode,
             reason,
             contentType,
-            body.toByteArray(StandardCharsets.UTF_8)
+            body.toByteArray(StandardCharsets.UTF_8),
+            fcupRequestId
         )
     }
 
@@ -714,7 +746,8 @@ class AirPlayDirectHttpServer(
         statusCode: Int,
         reason: String,
         contentType: String,
-        bodyBytes: ByteArray
+        bodyBytes: ByteArray,
+        fcupRequestId: Int? = null
     ) {
         val protocol = currentRequestProtocol.get() ?: "HTTP/1.1"
         val cseq = currentRequestCSeq.get()
@@ -726,6 +759,7 @@ class AirPlayDirectHttpServer(
             if (!cseq.isNullOrBlank()) {
                 append("CSeq: ").append(cseq).append("\r\n")
             }
+            if (fcupRequestId != null) append(FCUP_REQUEST_HEADER).append(": ").append(fcupRequestId).append("\r\n")
             append("Content-Type: ").append(contentType).append("\r\n")
             append("Content-Length: ").append(bodyBytes.size).append("\r\n\r\n")
         }

@@ -5,7 +5,15 @@ import java.util.concurrent.CompletableFuture
 
 /** Shares concurrent loads of one resource. Each later HLS reload gets a new request. */
 internal class FcupRequests {
+    enum class Delivery { QUEUED, WRITTEN, ACKNOWLEDGED }
+
     class Request(val id: Int, val url: String) {
+        @Volatile
+        var delivery = Delivery.QUEUED
+            private set
+
+        fun markWritten() { delivery = Delivery.WRITTEN }
+        fun markAcknowledged() { delivery = Delivery.ACKNOWLEDGED }
         val result = CompletableFuture<ByteArray>()
     }
 
@@ -38,7 +46,7 @@ internal class FcupRequests {
     class MissingResponseData : IOException("FCUP response has no data")
 
     @Synchronized
-    fun isPending(id: Int): Boolean = byId.containsKey(id)
+    fun pending(id: Int): Request? = byId[id]
 
     @Synchronized
     fun complete(id: Int?, url: String?, data: ByteArray?): Boolean {

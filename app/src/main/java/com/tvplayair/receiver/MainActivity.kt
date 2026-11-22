@@ -26,6 +26,7 @@ import androidx.core.view.WindowCompat
 import androidx.core.view.WindowInsetsCompat
 import androidx.core.view.WindowInsetsControllerCompat
 import androidx.tv.material3.MaterialTheme
+import com.tvplayair.receiver.diagnostics.PLAYBACK_DIAGNOSTICS_TAG
 import com.tvplayair.receiver.audio.OboeAudioConsumer
 import com.tvplayair.receiver.cast.CastMediaRequest
 import com.tvplayair.receiver.cast.TvCastReceiver
@@ -668,6 +669,7 @@ class MainActivity : ComponentActivity(), SurfaceLayerController {
         cancelDirectStartupTimeout()
         val timeout = Runnable {
             if (presentationCoordinator.onDirectStartupTimeout(id)) {
+                Log.w(PLAYBACK_DIAGNOSTICS_TAG, "route=direct id=$id event=startup_timeout")
                 val elapsedMs = SystemClock.elapsedRealtime() - directRequestedAtMs
                 Log.w("TVPlayAir", "direct_startup outcome=timeout playbackId=$id elapsedMs=$elapsedMs")
                 finishDirectSession(id)

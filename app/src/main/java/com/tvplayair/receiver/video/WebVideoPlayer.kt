@@ -17,13 +17,20 @@ import androidx.media3.common.Player
 import androidx.media3.common.Timeline
 import androidx.media3.common.util.UnstableApi
 import androidx.media3.datasource.DefaultHttpDataSource
+import androidx.media3.datasource.HttpDataSource.InvalidResponseCodeException
 import androidx.media3.exoplayer.DecoderReuseEvaluation
 import androidx.media3.exoplayer.ExoPlayer
 import androidx.media3.exoplayer.analytics.AnalyticsListener
 import androidx.media3.exoplayer.source.DefaultMediaSourceFactory
+import androidx.media3.exoplayer.source.LoadEventInfo
+import androidx.media3.exoplayer.source.MediaLoadData
 import androidx.media3.session.MediaSession
+import com.tvplayair.receiver.diagnostics.DirectPlaybackDiagnostics
+import com.tvplayair.receiver.diagnostics.FCUP_REQUEST_HEADER
+import com.tvplayair.receiver.diagnostics.PLAYBACK_DIAGNOSTICS_TAG
 import com.google.common.util.concurrent.Futures
 import com.google.common.util.concurrent.ListenableFuture
+import java.io.IOException
 
 /**
  * Direct 4K HDR web video player backed by Media3 ExoPlayer on a native SurfaceView.
@@ -86,6 +93,10 @@ class WebVideoPlayer(context: Context) : DirectVideoEngine {
     private var pendingStartFraction: Double? = null
     private var prepareStartedMs = 0L
     private val eventWindow = Timeline.Window()
+    private val diagnostics = DirectPlaybackDiagnostics(SystemClock::elapsedRealtime) {
+        Log.i(PLAYBACK_DIAGNOSTICS_TAG, it)
+    }
+    private var firstFrameLogged = false
 
     @OptIn(UnstableApi::class)
     private fun playbackIdFor(eventTime: AnalyticsListener.EventTime): Long? {
@@ -103,7 +114,53 @@ class WebVideoPlayer(context: Context) : DirectVideoEngine {
         override fun onRenderedFirstFrame(eventTime: AnalyticsListener.EventTime, output: Any, renderTimeMs: Long) {
             if (renderTimeMs < prepareStartedMs || output != surfaceView?.holder?.surface) return
             val id = playbackIdFor(eventTime) ?: return
+            if (!firstFrameLogged) {
+                firstFrameLogged = true
+                Log.i(PLAYBACK_DIAGNOSTICS_TAG,
+                    "route=direct id=$id event=first_frame elapsedMs=${renderTimeMs - prepareStartedMs}")
+            }
             viewCallbacks?.onMediaReady(id)
+        }
+
+        override fun onLoadError(
+            eventTime: AnalyticsListener.EventTime,
+            loadEventInfo: LoadEventInfo,
+            mediaLoadData: MediaLoadData,
+            error: IOException,
+            wasCanceled: Boolean
+        ) {
+            if (wasCanceled) return
+            val http = error as? InvalidResponseCodeException
+            val uri = loadEventInfo.dataSpec.uri
+            val local = FcupLoadErrorHandlingPolicy.isFcupPlaylist(uri.host, uri.path)
+            val source = if (local) "fcup" else "media"
+            val request = if (local) http?.headerFields?.entries
+                ?.firstOrNull { it.key.equals(FCUP_REQUEST_HEADER, ignoreCase = true) }
+                ?.value?.firstOrNull()?.toIntOrNull() else null
+            val label = "source=$source http=${http?.responseCode ?: "-"} request=${request ?: "-"} " +
+                "error=${error.javaClass.simpleName} dataType=${mediaLoadData.dataType}"
+            val id = playbackIdFor(eventTime) ?: if (local) {
+                uri.pathSegments.getOrNull(1)?.toLongOrNull()
+            } else null
+            if (local && http?.responseCode == 410) {
+                Log.i(PLAYBACK_DIAGNOSTICS_TAG, "route=direct id=${id ?: "-"} event=retired_load $label")
+            } else if (id == null) {
+                Log.i(PLAYBACK_DIAGNOSTICS_TAG, "route=direct id=- event=unattributed_load_error $label")
+            } else {
+                diagnostics.loadError(id, loadEventInfo.loadTaskId, label)
+            }
+        }
+
+        override fun onLoadCompleted(
+            eventTime: AnalyticsListener.EventTime,
+            loadEventInfo: LoadEventInfo,
+            mediaLoadData: MediaLoadData
+        ) {
+            val uri = loadEventInfo.dataSpec.uri
+            val id = playbackIdFor(eventTime) ?: if (FcupLoadErrorHandlingPolicy.isFcupPlaylist(uri.host, uri.path)) {
+                uri.pathSegments.getOrNull(1)?.toLongOrNull()
+            } else null
+            diagnostics.loadCompleted(id, loadEventInfo.loadTaskId)
         }
 
         override fun onVideoInputFormatChanged(
@@ -156,7 +213,10 @@ class WebVideoPlayer(context: Context) : DirectVideoEngine {
                     !tracks.containsType(C.TRACK_TYPE_VIDEO)
                 ) playbackId?.let { viewCallbacks?.onMediaReady(it) }
             }
-            if (playbackState == Player.STATE_ENDED) notifyPlaybackFinished()
+            if (playbackState == Player.STATE_ENDED) {
+                diagnostics.finish("ended")
+                notifyPlaybackFinished()
+            }
         }
 
         override fun onPlayWhenReadyChanged(playWhenReady: Boolean, reason: Int) {
@@ -165,12 +225,17 @@ class WebVideoPlayer(context: Context) : DirectVideoEngine {
 
         override fun onIsPlayingChanged(isPlaying: Boolean) {
             Log.i(TAG, "ExoPlayer isPlaying=$isPlaying")
+            if (isPlaying) diagnostics.playing(player?.currentMediaItem?.mediaId?.toLongOrNull())
             viewCallbacks?.onTelemetryChanged(currentTelemetry())
         }
 
         override fun onPlayerError(error: PlaybackException) {
             pendingStartFraction = null
             Log.e(TAG, "ExoPlayer error (${error.errorCodeName})")
+            val detail = generateSequence<Throwable>(error) { it.cause }.take(6).toList()
+            val http = detail.filterIsInstance<InvalidResponseCodeException>().firstOrNull()
+            diagnostics.finish("player_error", " code=${error.errorCodeName} " +
+                "http=${http?.responseCode ?: "-"} cause=${detail.last().javaClass.simpleName}")
             viewCallbacks?.onTelemetryChanged(currentTelemetry())
             notifyPlaybackFinished()
         }
@@ -308,6 +373,8 @@ class WebVideoPlayer(context: Context) : DirectVideoEngine {
         if (!keepSession) releaseSystemControls()
         finishedPlaybackId = null
         playbackId = video.playbackId
+        firstFrameLogged = false
+        diagnostics.start(video.playbackId)
         if (surface != null) exo.setVideoSurfaceView(surface)
         pendingStartFraction = video.startFraction
         if (!video.playWhenReady) exo.playWhenReady = false
@@ -369,6 +436,7 @@ class WebVideoPlayer(context: Context) : DirectVideoEngine {
     }
 
     private fun resetPlaybackState() {
+        diagnostics.finish("cleared")
         playbackId = null
         finishedPlaybackId = null
         releaseSystemControls()

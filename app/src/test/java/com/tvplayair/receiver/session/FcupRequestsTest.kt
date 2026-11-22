@@ -1,6 +1,7 @@
 package com.tvplayair.receiver.session
 
 import org.junit.Assert.assertArrayEquals
+import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNotEquals
 import org.junit.Assert.assertNull
@@ -38,12 +39,12 @@ class FcupRequestsTest {
         val video = requests.acquire(1, videoUrl) { true }!!
 
         assertFalse(requests.complete(audio.id, videoUrl, null))
-        assertTrue(requests.isPending(audio.id))
+        assertSame(audio, requests.pending(audio.id))
         assertTrue(requests.complete(audio.id, audioUrl, null))
-        assertFalse(requests.isPending(audio.id))
+        assertNull(requests.pending(audio.id))
         val failure = runCatching { audio.result.join() }.exceptionOrNull()
         assertTrue(failure?.cause is FcupRequests.MissingResponseData)
-        assertTrue(requests.isPending(video.id))
+        assertSame(video, requests.pending(video.id))
 
         val retry = requests.acquire(1, audioUrl) { true }!!
         assertNotEquals(audio.id, retry.id)
@@ -75,6 +76,20 @@ class FcupRequestsTest {
         assertNull(requests.acquire(1, videoUrl) { false })
         val retry = requests.acquire(1, videoUrl) { true }!!
         assertTrue(requests.complete(retry.id, videoUrl, byteArrayOf(1)))
+    }
+
+    @Test
+    fun reverseDeliveryStateIsSpecificToEachRequest() {
+        val requests = FcupRequests()
+        requests.reset(1)
+        val audio = requests.acquire(1, audioUrl) { true }!!
+        val video = requests.acquire(1, videoUrl) { true }!!
+        assertEquals(FcupRequests.Delivery.QUEUED, audio.delivery)
+        audio.markWritten()
+        assertEquals(FcupRequests.Delivery.WRITTEN, audio.delivery)
+        audio.markAcknowledged()
+        assertEquals(FcupRequests.Delivery.ACKNOWLEDGED, audio.delivery)
+        assertEquals(FcupRequests.Delivery.QUEUED, video.delivery)
     }
 
     @Test

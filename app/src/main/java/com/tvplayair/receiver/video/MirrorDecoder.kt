@@ -10,6 +10,7 @@ import android.os.Looper
 import android.os.SystemClock
 import android.util.Log
 import android.view.Surface
+import com.tvplayair.receiver.diagnostics.PLAYBACK_DIAGNOSTICS_TAG
 import com.tvplayair.receiver.session.NativeSharedMemory
 import java.nio.ByteBuffer
 import java.nio.ByteOrder
@@ -69,7 +70,8 @@ class MirrorDecoder(
         if (running.get()) return true
         val surface = surfaceProvider()
         if (surface == null || !surface.isValid) {
-            Log.w(TAG, "Mirror surface unavailable; deferring MediaCodec start")
+            Log.w(PLAYBACK_DIAGNOSTICS_TAG,
+                "route=mirror_decoder generation=${generationId.get()} event=surface_unavailable")
             return false
         }
 
@@ -97,7 +99,7 @@ class MirrorDecoder(
         }
         workerThread = null
 
-        codec?.let(::releaseCodec)
+        codec?.let { releaseCodec(it) }
     }
 
     private fun createAndConfigureCodec(
@@ -105,6 +107,8 @@ class MirrorDecoder(
         cfg: MirrorVideoConfig,
         csdBytes: ByteArray? = null
     ): MediaCodec? {
+        val generation = generationId.get()
+        val startedMs = SystemClock.elapsedRealtime()
         val format = MediaFormat.createVideoFormat(cfg.mimeType, cfg.width, cfg.height)
         // Format changes rebuild the decoder. Adaptive maximum hints reserve extra buffers.
         // Safe low-latency fallback on API 29+; never force KEY_OPERATING_RATE = 32767.
@@ -122,8 +126,9 @@ class MirrorDecoder(
                 MediaCodec.createDecoderByType(cfg.mimeType)
             }
         }.onFailure {
-            Log.e(TAG, "Failed to create MediaCodec for ${cfg.mimeType}", it)
+            logCodecFailure("create", it)
         }.getOrNull() ?: return null
+        val codecName = decoder.name
 
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
             val lowLatencySupported = runCatching {
@@ -136,13 +141,13 @@ class MirrorDecoder(
             }
             Log.i(
                 TAG,
-                "Configured ${decoder.name} (${cfg.mimeType} ${cfg.width}x${cfg.height}) " +
+                "Configured $codecName (${cfg.mimeType} ${cfg.width}x${cfg.height}) " +
                     "lowLatency=$lowLatencySupported csd=${csdBytes?.size ?: 0}B"
             )
         } else {
             Log.i(
                 TAG,
-                "Configured ${decoder.name} (${cfg.mimeType} ${cfg.width}x${cfg.height}) " +
+                "Configured $codecName (${cfg.mimeType} ${cfg.width}x${cfg.height}) " +
                     "API ${Build.VERSION.SDK_INT} priority=0 csd=${csdBytes?.size ?: 0}B"
             )
         }
@@ -151,21 +156,32 @@ class MirrorDecoder(
             decoder.configure(format, surface, null, 0)
             decoder.setOnFrameRenderedListener({ activeCodec, _, _ ->
                 if (codec === activeCodec) {
-                    Log.i(TAG, "Mirror first frame rendered (${cfg.mimeType})")
+                    Log.i(PLAYBACK_DIAGNOSTICS_TAG,
+                        "route=mirror_decoder generation=$generation event=first_frame codec=$codecName " +
+                            "elapsedMs=${SystemClock.elapsedRealtime() - startedMs}")
                     activeCodec.setOnFrameRenderedListener(null, null)
                 }
             }, renderListenerHandler)
             decoder.start()
             decoder
         }.onFailure {
-            Log.e(TAG, "Failed to configure/start MediaCodec", it)
+            logCodecFailure("configure", it)
             runCatching { decoder.release() }
         }.getOrNull()
     }
 
-    private fun releaseCodec(activeCodec: MediaCodec) {
+    private fun logCodecFailure(operation: String, error: Throwable) {
+        val failure = error as? MediaCodec.CodecException
+        Log.w(PLAYBACK_DIAGNOSTICS_TAG,
+            "route=mirror_decoder generation=${generationId.get()} event=codec_error operation=$operation " +
+                "type=${error.javaClass.simpleName} code=${failure?.errorCode ?: "-"} " +
+                "diagnostic=${failure?.diagnosticInfo ?: "-"} recoverable=${failure?.isRecoverable ?: "-"} " +
+                "transient=${failure?.isTransient ?: "-"}")
+    }
+
+    private fun releaseCodec(activeCodec: MediaCodec, reclaimed: Boolean = false) {
         if (codec === activeCodec) codec = null
-        runCatching { activeCodec.stop() }
+        if (!reclaimed) runCatching { activeCodec.stop() }
         runCatching { activeCodec.release() }
     }
 
@@ -174,14 +190,25 @@ class MirrorDecoder(
         val outputWatchdog = MirrorOutputWatchdog(SystemClock::elapsedRealtime)
         var activeCodec = codec
 
+        fun recover(codecToRelease: MediaCodec, operation: String, error: IllegalStateException? = null) {
+            if (error != null && running.get()) logCodecFailure(operation, error)
+            val reclaimed = (error as? MediaCodec.CodecException)?.errorCode ==
+                MediaCodec.CodecException.ERROR_RECLAIMED
+            if (running.get()) Log.w(PLAYBACK_DIAGNOSTICS_TAG,
+                "route=mirror_decoder generation=${generationId.get()} event=await_keyframe reason=$operation")
+            releaseCodec(codecToRelease, reclaimed)
+            activeCodec = null
+            outputWatchdog.clearQueuedFrames()
+            frameGate.resetGate()
+        }
+
         while (running.get()) {
-            if (activeCodec != null) {
-                drainOutputBuffers(activeCodec, bufferInfo, outputWatchdog)
-                if (running.get() && outputWatchdog.takeRecovery()) {
-                    Log.w(TAG, "Mirror output stalled with queued frames; rebuilding on next keyframe gen=${generationId.get()}")
-                    releaseCodec(activeCodec)
-                    activeCodec = null
-                    frameGate.resetGate()
+            activeCodec?.let { current ->
+                try {
+                    drainOutputBuffers(current, bufferInfo, outputWatchdog)
+                    if (running.get() && outputWatchdog.takeRecovery()) recover(current, "output_stall")
+                } catch (error: IllegalStateException) {
+                    recover(current, "output", error)
                 }
             }
 
@@ -245,31 +272,24 @@ class MirrorDecoder(
 
             var inputIndex = -1
             var attempts = 0
-            while (running.get() && attempts < 25) {
-                inputIndex = runCatching { currentCodec.dequeueInputBuffer(DEQUEUE_TIMEOUT_US) }
-                    .getOrDefault(-1)
-                if (inputIndex >= 0) break
-                drainOutputBuffers(currentCodec, bufferInfo, outputWatchdog)
-                attempts++
-            }
-            if (inputIndex < 0) {
-                if (running.get()) {
-                    Log.w(TAG, "MediaCodec input congested; rebuilding on next keyframe")
-                    releaseCodec(currentCodec)
-                    outputWatchdog.clearQueuedFrames()
-                    activeCodec = null
-                    frameGate.resetGate()
+            val inputBuffer = try {
+                while (running.get() && attempts < 25) {
+                    inputIndex = currentCodec.dequeueInputBuffer(DEQUEUE_TIMEOUT_US)
+                    if (inputIndex >= 0) break
+                    drainOutputBuffers(currentCodec, bufferInfo, outputWatchdog)
+                    attempts++
                 }
+                if (inputIndex < 0) {
+                    if (running.get()) recover(currentCodec, "input_congestion")
+                    continue
+                }
+                currentCodec.getInputBuffer(inputIndex)
+            } catch (error: IllegalStateException) {
+                recover(currentCodec, "input_or_output", error)
                 continue
             }
-
-            val inputBuffer = runCatching { currentCodec.getInputBuffer(inputIndex) }.getOrNull()
             if (inputBuffer == null || payloadSize > inputBuffer.capacity()) {
-                releaseCodec(currentCodec)
-                outputWatchdog.clearQueuedFrames()
-                activeCodec = null
-                frameGate.resetGate()
-                Log.w(TAG, "Mirror input buffer unavailable for ${payloadSize}B")
+                recover(currentCodec, "input_buffer_unavailable")
                 continue
             }
             inputBuffer.clear()
@@ -287,16 +307,12 @@ class MirrorDecoder(
                 codecFlags = codecFlags or MediaCodec.BUFFER_FLAG_KEY_FRAME
             }
 
-            runCatching {
+            try {
                 currentCodec.queueInputBuffer(inputIndex, 0, payloadSize, ptsUs, codecFlags)
                 frameGate.onFrameSubmitted(flags)
                 if ((flags and MirrorFrameGate.FLAG_CODEC_CONFIG) == 0) outputWatchdog.onFrameQueued()
-            }.onFailure {
-                Log.w(TAG, "queueInputBuffer failed; rebuilding on next keyframe", it)
-                releaseCodec(currentCodec)
-                outputWatchdog.clearQueuedFrames()
-                activeCodec = null
-                frameGate.resetGate()
+            } catch (error: IllegalStateException) {
+                recover(currentCodec, "queue_input", error)
             }
         }
     }
@@ -307,37 +323,32 @@ class MirrorDecoder(
         outputWatchdog: MirrorOutputWatchdog
     ) {
         while (running.get()) {
-            val outIndex = runCatching { activeCodec.dequeueOutputBuffer(bufferInfo, 0L) }
-                .getOrDefault(MediaCodec.INFO_TRY_AGAIN_LATER)
+            val outIndex = activeCodec.dequeueOutputBuffer(bufferInfo, 0L)
             if (outIndex >= 0) {
-                runCatching { activeCodec.releaseOutputBuffer(outIndex, true) }
-                    .onSuccess {
-                        if ((bufferInfo.flags and MediaCodec.BUFFER_FLAG_CODEC_CONFIG) == 0) {
-                            outputWatchdog.onOutputReleased()
-                        }
-                    }
+                activeCodec.releaseOutputBuffer(outIndex, true)
+                if ((bufferInfo.flags and MediaCodec.BUFFER_FLAG_CODEC_CONFIG) == 0) {
+                    outputWatchdog.onOutputReleased()
+                }
             } else if (outIndex == MediaCodec.INFO_OUTPUT_FORMAT_CHANGED) {
-                runCatching {
-                    val outFmt = activeCodec.outputFormat
-                    val w = if (outFmt.containsKey("crop-right") && outFmt.containsKey("crop-left")) {
-                        outFmt.getInteger("crop-right") - outFmt.getInteger("crop-left") + 1
-                    } else if (outFmt.containsKey(MediaFormat.KEY_WIDTH)) {
-                        outFmt.getInteger(MediaFormat.KEY_WIDTH)
-                    } else {
-                        0
-                    }
-                    val h = if (outFmt.containsKey("crop-bottom") && outFmt.containsKey("crop-top")) {
-                        outFmt.getInteger("crop-bottom") - outFmt.getInteger("crop-top") + 1
-                    } else if (outFmt.containsKey(MediaFormat.KEY_HEIGHT)) {
-                        outFmt.getInteger(MediaFormat.KEY_HEIGHT)
-                    } else {
-                        0
-                    }
-                    if (w > 0 && h > 0) {
-                        Log.i(TAG, "Mirror output format changed: ${w}x$h")
-                        onVideoSizeChanged?.let { callback ->
-                            renderListenerHandler.post { if (codec === activeCodec) callback(w, h) }
-                        }
+                val outFmt = activeCodec.outputFormat
+                val w = if (outFmt.containsKey("crop-right") && outFmt.containsKey("crop-left")) {
+                    outFmt.getInteger("crop-right") - outFmt.getInteger("crop-left") + 1
+                } else if (outFmt.containsKey(MediaFormat.KEY_WIDTH)) {
+                    outFmt.getInteger(MediaFormat.KEY_WIDTH)
+                } else {
+                    0
+                }
+                val h = if (outFmt.containsKey("crop-bottom") && outFmt.containsKey("crop-top")) {
+                    outFmt.getInteger("crop-bottom") - outFmt.getInteger("crop-top") + 1
+                } else if (outFmt.containsKey(MediaFormat.KEY_HEIGHT)) {
+                    outFmt.getInteger(MediaFormat.KEY_HEIGHT)
+                } else {
+                    0
+                }
+                if (w > 0 && h > 0) {
+                    Log.i(TAG, "Mirror output format changed: ${w}x$h")
+                    onVideoSizeChanged?.let { callback ->
+                        renderListenerHandler.post { if (codec === activeCodec) callback(w, h) }
                     }
                 }
                 continue
