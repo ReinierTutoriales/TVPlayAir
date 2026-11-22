@@ -68,7 +68,8 @@ class AirPlayDirectHttpServer(
             val w = width.takeIf { it > 0 } ?: defaultWidth
             val h = height.takeIf { it > 0 } ?: defaultHeight
             listener.onVideoConfigChanged(mimeType, w, h, generation)
-        }
+        },
+        onStreamEnded = listener::onMirrorStreamEnded
     )
     private val raopRtspServer = RaopRtspServer(
         listener = listener,

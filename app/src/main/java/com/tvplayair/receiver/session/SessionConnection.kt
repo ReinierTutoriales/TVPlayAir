@@ -21,7 +21,7 @@ interface SessionEventListener {
     fun onDirectVideoUrl(video: DirectPlaybackStart) = Unit
     fun onDirectVideoCommand(command: String, value: Double, playbackId: Long) = Unit
     fun onClientConnected(clientName: String, dacpId: String, activeRemote: String) = Unit
-    fun onClientDisconnected() = Unit
+    fun onMirrorStreamEnded() = Unit
     fun onAudioStreamStarted(generationId: Int) = Unit
     fun onAudioStreamStopped() = Unit
     fun onAudioControlsAvailable(available: Boolean) = Unit
@@ -109,8 +109,8 @@ class SessionConnection(
         override fun onClientConnected(clientName: String, dacpId: String, activeRemote: String) =
             deliver(epoch) { listener.onClientConnected(clientName, dacpId, activeRemote) }
 
-        override fun onClientDisconnected() =
-            deliver(epoch) { listener.onClientDisconnected() }
+        override fun onMirrorStreamEnded() =
+            deliver(epoch) { listener.onMirrorStreamEnded() }
 
         override fun onAudioStreamStarted(generationId: Int) =
             deliver(epoch) { listener.onAudioStreamStarted(generationId) }

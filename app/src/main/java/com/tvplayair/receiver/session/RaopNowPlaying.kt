@@ -65,8 +65,8 @@ internal class RaopNowPlayingSession(private val publish: (RaopNowPlaying?) -> U
         timestamp = null
         trackTimestampUnconfirmed = false
         current = RaopNowPlaying(remote = remote)
-        publish(current)
         onActivated()
+        publish(current)
     }
 
     @Synchronized
@@ -87,8 +87,8 @@ internal class RaopNowPlayingSession(private val publish: (RaopNowPlaying?) -> U
     @Synchronized
     fun artwork(source: Any, at: Long?, artwork: ByteArray?) {
         val before = current
-        if (owner !== source || (timestamp != null && at == null) ||
-            (trackTimestampUnconfirmed && at == timestamp) || !advance(at)
+        if (owner !== source || (artwork != null && timestamp != null && at == null) ||
+            (at != null && trackTimestampUnconfirmed && at == timestamp) || !advance(at)
         ) return
         if (current === before && current.artwork.contentEquals(artwork)) return
         current = current.copy(artwork = artwork)

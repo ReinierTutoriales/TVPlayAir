@@ -61,8 +61,7 @@ data class TvOverlayState(
 
     fun withAudioStreamStarted(): TvOverlayState = copy(
         audioProjectionActive = true,
-        awaitingAudioPresentation = !showStandby,
-        pendingNowPlaying = null
+        awaitingAudioPresentation = !showStandby
     )
 
     fun withAudioStreamStopped(): TvOverlayState = clearAudioMetadata().copy(

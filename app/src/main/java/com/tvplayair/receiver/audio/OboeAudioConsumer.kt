@@ -105,7 +105,7 @@ class OboeAudioConsumer(context: Context) : AudioHandoffController {
     override fun stop() {
         Log.i(TAG, "stop(gen=$currentGenerationId)")
         active = false
-        cancelScheduledResume()
+        if (resumeScheduled) setPausedForExternalPlayer(false)
         nativeStop()
         abandonAudioFocus()
     }

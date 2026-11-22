@@ -88,6 +88,30 @@ class RtspAndRtpParserTest {
     }
 
     @Test
+    fun clearArtworkWithoutRtpTimeKeepsTrackAndRejectsRetiredSources() {
+        var visible: RaopNowPlaying? = null
+        val playback = RaopNowPlayingSession { visible = it }
+        val oldSource = Any()
+        val source = Any()
+        val track = RaopTrack("Current song", null, null)
+        val artwork = byteArrayOf(1)
+        playback.activate(oldSource)
+        playback.activate(source)
+        playback.track(source, 20L, track)
+        playback.artwork(source, 20L, artwork)
+
+        playback.artwork(oldSource, null, null)
+        playback.artwork(source, 19L, null)
+        assertArrayEquals(artwork, visible?.artwork)
+        playback.artwork(source, null, null)
+        assertNull(visible?.artwork)
+        assertEquals(track, visible?.track)
+
+        playback.artwork(source, 20L, artwork)
+        assertArrayEquals(artwork, visible?.artwork)
+    }
+
+    @Test
     fun parsesTrackFieldsAndRejectsTruncatedDmapRecords() {
         fun record(key: String, value: ByteArray) = ByteBuffer.allocate(8 + value.size)
             .put(key.toByteArray()).putInt(value.size).put(value).array()

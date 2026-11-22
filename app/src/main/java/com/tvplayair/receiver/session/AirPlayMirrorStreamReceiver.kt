@@ -3,6 +3,7 @@ package com.tvplayair.receiver.session
 import android.util.Log
 import com.tvplayair.receiver.video.MirrorFrameGate
 import java.io.BufferedInputStream
+import java.io.IOException
 import java.net.InetSocketAddress
 import java.net.ServerSocket
 import java.net.Socket
@@ -102,7 +103,8 @@ object AirPlayMirrorHeaderParser {
  */
 class AirPlayMirrorStreamReceiver(
     private val generationProvider: () -> Int,
-    private val onCodecConfigReady: (isHevc: Boolean, width: Int, height: Int, generationId: Int) -> Unit
+    private val onCodecConfigReady: (isHevc: Boolean, width: Int, height: Int, generationId: Int) -> Unit,
+    private val onStreamEnded: () -> Unit
 ) {
     companion object {
         private const val TAG = "AirPlayMirrorReceiver"
@@ -170,7 +172,7 @@ class AirPlayMirrorStreamReceiver(
             init(Cipher.DECRYPT_MODE, SecretKeySpec(key16, "AES"), IvParameterSpec(iv16))
         }
 
-    fun clearStreamCipher() {
+    private fun clearStreamCipher() {
         streamCipher = null
         candidateCiphers = emptyList()
     }
@@ -205,16 +207,24 @@ class AirPlayMirrorStreamReceiver(
             runCatching { it.join(500L) }
         }
         acceptThread = null
+        clearStreamCipher()
     }
 
     private fun acceptLoop(socket: ServerSocket) {
-        while (running.get()) {
-            val client = runCatching { socket.accept() }.getOrNull() ?: continue
-            handleMirrorClient(client)
+        while (!socket.isClosed) {
+            val client = runCatching { socket.accept() }.getOrNull() ?: break
+            var configPublished = false
+            try {
+                handleMirrorClient(client) { configPublished = true }
+            } catch (error: IOException) {
+                Log.i(TAG, "Mirror TCP connection ended (${error.javaClass.simpleName})")
+            } finally {
+                if (configPublished && !socket.isClosed) onStreamEnded()
+            }
         }
     }
 
-    private fun handleMirrorClient(client: Socket) {
+    private fun handleMirrorClient(client: Socket, onConfigPublished: () -> Unit) {
         var packetCount = 0L
         var streamIsHevc: Boolean? = null
         var streamWidth = 0
@@ -273,6 +283,7 @@ class AirPlayMirrorStreamReceiver(
                         streamIsHevc = isHevc
                         streamWidth = header.width
                         streamHeight = header.height
+                        onConfigPublished()
                         onCodecConfigReady(isHevc, streamWidth, streamHeight, generationId)
                     }
                 } else if (writeRes != NativeSharedMemory.VIDEO_WRITE_OK &&

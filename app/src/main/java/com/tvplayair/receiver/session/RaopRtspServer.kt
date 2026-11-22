@@ -60,7 +60,6 @@ internal class RaopRtspServer(
 
     private val running = AtomicBoolean(false)
     private val generationId = sharedGenerationId
-    private val activeSessions = AtomicInteger(0)
     private val nowPlaying = RaopNowPlayingSession(listener::onNowPlaying)
     private val audioReceiver = RaopAudioRtpReceiver { generationId.get() }
     private val timingAndEventServers = AirPlayTimingAndEventServers()
@@ -140,7 +139,6 @@ internal class RaopRtspServer(
     ) {
         val peer = socket.inetAddress?.hostAddress ?: "unknown"
         val source = crypto
-        activeSessions.incrementAndGet()
         try {
             socket.soTimeout = CLIENT_SO_TIMEOUT_MS
             val output = socket.getOutputStream()
@@ -195,7 +193,6 @@ internal class RaopRtspServer(
                 nowPlaying.clear(source)
                 stopAudioStream()
             }
-            activeSessions.decrementAndGet()
         }
     }
 
@@ -347,9 +344,10 @@ internal class RaopRtspServer(
                     "application/x-dmap-tagged" -> RaopMetadataParser.track(request.body)?.let {
                         nowPlaying.track(source, timestamp, it, remoteFor(request))
                     }
-                    "image/jpeg", "image/png" -> {
-                        nowPlaying.artwork(source, timestamp, artworkThumbnail(request.body))
+                    "image/jpeg", "image/png" -> artworkThumbnail(request.body)?.let {
+                        nowPlaying.artwork(source, timestamp, it)
                     }
+                    "image/none" -> nowPlaying.artwork(source, timestamp, null)
                     "text/parameters", null -> updateVolume(request.body)
                 }
                 output.write(RtspMessageParser.formatResponse(200, "OK", cseq))
@@ -362,10 +360,6 @@ internal class RaopRtspServer(
                 output.write(RtspMessageParser.formatResponse(200, "OK", cseq))
             }
             "TEARDOWN" -> {
-                if (activeSessions.get() <= 1) {
-                    mirrorReceiver?.clearStreamCipher()
-                    listener.onClientDisconnected()
-                }
                 output.write(RtspMessageParser.formatResponse(200, "OK", cseq))
                 output.flush()
                 return false

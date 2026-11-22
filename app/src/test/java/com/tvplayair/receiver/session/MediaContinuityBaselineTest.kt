@@ -70,6 +70,22 @@ class MediaContinuityBaselineTest {
         }
     }
 
+    @Test
+    fun mirrorExitAndAudioFlushPreserveOnlyCurrentAudioMetadata() {
+        val receiver = Receiver()
+        receiver.startAudio(receiver.musicSource, "Previous music")
+        receiver.startMirror()
+        receiver.startAudio(Any(), "Current music")
+
+        // FLUSH invalidates queued PCM, while the same source still owns its metadata.
+        receiver.resetAudioBuffer()
+        receiver.coordinator.onMirrorDisconnected()
+        receiver.syncPresentation()
+        assertTrue(receiver.overlay.showingAudio)
+        assertEquals("Current music", receiver.overlay.nowPlaying?.track?.title)
+        assertTrue(receiver.overlay.nowPlaying?.artwork?.contentEquals(byteArrayOf(1)) == true)
+    }
+
     private class Receiver {
         val musicSource = Any()
         private val mirrorSource = Any()
@@ -82,10 +98,13 @@ class MediaContinuityBaselineTest {
         val coordinator = VideoPresentationCoordinator(engines, engines, engines, engines)
 
         fun startAudio(source: Any, title: String) {
-            overlay = overlay.withAudioStreamStarted()
-            metadata.activate(source)
+            metadata.activate(source) { resetAudioBuffer() }
             metadata.track(source, 100L, RaopTrack(title, null, null))
             metadata.artwork(source, 100L, byteArrayOf(1))
+        }
+
+        fun resetAudioBuffer() {
+            overlay = overlay.withAudioStreamStarted()
         }
 
         fun startMirror() {

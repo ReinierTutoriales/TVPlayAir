@@ -318,12 +318,11 @@ class MainActivity : ComponentActivity(), SurfaceLayerController {
                 overlayState = overlayState.copy(connectedClient = clientName)
             }
 
-            override fun onClientDisconnected() {
+            override fun onMirrorStreamEnded() {
                 mirrorRequested = false
-                overlayState = overlayState.clearAudioMetadata().copy(
-                    connectedClient = null, audioProjectionActive = false, audioControlsAvailable = false
-                )
-                audioConsumer.stop()
+                if (!overlayState.audioProjectionActive) {
+                    overlayState = overlayState.copy(connectedClient = null)
+                }
                 presentationCoordinator.onMirrorDisconnected()
                 syncPresentationState()
             }

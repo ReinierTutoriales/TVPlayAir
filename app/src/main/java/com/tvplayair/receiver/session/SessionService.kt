@@ -128,13 +128,10 @@ class SessionService : Service() {
             }
         }
 
-        override fun onClientDisconnected() {
+        override fun onMirrorStreamEnded() {
             synchronized(callbackLock) {
-                dacpController.onClientDisconnected()
                 latestMirrorConfig = null
-                latestNowPlaying = null
-                activeAudioGeneration = null
-                runCatching { callback?.onClientDisconnected() }
+                runCatching { callback?.onMirrorStreamEnded() }
             }
         }
 
@@ -203,9 +200,9 @@ class SessionService : Service() {
                     videoCopy.close()
                 }
                 callback = cb
+                activeAudioGeneration?.let { runCatching { cb.onAudioStreamStarted(it) } }
                 sendNowPlaying(cb, latestNowPlaying)
                 sendAudioControlsAvailability(cb)
-                activeAudioGeneration?.let { runCatching { cb.onAudioStreamStarted(it) } }
                 latestMirrorConfig?.let { config -> runCatching { config.sendTo(cb, isSnapshot = true) } }
                 directPlayback?.let { video -> runCatching { cb.showDirectVideo(video) } }
             }
