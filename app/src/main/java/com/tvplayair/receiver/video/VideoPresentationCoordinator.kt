@@ -24,6 +24,7 @@ data class DirectPlaybackTelemetry(
 
 interface AudioHandoffController {
     fun setPausedForExternalPlayer(paused: Boolean)
+    fun resumeAfterSenderStop() = setPausedForExternalPlayer(false)
     fun stop()
 }
 
@@ -88,9 +89,9 @@ class VideoPresentationCoordinator(
     fun onDirectStartupTimeout(playbackId: Long): Boolean =
         state == PresentationState.SWITCHING_TO_DIRECT && finishDirectPlayback(playbackId)
 
-    fun finishDirectPlayback(playbackId: Long): Boolean {
+    fun finishDirectPlayback(playbackId: Long, senderStop: Boolean = false): Boolean {
         if (!hasDirectPlayback || directPlaybackId != playbackId) return false
-        restoreAfterDirect()
+        restoreAfterDirect(senderStop)
         return true
     }
 
@@ -131,11 +132,11 @@ class VideoPresentationCoordinator(
         restoreAfterDirect()
     }
 
-    private fun restoreAfterDirect() {
+    private fun restoreAfterDirect(senderStop: Boolean = false) {
         if (resumeMirrorAfterDirect && state != PresentationState.DIRECT_WITHOUT_SURFACE) {
             switchToMirror()
         } else {
-            returnToStandbyFromDirect()
+            returnToStandbyFromDirect(senderStop)
         }
     }
 
@@ -151,12 +152,13 @@ class VideoPresentationCoordinator(
         return started
     }
 
-    private fun returnToStandbyFromDirect() {
+    private fun returnToStandbyFromDirect(senderStop: Boolean) {
         resumeMirrorAfterDirect = false
         directPlaybackId = null
         state = PresentationState.IDLE
         directEngine.stopAndClear()
-        audioController.setPausedForExternalPlayer(false)
+        if (senderStop) audioController.resumeAfterSenderStop()
+        else audioController.setPausedForExternalPlayer(false)
         surfaceController.hideAllSurfaces()
     }
 

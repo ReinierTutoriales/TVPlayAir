@@ -9,6 +9,32 @@ import org.junit.Test
 class VideoPresentationCoordinatorTest {
 
     @Test
+    fun senderStopDefersAudioAndTheNextVideoCancelsTheResumeBeforePreparing() {
+        val events = mutableListOf<String>()
+        val coordinator = VideoPresentationCoordinator(
+            FakeMirrorEngine(events), FakeDirectEngine(events),
+            FakeAudioController(events), FakeSurfaceController(events)
+        )
+        val first = DirectPlaybackStart("https://example.com/first", 0.0, playbackId = 1)
+        val second = DirectPlaybackStart("https://example.com/second", 0.0, playbackId = 2)
+        assertTrue(coordinator.switchToDirectVideo(first))
+        events.clear()
+
+        assertTrue(coordinator.finishDirectPlayback(1, senderStop = true))
+        assertEquals(PresentationState.IDLE, coordinator.state)
+        assertEquals(
+            listOf("direct.stopAndClear", "audio.resumeAfterSenderStop", "surface.hideAll"),
+            events
+        )
+        events.clear()
+
+        assertTrue(coordinator.switchToDirectVideo(second))
+        assertEquals("audio.pausedForExternal(true)", events.first())
+        assertFalse(coordinator.finishDirectPlayback(1, senderStop = true))
+        assertEquals(PresentationState.SWITCHING_TO_DIRECT, coordinator.state)
+    }
+
+    @Test
     fun resolvesAirPlayStartFractionOnlyAfterDurationIsKnown() {
         assertNull(initialDirectPositionMs(0.25, durationMs = 0L))
         assertEquals(30_000L, initialDirectPositionMs(0.25, durationMs = 120_000L))
@@ -146,6 +172,10 @@ class VideoPresentationCoordinatorTest {
     ) : AudioHandoffController {
         override fun setPausedForExternalPlayer(paused: Boolean) {
             events += "audio.pausedForExternal($paused)"
+        }
+
+        override fun resumeAfterSenderStop() {
+            events += "audio.resumeAfterSenderStop"
         }
 
         override fun stop() {

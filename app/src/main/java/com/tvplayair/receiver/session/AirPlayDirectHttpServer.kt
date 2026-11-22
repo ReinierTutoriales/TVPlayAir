@@ -274,9 +274,7 @@ class AirPlayDirectHttpServer(
                     ?: break
                 val firstAckLine = acknowledgement.substringBefore("\r\n")
                 Log.i(TAG, "<- /reverse ack: $firstAckLine")
-                val status = firstAckLine.split(' ')
-                val protoOk = status.getOrNull(0) == "HTTP/1.1" || status.getOrNull(0) == "RTSP/1.0"
-                if (!protoOk || status.getOrNull(1) != "200") break
+                if (!isAirPlayReverseAck(firstAckLine)) break
                 val ackLen = acknowledgement.lineSequence()
                     .firstOrNull { it.startsWith("Content-Length:", ignoreCase = true) }
                     ?.substringAfter(':')
@@ -738,4 +736,13 @@ internal fun readAirPlayHttpHeader(
         if (matched == 4) return out.toByteArray()
     }
     return null
+}
+
+
+internal fun isAirPlayReverseAck(statusLine: String): Boolean {
+    val fields = statusLine.split(' ', limit = 3)
+    return fields.getOrNull(1) == "200" && when (fields.first()) {
+        "HTTP/1.1", "RTSP/1.0", "EVENT/1.0" -> true
+        else -> false
+    }
 }

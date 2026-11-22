@@ -194,3 +194,11 @@ Captura de `483aeb5` entre 21:46:53 y 21:48:55. Los manifiestos HLS mostrados re
 El Run #185 registra aperturas y negociaciones de control distintas durante cambios sucesivos de plataforma. Esto no implica que el usuario reprodujera dos fuentes simultáneamente. Antes, una negociación posterior podía sobrescribir el estado de la previa porque Pair Verify, FairPlay, la clave de audio y el IV eran globales. Ahora se conservan por conexión, incluso cuando cambia el protocolo del mismo socket. Sigue compartida la identidad pública del receptor.
 
 Un nuevo `SETUP` de audio abre una generación y limpia la carátula y el reloj de metadatos aunque reutilice la misma conexión. `RECORD` mantiene la generación existente. Cubren estos casos las pruebas de Pair Verify intercalado, el reinicio aislado de FairPlay y el nuevo `SETUP` sobre la misma conexión. La validación en el TV debe comprobar audio válido y carátula vigente al alternar app de música, vídeo web, vídeo HLS y duplicación.
+
+### Run #190 — Siguiente desde la pantalla de bloqueo
+
+En `d84a8b6`, después de un `/stop`, el iPhone confirmó un evento inverso con `EVENT/1.0 200 OK`. El receptor aceptaba únicamente las variantes HTTP y RTSP y cerraba el canal ante esta respuesta. Ahora acepta la confirmación observada y sigue rechazando estados distintos de 200 o protocolos desconocidos.
+
+El mismo registro muestra `/stop` seguido de un `/play` a los 598 y 712 ms. TVPlayAir reabría Oboe en ese intervalo y lo cerraba antes de preparar el siguiente vídeo. Para un `/stop` del emisor que retorna a reposo, el receptor aplaza hasta 850 ms la reapertura del audio previo. Un vídeo nuevo cancela la reapertura y un inicio RAOP notificado la adelanta. La duplicación y el fin natural del vídeo mantienen su transición habitual.
+
+La parada del emisor se respeta. En el tramo final de la captura no se observa una orden posterior de reproducción, y los avisos del HAL no demuestran un fallo del canal de control.
