@@ -58,6 +58,20 @@ class TvOverlayStateTest {
     }
 
     @Test
+    fun incomingVideoClosesSettingsAndDropsTheOutgoingArtwork() {
+        val audio = TvOverlayState(visible = true, audioProjectionActive = true)
+            .withNowPlaying(RaopNowPlaying(RaopTrack("Anterior", null, null), byteArrayOf(1)))
+
+        for (state in listOf(PresentationState.SWITCHING_TO_DIRECT, PresentationState.MIRROR_ACTIVE)) {
+            val incoming = audio.withPresentation(state)
+            assertFalse(incoming.visible)
+            assertFalse(incoming.showingAudio)
+            assertNull(incoming.nowPlaying)
+            assertTrue(incoming.copy(visible = true).withPresentation(state).visible)
+        }
+    }
+
+    @Test
     fun freshAudioMetadataSurvivesVideoToAudioHandoff() {
         val old = RaopNowPlaying(RaopTrack("Anterior", null, null), byteArrayOf(1))
         val artwork = byteArrayOf(2)

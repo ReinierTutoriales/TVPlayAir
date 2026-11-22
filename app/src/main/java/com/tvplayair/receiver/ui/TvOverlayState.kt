@@ -22,6 +22,7 @@ data class TvOverlayState(
     val receiverName: String = "TVPlayAir",
     val projectionHome: Boolean = false,
     val audioProjectionActive: Boolean = false,
+    val audioControlsAvailable: Boolean = false,
     val nowPlaying: RaopNowPlaying? = null,
     val videoControls: DirectPlaybackTelemetry? = null,
     private val awaitingAudioPresentation: Boolean = false,
@@ -43,7 +44,13 @@ data class TvOverlayState(
 
     fun withPresentation(state: PresentationState): TvOverlayState {
         val showAudio = state == PresentationState.IDLE || state == PresentationState.RECOVERING
+        val enteringVideo = state != presentationState &&
+            (state == PresentationState.SWITCHING_TO_DIRECT ||
+                state == PresentationState.SWITCHING_TO_MIRROR ||
+                state == PresentationState.MIRROR_ACTIVE ||
+                state == PresentationState.DIRECT_ACTIVE && showStandby)
         return copy(
+            visible = visible && !enteringVideo,
             presentationState = state,
             nowPlaying = if (showAudio) pendingNowPlaying ?: nowPlaying else null,
             videoControls = videoControls.takeIf { state == PresentationState.DIRECT_ACTIVE },

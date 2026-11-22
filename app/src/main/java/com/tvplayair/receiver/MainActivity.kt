@@ -78,6 +78,7 @@ class MainActivity : ComponentActivity(), SurfaceLayerController {
     private var overlayState by mutableStateOf(TvOverlayState())
 
     private val mainHandler = Handler(Looper.getMainLooper())
+    private var pendingVideoSelect: Pair<Long, Long>? = null
     private val hideVideoControls = Runnable { dismissVideoControls() }
     private val closeOverlayOnBack = object : OnBackPressedCallback(false) {
         override fun handleOnBackPressed() {
@@ -142,6 +143,9 @@ class MainActivity : ComponentActivity(), SurfaceLayerController {
                         onToggleHevc = ::toggleHevcSetting,
                         onAdjustAudioOffset = ::adjustAudioOffset,
                         onAudioCommand = { sessionConnection.sendDacpCommand(it.wirePath) },
+                        onVideoToggle = ::toggleVideoFromControls,
+                        onVideoSeek = ::seekVideoFromControls,
+                        onVideoInteraction = ::refreshVideoControlsTimeout,
                         onDismiss = { setOverlayVisible(false) }
                     )
                 }
@@ -252,6 +256,7 @@ class MainActivity : ComponentActivity(), SurfaceLayerController {
                 overlayState = overlayState.clearAudioMetadata().copy(
                     connectedClient = null,
                     audioProjectionActive = false,
+                    audioControlsAvailable = false,
                     presentationState = presentationCoordinator.state
                 )
                 updateScreenWake()
@@ -316,7 +321,7 @@ class MainActivity : ComponentActivity(), SurfaceLayerController {
             override fun onClientDisconnected() {
                 mirrorRequested = false
                 overlayState = overlayState.clearAudioMetadata().copy(
-                    connectedClient = null, audioProjectionActive = false
+                    connectedClient = null, audioProjectionActive = false, audioControlsAvailable = false
                 )
                 audioConsumer.stop()
                 presentationCoordinator.onMirrorDisconnected()
@@ -331,6 +336,10 @@ class MainActivity : ComponentActivity(), SurfaceLayerController {
                 if (sharedMemoryReady) {
                     audioConsumer.start(generationId)
                 }
+            }
+
+            override fun onAudioControlsAvailable(available: Boolean) {
+                overlayState = overlayState.copy(audioControlsAvailable = available)
             }
 
             override fun onNowPlaying(metadata: RaopNowPlaying?) {
@@ -405,7 +414,10 @@ class MainActivity : ComponentActivity(), SurfaceLayerController {
         if (overlayState.visible) return super.onKeyDown(keyCode, event)
 
         val inDirectMode = presentationCoordinator.hasDirectPlayback
-        if (presentationCoordinator.state == PresentationState.DIRECT_ACTIVE && handleDirectVideoKey(keyCode, event?.repeatCount ?: 0)) return true
+        if (presentationCoordinator.state == PresentationState.DIRECT_ACTIVE &&
+            !overlayState.showingVideoControls &&
+            handleHiddenVideoControlsKey(keyCode, event)
+        ) return true
         when (keyCode) {
             KeyEvent.KEYCODE_MEDIA_PLAY_PAUSE -> {
                 if (inDirectMode) {
@@ -481,26 +493,52 @@ class MainActivity : ComponentActivity(), SurfaceLayerController {
         return super.onKeyDown(keyCode, event)
     }
 
-    private fun handleDirectVideoKey(keyCode: Int, repeatCount: Int): Boolean {
+    private fun handleHiddenVideoControlsKey(keyCode: Int, event: KeyEvent?): Boolean {
         when {
-            isSelectKey(keyCode) -> if (repeatCount == 0) {
-                setDirectPlaybackIntent("toggle")
+            isSelectKey(keyCode) -> {
+                if (event?.repeatCount == 0) {
+                    event.startTracking()
+                    pendingVideoSelect = event.downTime to directPlaybackId
+                }
+                return true
             }
-            keyCode == KeyEvent.KEYCODE_DPAD_LEFT -> if (repeatCount == 0) seekVideoBy(-10.0)
-            keyCode == KeyEvent.KEYCODE_DPAD_RIGHT -> if (repeatCount == 0) seekVideoBy(10.0)
+            keyCode == KeyEvent.KEYCODE_DPAD_LEFT -> if (event?.repeatCount == 0) seekVideoBy(-10.0)
+            keyCode == KeyEvent.KEYCODE_DPAD_RIGHT -> if (event?.repeatCount == 0) seekVideoBy(10.0)
             keyCode == KeyEvent.KEYCODE_DPAD_UP || keyCode == KeyEvent.KEYCODE_DPAD_DOWN -> Unit
             else -> return false
         }
-        mainHandler.removeCallbacks(hideVideoControls)
-        overlayState = overlayState.copy(videoControls = presentationCoordinator.directTelemetry())
-        closeOverlayOnBack.isEnabled = true
-        mainHandler.postDelayed(hideVideoControls, 4_000L)
+        showVideoControls()
         return true
     }
 
+    private fun showVideoControls() {
+        overlayState = overlayState.copy(videoControls = presentationCoordinator.directTelemetry())
+        closeOverlayOnBack.isEnabled = true
+        refreshVideoControlsTimeout()
+    }
+
+    private fun refreshVideoControlsTimeout() {
+        if (!overlayState.showingVideoControls) return
+        mainHandler.removeCallbacks(hideVideoControls)
+        mainHandler.postDelayed(hideVideoControls, 5_000L)
+    }
+
+    private fun toggleVideoFromControls() {
+        if (!overlayState.showingVideoControls) return
+        setDirectPlaybackIntent("toggle")
+        refreshVideoControlsTimeout()
+    }
+
+    private fun seekVideoFromControls(deltaSec: Double) {
+        if (!overlayState.showingVideoControls) return
+        seekVideoBy(deltaSec)
+        refreshVideoControlsTimeout()
+    }
+
     private fun seekVideoBy(deltaSec: Double) {
-        val pos = presentationCoordinator.directTelemetry().positionSec
-        presentationCoordinator.seekDirect((pos + deltaSec).coerceAtLeast(0.0))
+        val telemetry = presentationCoordinator.directTelemetry()
+        if (!telemetry.canSeek) return
+        presentationCoordinator.seekDirect((telemetry.positionSec + deltaSec).coerceAtLeast(0.0))
     }
 
     private fun dismissVideoControls() {
@@ -514,6 +552,17 @@ class MainActivity : ComponentActivity(), SurfaceLayerController {
     }
 
     override fun onKeyUp(keyCode: Int, event: KeyEvent?): Boolean {
+        val pendingSelect = pendingVideoSelect
+        if (event != null && isSelectKey(keyCode) && pendingSelect?.first == event.downTime) {
+            pendingVideoSelect = null
+            if (!event.isCanceled && !overlayState.visible && pendingSelect.second == directPlaybackId &&
+                presentationCoordinator.state == PresentationState.DIRECT_ACTIVE
+            ) {
+                setDirectPlaybackIntent("toggle")
+                showVideoControls()
+            }
+            return true
+        }
         if (event?.isTracking == true && (isSettingsKey(keyCode) || isSelectKey(keyCode))) {
             if (!event.isCanceled) {
                 setOverlayVisible(!isSettingsKey(keyCode) || !overlayState.visible)
@@ -586,7 +635,7 @@ class MainActivity : ComponentActivity(), SurfaceLayerController {
         if (video.url.isBlank() || !video.airPlayPosition.isFinite() || id == 0L) return false
         if (directPlaybackId == id && presentationCoordinator.hasDirectPlayback) return true
         dismissVideoControls()
-        overlayState = overlayState.clearAudioMetadata()
+        overlayState = overlayState.clearAudioMetadata().copy(visible = false)
         cancelDirectStartupTimeout()
         if (directPlaybackId < 0L) {
             if (id > 0L) releaseCastPlayback() else castReceiver?.attachSession(null)
@@ -749,8 +798,8 @@ class MainActivity : ComponentActivity(), SurfaceLayerController {
                 scheduleDirectStartupTimeout(directPlaybackId)
                 syncPresentationState()
             }
-            if (!isDirectSurface && sharedMemoryReady && mirrorRequested) {
-                presentationCoordinator.startMirror()
+            if (!isDirectSurface && sharedMemoryReady && mirrorRequested && !awaitingDirectSnapshot) {
+                presentationCoordinator.onMirrorSurfaceCreated()
                 syncPresentationState()
             }
         }

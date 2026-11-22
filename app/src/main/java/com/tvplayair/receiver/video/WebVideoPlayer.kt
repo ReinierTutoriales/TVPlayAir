@@ -135,6 +135,10 @@ class WebVideoPlayer(context: Context) : DirectVideoEngine {
             if (playbackState == Player.STATE_ENDED) notifyPlaybackFinished()
         }
 
+        override fun onPlayWhenReadyChanged(playWhenReady: Boolean, reason: Int) {
+            viewCallbacks?.onTelemetryChanged(currentTelemetry())
+        }
+
         override fun onIsPlayingChanged(isPlaying: Boolean) {
             Log.i(TAG, "ExoPlayer isPlaying=$isPlaying")
             viewCallbacks?.onTelemetryChanged(currentTelemetry())
@@ -173,6 +177,7 @@ class WebVideoPlayer(context: Context) : DirectVideoEngine {
 
         val mediaSourceFactory = DefaultMediaSourceFactory(appContext)
             .setDataSourceFactory(httpDataSourceFactory)
+            .setLoadErrorHandlingPolicy(FcupLoadErrorHandlingPolicy())
 
         val audioAttributes = AudioAttributes.Builder()
             .setUsage(C.USAGE_MEDIA)
@@ -367,7 +372,8 @@ class WebVideoPlayer(context: Context) : DirectVideoEngine {
             title = if (hasCurrentItem) exo.mediaMetadata.title?.toString()?.trim()?.takeIf(String::isNotEmpty)
                 else null,
             canSeek = hasCurrentItem && exo.isCurrentMediaItemSeekable &&
-                exo.isCommandAvailable(Player.COMMAND_SEEK_IN_CURRENT_MEDIA_ITEM)
+                exo.isCommandAvailable(Player.COMMAND_SEEK_IN_CURRENT_MEDIA_ITEM),
+            playWhenReady = hasCurrentItem && exo.playWhenReady
         )
     }
 

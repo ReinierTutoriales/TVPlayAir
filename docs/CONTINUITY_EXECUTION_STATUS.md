@@ -163,3 +163,34 @@ El emisor sigue soportando iPhone y iPad desde iOS 16. Para validar este comport
 - La captura de `d5de9bc` registró vídeo directo reproduciendo y un primer fotograma de espejo. Los 51 705 frames RAOP del tramo ALAC eran frames contabilizados al escribir en memoria compartida. Ese contador mezclaba fallos de selección de clave, errores de decodificación y rechazos del anillo.
 - Un paquete inicial sin cabecera ALAC válida podía cerrar la selección de clave con `idx=-1` o aceptar una cabecera de otro códec. ALAC mantiene la selección pendiente hasta observar una cabecera compatible. El log distingue paquetes ALAC sin coincidencia, fallos del decodificador y frames PCM producidos, encolados y rechazados.
 - La prueba JVM cifra un paquete inicial con cabecera de AAC y después una cabecera ALAC con la clave alternativa. Comprueba que el primero deja la selección abierta y que el segundo selecciona la clave correcta. Falta contrastar estos contadores con una sesión real y medir el desfase en un clip con destello y pulso de audio sincronizados. Los contadores globales de AudioFlinger y las correcciones de timestamp por sí solos no cuantifican ese desfase.
+
+## Run #182 — Safari, HLS y retorno a RAOP
+
+Base de la captura: `5599b25`. Esta revisión se apoya en los extractos de ADB compartidos. Los archivos completos permanecen en el equipo donde se capturaron.
+
+| Evento observado | Tratamiento en TVPlayAir |
+|---|---|
+| Safari bloqueado: `/rate=0` → `playlistRemove` → `/stop` | Respetar el cierre explícito del video AirPlay. Si el emisor activa RAOP después, tratarlo como audio entrante. Evitar presentar la carátula o declarar audio activo únicamente porque Oboe volvió a abrirse. |
+| HLS se detuvo tras un `504` del proxy al cargar la variante `itag/270` | La política de carga de Media3 1.11.1 ahora puede excluir temporalmente un manifiesto FCUP con `504` y elegir una variante elegible. Con una sola variante se conserva el reintento predeterminado. El cambio se limita a los manifiestos del proxy local. |
+| SETUP + FLUSH sobre RTSP reutilizado: 5.179 paquetes ALAC sin coincidencia y cero PCM | El servidor comparte el estado de emparejamiento, la clave FairPlay y el IV. Este alcance es un candidato al fallo. Aislar el contexto de negociación por sesión y vincular la configuración del decodificador a la generación del flujo requiere reproducir la reutilización, incluidos los paquetes en tránsito. La prueba debe verificar el primer PCM de la generación nueva y una salida acotada cuando falla. |
+| Realtek rechaza MMAP y luego abre Oboe en modo compartido | El tramo con `pcmProduced=0` se produce antes de la salida de audio. Evaluar el HAL y el sincronismo HDMI por separado con PCM válido. |
+
+La configuración pública de Apple para reproducir con el iPhone bloqueado se aplica a la app iOS que posee la sesión de audio. Para fuentes compatibles que deban seguir sin Safari, la ruta de producto es un envío explícito que transfiera al TV un medio reproducible de forma autónoma. Debe quedar separado de AirPlay convencional, que respeta el `/stop` del emisor.
+
+Fuentes: [Apple AVFoundation](https://developer.apple.com/documentation/avfoundation/configuring-your-app-for-media-playback) · [Interrupciones de audio en iOS](https://developer.apple.com/documentation/avfaudio/handling-audio-interruptions) · [Política de carga de Media3](https://developer.android.com/reference/androidx/media3/exoplayer/upstream/LoadErrorHandlingPolicy) · [Implementación de Media3 1.11.1](https://github.com/androidx/media/blob/1.11.1/libraries/exoplayer/src/main/java/androidx/media3/exoplayer/upstream/DefaultLoadErrorHandlingPolicy.java).
+
+Validación en TV pendiente: Safari con y sin una app de música previa, `/stop` explícito del usuario, cambio ABR con un manifiesto fallido y retorno a ALAC sobre la misma conexión RTSP. Correlacionar el primer PCM válido, el primer frame y la identidad de la carátula con la generación activa.
+
+## Run #185 — diagnóstico en onn. 4K
+
+Captura de `483aeb5` entre 21:46:53 y 21:48:55. Los manifiestos HLS mostrados respondieron `200` y el último vídeo seguía activo al terminar el extracto. Esto verifica reproducción en ese tramo. No se reprodujo el `504` ni aparecen muestras de PCM que permitan dar por cerrado el silencio ALAC del Run #182.
+
+- Dos sockets locales expiraron unos 30 segundos después de servir sus manifiestos. El lector HTTP cierra el keep-alive FCUP sin registro de fallo si todavía no ha llegado ningún byte de la siguiente petición. Los timeouts de cabeceras parciales, del canal inverso y de la entrega del manifiesto conservan su tratamiento.
+- El diagnóstico HTTP conserva tamaños, identificador FCUP y estados. Omite las URL firmadas, las consultas completas y el contenido de los manifiestos o plists.
+- El primer frame de duplicación llegó 327 ms después de configurar el decoder. `lowLatency=false` y los avisos de fences no miden el desfase audiovisual. Los 97,47 ms corresponden a la estadística de escritura de AudioFlinger en HDMI, y los contadores acumulados requieren una captura antes/después para atribuir incrementos a TVPlayAir. Tampoco se puede cuantificar el desfase con esos datos. Medirlo requiere un estímulo audiovisual común y comparar su salida física de imagen y audio.
+
+### Cambios de app y formato sobre conexiones reutilizadas
+
+El Run #185 registra aperturas y negociaciones de control distintas durante cambios sucesivos de plataforma. Esto no implica que el usuario reprodujera dos fuentes simultáneamente. Antes, una negociación posterior podía sobrescribir el estado de la previa porque Pair Verify, FairPlay, la clave de audio y el IV eran globales. Ahora se conservan por conexión, incluso cuando cambia el protocolo del mismo socket. Sigue compartida la identidad pública del receptor.
+
+Un nuevo `SETUP` de audio abre una generación y limpia la carátula y el reloj de metadatos aunque reutilice la misma conexión. `RECORD` mantiene la generación existente. Cubren estos casos las pruebas de Pair Verify intercalado, el reinicio aislado de FairPlay y el nuevo `SETUP` sobre la misma conexión. La validación en el TV debe comprobar audio válido y carátula vigente al alternar app de música, vídeo web, vídeo HLS y duplicación.

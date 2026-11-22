@@ -73,7 +73,10 @@ object DacpRequestBuilder {
  * Resolves the Apple device's _dacp._tcp service (iTunes_Ctrl_<DACP-ID>) and sends
  * HTTP GET /ctrl-int/1/<command> with the Active-Remote header.
  */
-class DacpController(context: Context) {
+class DacpController(
+    context: Context,
+    private val onAvailabilityChanged: () -> Unit = {}
+) {
     companion object {
         private const val TAG = "DacpController"
         private const val CONNECT_TIMEOUT_MS = 2_000
@@ -109,8 +112,7 @@ class DacpController(context: Context) {
         stopDiscovery()
         targetServiceName = expectedName
         activeRemoteToken = activeRemote
-        resolvedHost = null
-        resolvedPort = -1
+        setResolvedEndpoint(null, -1)
         startDiscovery()
     }
 
@@ -120,8 +122,7 @@ class DacpController(context: Context) {
         stopDiscovery()
         targetServiceName = null
         activeRemoteToken = null
-        resolvedHost = null
-        resolvedPort = -1
+        setResolvedEndpoint(null, -1)
     }
 
     @Synchronized
@@ -183,8 +184,7 @@ class DacpController(context: Context) {
             override fun onServiceLost(serviceInfo: NsdServiceInfo) {
                 synchronized(this@DacpController) {
                     if (generation == targetGeneration && serviceInfo.serviceName.equals(targetServiceName, true)) {
-                        resolvedHost = null
-                        resolvedPort = -1
+                        setResolvedEndpoint(null, -1)
                     }
                 }
             }
@@ -213,8 +213,7 @@ class DacpController(context: Context) {
                     val addr: InetAddress = info.host ?: return
                     synchronized(this@DacpController) {
                         if (generation != targetGeneration) return
-                        resolvedHost = addr.hostAddress
-                        resolvedPort = info.port
+                        setResolvedEndpoint(addr.hostAddress, info.port)
                     }
                     Log.i(
                         TAG,
@@ -229,6 +228,16 @@ class DacpController(context: Context) {
                 }
             })
         }
+    }
+
+    @Synchronized
+    fun canSendCommands(): Boolean = resolvedHost != null && resolvedPort in 1..65535
+
+    private fun setResolvedEndpoint(host: String?, port: Int) {
+        val available = canSendCommands()
+        resolvedHost = host
+        resolvedPort = port
+        if (available != canSendCommands()) onAvailabilityChanged()
     }
 
     private fun stopDiscovery() {

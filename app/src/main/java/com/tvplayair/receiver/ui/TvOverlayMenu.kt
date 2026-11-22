@@ -25,6 +25,9 @@ import androidx.compose.ui.focus.FocusRequester
 import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.input.key.KeyEventType
+import androidx.compose.ui.input.key.onPreviewKeyEvent
+import androidx.compose.ui.input.key.type
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
@@ -52,14 +55,17 @@ fun TvOverlayMenu(
     onToggleHevc: () -> Unit,
     onAdjustAudioOffset: (Int) -> Unit,
     onAudioCommand: (DacpCommand) -> Unit,
+    onVideoToggle: () -> Unit,
+    onVideoSeek: (Double) -> Unit,
+    onVideoInteraction: () -> Unit,
     onDismiss: () -> Unit
 ) {
     if (!state.visible) {
         if (state.showingVideoControls) {
-            state.videoControls?.let { TvVideoControls(it) }
+            state.videoControls?.let { TvVideoControls(it, onVideoToggle, onVideoSeek, onVideoInteraction) }
         } else if (state.showStandby) {
             if (state.showingAudio) {
-                TvNowPlayingScreen(state.nowPlaying, onAudioCommand)
+                TvNowPlayingScreen(state.nowPlaying, state.audioControlsAvailable, onAudioCommand)
             } else if (!state.projectionHome) {
                 TvStandbyScreen(state, onOpenMenu)
             }
@@ -121,14 +127,22 @@ fun TvOverlayMenu(
 }
 
 @Composable
-private fun TvVideoControls(telemetry: DirectPlaybackTelemetry) {
+private fun TvVideoControls(
+    telemetry: DirectPlaybackTelemetry,
+    onToggle: () -> Unit,
+    onSeek: (Double) -> Unit,
+    onInteraction: () -> Unit
+) {
+    val playFocus = remember { FocusRequester() }
+    LaunchedEffect(telemetry.canSeek) { playFocus.requestFocus() }
     val hasDuration = telemetry.durationSec.isFinite() && telemetry.durationSec > 0.0
-    val status = when {
-        telemetry.isBuffering -> R.string.video_loading
-        telemetry.isPlaying -> R.string.video_pause_hint
-        else -> R.string.video_play_hint
-    }
-    Box(Modifier.fillMaxSize(), contentAlignment = Alignment.BottomCenter) {
+    Box(
+        Modifier.fillMaxSize().onPreviewKeyEvent {
+            if (it.type == KeyEventType.KeyDown) onInteraction()
+            false
+        },
+        contentAlignment = Alignment.BottomCenter
+    ) {
         Column(
             modifier = Modifier.fillMaxWidth()
                 .background(Brush.verticalGradient(listOf(Color.Transparent, Color(0xF5000000))))
@@ -164,15 +178,32 @@ private fun TvVideoControls(telemetry: DirectPlaybackTelemetry) {
                     Box(Modifier.fillMaxWidth(progress).height(4.dp).background(FocusColor))
                 }
             }
-            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(20.dp)) {
-                Text(stringResource(status), color = PrimaryText, style = MaterialTheme.typography.bodyMedium)
+            Row(
+                modifier = Modifier.align(Alignment.CenterHorizontally),
+                horizontalArrangement = Arrangement.spacedBy(10.dp),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
                 if (telemetry.canSeek) {
-                    Text(
-                        stringResource(R.string.video_seek_hint),
-                        color = SecondaryText,
-                        style = MaterialTheme.typography.bodyMedium
-                    )
+                    TvControl(onClick = { onSeek(-10.0) }) {
+                        Text(stringResource(R.string.video_seek_back))
+                    }
                 }
+                TvControl(onClick = onToggle, modifier = Modifier.focusRequester(playFocus)) {
+                    Text(stringResource(if (telemetry.playWhenReady) R.string.video_pause else R.string.video_play))
+                }
+                if (telemetry.canSeek) {
+                    TvControl(onClick = { onSeek(10.0) }) {
+                        Text(stringResource(R.string.video_seek_forward))
+                    }
+                }
+            }
+            if (telemetry.isBuffering) {
+                Text(
+                    stringResource(R.string.video_loading),
+                    modifier = Modifier.align(Alignment.CenterHorizontally),
+                    color = SecondaryText,
+                    style = MaterialTheme.typography.bodyMedium
+                )
             }
         }
     }

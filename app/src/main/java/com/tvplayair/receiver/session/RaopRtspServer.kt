@@ -20,13 +20,13 @@ import java.util.concurrent.atomic.AtomicInteger
  * Handles OPTIONS, GET /info, ANNOUNCE, SETUP, RECORD, GET_PARAMETER, SET_PARAMETER,
  * FLUSH and TEARDOWN, and drives RaopAudioRtpReceiver for 48 kHz PCM audio ingest.
  */
-class RaopRtspServer(
+internal class RaopRtspServer(
     private val listener: AirPlayProtocolListener,
     private val configProvider: () -> AirPlayServerConfig,
     private val mirrorReceiver: AirPlayMirrorStreamReceiver? = null,
-    private val pairingSession: AirPlayPairingSession = AirPlayPairingSession(),
+    private val connectionCrypto: () -> AirPlayConnectionCrypto,
     private val sharedGenerationId: AtomicInteger = AtomicInteger(1),
-    private val httpConnectionHandler: ((Socket, BufferedInputStream, String) -> Unit)? = null
+    private val httpConnectionHandler: ((Socket, BufferedInputStream, AirPlayConnectionCrypto, String) -> Unit)? = null
 ) {
     companion object {
         private const val TAG = "RaopRtspServer"
@@ -68,17 +68,12 @@ class RaopRtspServer(
     @Volatile
     private var serverSocket: ServerSocket? = null
     @Volatile
-    private var fairplayAesKey: ByteArray? = null
-    @Volatile
-    private var sessionEiv: ByteArray? = null
-    @Volatile
     private var currentVolumeDb: Float = 0.0f
     private var acceptThread: Thread? = null
 
     fun currentGenerationId(): Int = generationId.get()
 
     fun start(port: Int = DEFAULT_RAOP_PORT): Boolean {
-        configProvider().ed25519PrivateKey?.let { pairingSession.setEdPrivateKey(it) }
         if (running.get()) return true
         val socket = runCatching {
             ServerSocket().apply {
@@ -129,17 +124,20 @@ class RaopRtspServer(
 
     private fun handleSession(client: Socket) {
         client.use { socket ->
-            handleConnection(socket, BufferedInputStream(socket.getInputStream()))
+            connectionCrypto().use { crypto ->
+                handleConnection(socket, BufferedInputStream(socket.getInputStream()), crypto)
+            }
         }
     }
 
     internal fun handleConnection(
         socket: Socket,
         input: BufferedInputStream,
+        crypto: AirPlayConnectionCrypto,
         firstHeader: String? = null
     ) {
         val peer = socket.inetAddress?.hostAddress ?: "unknown"
-        val source = Any()
+        val source = crypto
         activeSessions.incrementAndGet()
         try {
             socket.soTimeout = CLIENT_SO_TIMEOUT_MS
@@ -157,7 +155,7 @@ class RaopRtspServer(
                     (!RtspMessageParser.isRtspRequestLine(firstLine) ||
                         isDirectVideoControlRequest(firstLine))
                 ) {
-                    httpDelegate.invoke(socket, input, headerText)
+                    httpDelegate.invoke(socket, input, crypto, headerText)
                     return
                 }
 
@@ -196,7 +194,7 @@ class RaopRtspServer(
         }
     }
 
-    private fun dispatchRtsp(request: RtspRequest, output: OutputStream, source: Any): Boolean {
+    private fun dispatchRtsp(request: RtspRequest, output: OutputStream, source: AirPlayConnectionCrypto): Boolean {
         val cseq = request.cseq()
         when (request.method) {
             "OPTIONS" -> {
@@ -232,7 +230,7 @@ class RaopRtspServer(
             "POST" -> {
                 when {
                     request.uri.endsWith("/pair-setup") -> {
-                        val reply = pairingSession.handlePairSetup(request.body)
+                        val reply = source.pairing.handlePairSetup(request.body)
                         if (reply != null) {
                             Log.i(TAG, "-> /pair-setup 200 OK (${reply.size}B)")
                             output.write(
@@ -248,9 +246,9 @@ class RaopRtspServer(
                         }
                     }
                     request.uri.endsWith("/pair-verify") -> {
-                        val reply = pairingSession.handlePairVerify(request.body)
+                        val reply = source.pairing.handlePairVerify(request.body)
                         if (reply != null) {
-                            Log.i(TAG, "-> /pair-verify 200 OK (${reply.size}B verified=${pairingSession.isVerified})")
+                            Log.i(TAG, "-> /pair-verify 200 OK (${reply.size}B verified=${source.pairing.isVerified})")
                             output.write(
                                 RtspMessageParser.formatResponse(
                                     200, "OK", cseq,
@@ -264,7 +262,7 @@ class RaopRtspServer(
                         }
                     }
                     request.uri.endsWith("/fp-setup") -> {
-                        val reply = FairPlayNative.handleFpSetup(request.body)
+                        val reply = source.fairPlay.handleFpSetup(request.body)
                         if (reply != null) {
                             Log.i(TAG, "-> /fp-setup 200 OK (${reply.size}B)")
                             output.write(
@@ -358,9 +356,6 @@ class RaopRtspServer(
                 if (activeSessions.get() <= 1) {
                     audioReceiver.stop()
                     mirrorReceiver?.clearStreamCipher()
-                    fairplayAesKey = null
-                    sessionEiv = null
-                    FairPlayNative.nativeReset()
                     listener.onClientDisconnected()
                 }
                 output.write(RtspMessageParser.formatResponse(200, "OK", cseq))
@@ -431,23 +426,24 @@ class RaopRtspServer(
         return RaopRemote(id, token)
     }
 
-    private fun handleBinaryPlistSetup(request: RtspRequest, output: OutputStream, source: Any) {
+    private fun handleBinaryPlistSetup(request: RtspRequest, output: OutputStream, source: AirPlayConnectionCrypto) {
         val cseq = request.cseq()
         val parsed = BinaryPlistParser.parse(request.body) as? Map<*, *>
         Log.i(TAG, "SETUP bplist keys=${parsed?.keys}")
         val ekey = parsed?.get("ekey") as? ByteArray
         val eiv = parsed?.get("eiv") as? ByteArray
         if (ekey != null && ekey.size == 72) {
-            val decrypted = FairPlayNative.nativeDecryptKey(ekey)
-            if (decrypted != null && decrypted.size == 16) {
-                fairplayAesKey = decrypted
-                Log.i(TAG, "SETUP decrypted FairPlay ekey (16B)")
-            } else {
+            val decrypted = source.fairPlay.decryptKey(ekey)
+            if (decrypted == null || decrypted.size != 16) {
                 Log.w(TAG, "SETUP failed to decrypt FairPlay ekey")
+                output.write(RtspMessageParser.formatResponse(400, "Bad Request", cseq))
+                return
             }
+            source.fairplayAesKey = decrypted
+            Log.i(TAG, "SETUP decrypted FairPlay ekey (16B)")
         }
         if (eiv != null && eiv.size == 16) {
-            sessionEiv = eiv.copyOf()
+            source.sessionIv = eiv.copyOf()
         }
 
         val streams = parsed?.get("streams") as? List<*>
@@ -457,8 +453,8 @@ class RaopRtspServer(
         val responseMap: Map<String, Any> = when (streamType) {
             110 -> { // AirPlay Screen Mirroring video stream
                 val connId = (firstStream["streamConnectionID"] as? Long) ?: 0L
-                val ecdhSecret = pairingSession.sharedSecret
-                val key16 = fairplayAesKey ?: ecdhSecret?.takeIf { it.size >= 16 }?.copyOfRange(0, 16)
+                val ecdhSecret = source.pairing.sharedSecret
+                val key16 = source.fairplayAesKey ?: ecdhSecret?.takeIf { it.size >= 16 }?.copyOfRange(0, 16)
                 if (key16 != null && connId != 0L) {
                     mirrorReceiver?.configureStreamCipherCandidates(key16, ecdhSecret, connId)
                     Log.i(TAG, "Configured mirror AES-CTR stream cipher candidates (connId=$connId hasEcdh=${ecdhSecret != null})")
@@ -477,8 +473,8 @@ class RaopRtspServer(
                 val ct = (firstStream["ct"] as? Long)?.toInt() ?: 8
                 val spf = (firstStream["spf"] as? Long)?.toInt() ?: 480
                 val shk = (firstStream["shk"] as? ByteArray)?.takeIf { it.size >= 16 }?.copyOfRange(0, 16)
-                val rawKey = fairplayAesKey ?: shk
-                val ecdhSecret = pairingSession.sharedSecret
+                val rawKey = source.fairplayAesKey ?: shk
+                val ecdhSecret = source.pairing.sharedSecret
                 val pairedKey = if (rawKey != null && ecdhSecret != null && ecdhSecret.size >= 16) {
                     AirPlayPairingSession.sha512Trunc16(rawKey, ecdhSecret)
                 } else {
@@ -501,13 +497,13 @@ class RaopRtspServer(
                 Log.i(
                     TAG,
                     "SETUP audio stream: ct=$ct sr=$sampleRate spf=$spf codec=$codec " +
-                        "hasKey=${pairedKey != null} hasShk=${shk != null} hasEcdh=${ecdhSecret != null} hasIv=${sessionEiv != null} keys=${firstStream.keys}"
+                        "hasKey=${pairedKey != null} hasShk=${shk != null} hasEcdh=${ecdhSecret != null} hasIv=${source.sessionIv != null} keys=${firstStream.keys}"
                 )
                 audioReceiver.configureSession(
                     codec = codec,
                     sampleRate = sampleRate,
                     sessionAesKey = pairedKey,
-                    sessionAesIv = sessionEiv,
+                    sessionAesIv = source.sessionIv,
                     samplesPerFrame = spf,
                     alternateAesKey = rawKey,
                     extraAesKeys = extraKeys

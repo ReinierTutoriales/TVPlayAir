@@ -21,9 +21,14 @@ import javax.crypto.spec.SecretKeySpec
 class AirPlayPairingAndPlistTest {
 
     @Test
-    fun completesFullTwoStepCurve25519Ed25519PairVerifyHandshake() {
+    fun completesPairVerifyWhileAnotherConnectionStartsItsOwnHandshake() {
         val random = SecureRandom()
-        val server = AirPlayPairingSession(random)
+        val identity = ByteArray(Ed25519.SECRET_KEY_SIZE).also { Ed25519.generatePrivateKey(random, it) }
+        val first = AirPlayConnectionCrypto { identity }
+        val second = AirPlayConnectionCrypto { identity }
+        val server = first.pairing
+        val other = second.pairing
+        assertArrayEquals(server.serverEdPublicKey(), other.serverEdPublicKey())
 
         val clientEdPriv = ByteArray(Ed25519.SECRET_KEY_SIZE)
         val clientEdPub = ByteArray(Ed25519.PUBLIC_KEY_SIZE)
@@ -76,6 +81,8 @@ class AirPlayPairingAndPlistTest {
         step2Req[0] = 0
         System.arraycopy(encryptedClientSig, 0, step2Req, 4, 64)
 
+        assertNotNull(other.handlePairVerify(step1Req))
+        assertArrayEquals(clientSecret, server.sharedSecret)
         val step2Resp = server.handlePairVerify(step2Req)
         assertNotNull(step2Resp)
         assertEquals(0, step2Resp!!.size)
