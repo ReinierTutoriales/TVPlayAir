@@ -23,6 +23,7 @@ interface SessionEventListener {
     fun onClientConnected(clientName: String, dacpId: String, activeRemote: String) = Unit
     fun onClientDisconnected() = Unit
     fun onAudioStreamStarted(generationId: Int) = Unit
+    fun onAudioStreamStopped() = Unit
     fun onAudioControlsAvailable(available: Boolean) = Unit
     fun onNowPlaying(metadata: RaopNowPlaying?) = Unit
 }
@@ -113,6 +114,9 @@ class SessionConnection(
 
         override fun onAudioStreamStarted(generationId: Int) =
             deliver(epoch) { listener.onAudioStreamStarted(generationId) }
+
+        override fun onAudioStreamStopped() =
+            deliver(epoch) { listener.onAudioStreamStopped() }
 
         override fun onAudioControlsAvailable(available: Boolean) =
             deliver(epoch) { listener.onAudioControlsAvailable(available) }

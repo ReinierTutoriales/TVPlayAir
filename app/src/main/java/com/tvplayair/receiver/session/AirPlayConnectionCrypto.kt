@@ -12,6 +12,8 @@ internal class AirPlayConnectionCrypto(identityKey: () -> ByteArray) : Closeable
     val fairPlay by fairPlayDelegate
     var fairplayAesKey: ByteArray? = null
     var sessionIv: ByteArray? = null
+    @Volatile
+    var mediaSessionId: String? = null
 
     override fun close() {
         if (fairPlayDelegate.isInitialized()) fairPlay.close()

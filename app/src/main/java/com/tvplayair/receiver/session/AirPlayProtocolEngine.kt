@@ -20,6 +20,7 @@ interface AirPlayProtocolListener {
     fun onClientDisconnected()
     fun onNowPlaying(metadata: RaopNowPlaying?) = Unit
     fun onAudioStreamStarted(generationId: Int) = Unit
+    fun onAudioStreamStopped() = Unit
 }
 
 /**

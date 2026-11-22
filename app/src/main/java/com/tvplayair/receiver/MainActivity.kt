@@ -338,6 +338,15 @@ class MainActivity : ComponentActivity(), SurfaceLayerController {
                 }
             }
 
+            override fun onAudioStreamStopped() {
+                audioConsumer.stop()
+                overlayState = overlayState.clearAudioMetadata().copy(
+                    audioProjectionActive = false,
+                    audioControlsAvailable = false
+                )
+                updateScreenWake()
+            }
+
             override fun onAudioControlsAvailable(available: Boolean) {
                 overlayState = overlayState.copy(audioControlsAvailable = available)
             }

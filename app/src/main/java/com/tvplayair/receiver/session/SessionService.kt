@@ -157,6 +157,13 @@ class SessionService : Service() {
             }
         }
 
+        override fun onAudioStreamStopped() {
+            synchronized(callbackLock) {
+                activeAudioGeneration = null
+                runCatching { callback?.onAudioStreamStopped() }
+            }
+        }
+
         override fun onAudioStreamStarted(generationId: Int) {
             synchronized(callbackLock) {
                 if (activeAudioGeneration == generationId) return
