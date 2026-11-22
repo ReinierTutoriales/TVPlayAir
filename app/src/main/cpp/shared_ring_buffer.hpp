@@ -180,6 +180,21 @@ public:
         header_->readPos.store(write, std::memory_order_release);
     }
 
+    // Consumer only: retain the expected and any newer generation at the head.
+    uint32_t discardOlderGenerations(uint32_t expectedGenerationId) {
+        if (!valid()) return 0;
+        const uint32_t first = header_->readPos.load(std::memory_order_relaxed);
+        const uint32_t write = header_->writePos.load(std::memory_order_acquire);
+        uint32_t read = first;
+        while (read != write) {
+            const uint32_t age = expectedGenerationId - packetAt(read)->generationId;
+            if (age == 0 || age >= (uint32_t{1} << 31)) break;
+            ++read;
+        }
+        header_->readPos.store(read, std::memory_order_release);
+        return read - first;
+    }
+
     uint32_t droppedPackets() const {
         return valid() ? header_->droppedPackets.load(std::memory_order_relaxed) : 0;
     }

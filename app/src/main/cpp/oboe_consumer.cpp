@@ -22,6 +22,12 @@ bool OboeConsumer::start(uint32_t generationId) {
         return true;
     }
     pipeline_.reset();
+    const uint32_t discarded = ring_.discardOlderGenerations(generationId);
+    if (discarded > 0) {
+        __android_log_print(ANDROID_LOG_INFO, kLogTag,
+                            "Discarded %u stale PCM packets before opening generation %u",
+                            discarded, generationId);
+    }
     shouldRun_.store(true, std::memory_order_release);
     if (!openAndStartLocked()) {
         shouldRun_.store(false, std::memory_order_release);

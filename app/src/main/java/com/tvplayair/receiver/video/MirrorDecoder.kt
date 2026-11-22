@@ -106,8 +106,7 @@ class MirrorDecoder(
         csdBytes: ByteArray? = null
     ): MediaCodec? {
         val format = MediaFormat.createVideoFormat(cfg.mimeType, cfg.width, cfg.height)
-        format.setInteger(MediaFormat.KEY_MAX_WIDTH, maxOf(cfg.width, 1920))
-        format.setInteger(MediaFormat.KEY_MAX_HEIGHT, maxOf(cfg.height, 1920))
+        // Format changes rebuild the decoder. Adaptive maximum hints reserve extra buffers.
         // Safe low-latency fallback on API 29+; never force KEY_OPERATING_RATE = 32767.
         format.setInteger(MediaFormat.KEY_PRIORITY, 0)
         if (csdBytes != null && csdBytes.isNotEmpty()) {

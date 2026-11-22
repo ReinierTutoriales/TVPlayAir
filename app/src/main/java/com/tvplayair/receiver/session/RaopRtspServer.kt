@@ -192,6 +192,7 @@ internal class RaopRtspServer(
         } catch (error: IOException) {
             Log.i(TAG, "RTSP connection ended for $peer (${error.javaClass.simpleName})")
         } finally {
+            mirrorReceiver?.closeStreamForOwner(source)
             nowPlaying.withOwner(source) {
                 nowPlaying.clear(source)
                 stopAudioStream()
@@ -490,7 +491,7 @@ internal class RaopRtspServer(
             val ecdhSecret = source.pairing.sharedSecret
             val key16 = source.fairplayAesKey ?: ecdhSecret?.takeIf { it.size >= 16 }?.copyOfRange(0, 16)
             if (key16 != null && connId != 0L) {
-                mirrorReceiver?.configureStreamCipherCandidates(key16, ecdhSecret, connId)
+                mirrorReceiver?.configureStreamCipherCandidates(source, key16, ecdhSecret, connId)
                 if (nowPlaying.retireAudioForMirror(source)) stopAudioStream()
                 Log.i(TAG, "Configured mirror AES-CTR stream cipher candidates (connId=$connId hasEcdh=${ecdhSecret != null})")
             }

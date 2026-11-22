@@ -47,6 +47,27 @@ static void testOverflowAndGeneration() {
     assert(ring.readPacket(out.data(), out.size(), &outSize, 11) == RingResult::Empty);
 }
 
+static void testAudioStartupDiscardsOlderPacketsAndRetainsNewAudio() {
+    constexpr uint32_t capacity = 4, payload = 64;
+    const size_t bytes = SharedRingBuffer::requiredBytes(capacity, payload);
+    SharedRingBuffer ring;
+    assert(ring.mapFd(makeSharedFd(bytes), bytes, true, capacity, payload));
+
+    const uint32_t old = 10, current = 20, later = 30;
+    assert(ring.writePacket(&old, sizeof(old), UINT32_MAX) == RingResult::Ok);
+    assert(ring.writePacket(&old, sizeof(old), UINT32_MAX) == RingResult::Ok);
+    assert(ring.writePacket(&current, sizeof(current), 0) == RingResult::Ok);
+    assert(ring.writePacket(&later, sizeof(later), 1) == RingResult::Ok);
+    assert(ring.writePacket(&later, sizeof(later), 1) == RingResult::Full);
+
+    assert(ring.discardOlderGenerations(0) == 2);
+    assert(ring.writePacket(&later, sizeof(later), 1) == RingResult::Ok);
+    uint32_t out = 0, outSize = 0;
+    assert(ring.readPacket(&out, sizeof(out), &outSize, 0) == RingResult::Ok && out == current);
+    assert(ring.discardOlderGenerations(0) == 0);
+    assert(ring.readPacket(&out, sizeof(out), &outSize, 1) == RingResult::Ok && out == later);
+}
+
 static void testWrapAroundAndNoLivelock() {
     constexpr uint32_t capacity = 8, payload = 32;
     const size_t bytes = SharedRingBuffer::requiredBytes(capacity, payload);
@@ -104,6 +125,7 @@ static void testForkSharedMemorySpsc() {
 
 int main() {
     testOverflowAndGeneration();
+    testAudioStartupDiscardsOlderPacketsAndRetainsNewAudio();
     testWrapAroundAndNoLivelock();
     testForkSharedMemorySpsc();
     std::puts("SPSC host tests passed: fork/MAP_SHARED, wrap-around, overflow, generation and bounded oversized-packet handling.");
