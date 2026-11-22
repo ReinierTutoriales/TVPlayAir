@@ -251,15 +251,34 @@ class RtspAndRtpParserTest {
     }
 
     @Test
-    fun resamples44k1StereoTo48kWithExactFrameRatio() {
-        val srcFrames = 441
-        val src = ShortArray(srcFrames * 2) { 1000 }
-        val dst = ShortArray(1024 * 2)
+    fun resamples44k1StereoIdenticallyAcrossPacketBoundaries() {
+        val sourceFrames = 44_100
+        val source = ShortArray(sourceFrames * 2) { ((it * 17) % 20_000 - 10_000).toShort() }
+        val contiguous = ShortArray(48_000 * 2)
+        val frames = PcmResampler().resampleStereoI16(source, sourceFrames, 44_100, contiguous)
+        assertEquals(47_999, frames) // The last fractional sample waits for the next input frame.
 
-        val outFrames = PcmResampler.resampleStereoI16(src, srcFrames, 44100, dst, 48000)
-        assertEquals(480, outFrames)
-        assertEquals(1000.toShort(), dst[0])
-        assertEquals(1000.toShort(), dst[(outFrames - 1) * 2])
+        val streaming = PcmResampler()
+        val packetOutput = ShortArray(600 * 2)
+        val output = ShortArray(contiguous.size)
+        var inputOffset = 0
+        var outputOffset = 0
+        while (inputOffset < sourceFrames) {
+            val packetFrames = minOf(480, sourceFrames - inputOffset)
+            val packet = source.copyOfRange(inputOffset * 2, (inputOffset + packetFrames) * 2)
+            val produced = streaming.resampleStereoI16(packet, packetFrames, 44_100, packetOutput)
+            packetOutput.copyInto(output, outputOffset * 2, endIndex = produced * 2)
+            inputOffset += packetFrames
+            outputOffset += produced
+        }
+        assertEquals(frames, outputOffset)
+        assertArrayEquals(contiguous, output)
+
+        val nextFrame = shortArrayOf(111, -222)
+        streaming.reset()
+        assertEquals(1, streaming.resampleStereoI16(nextFrame, 1, 44_100, packetOutput))
+        assertEquals(111.toShort(), packetOutput[0])
+        assertEquals((-222).toShort(), packetOutput[1])
     }
 
     @Test

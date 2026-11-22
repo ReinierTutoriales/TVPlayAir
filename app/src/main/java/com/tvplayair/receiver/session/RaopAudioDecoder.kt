@@ -19,45 +19,61 @@ enum class RaopAudioCodec {
  * Allocation-free stereo 16-bit PCM resampler (e.g. 44.1 kHz -> 48 kHz)
  * normalizing incoming RAOP audio to the fixed 48 kHz Oboe ring format.
  */
-object PcmResampler {
-    const val TARGET_SAMPLE_RATE = 48000
-    const val CHANNELS = 2
-
-    fun resampleStereoI16(
-        src: ShortArray,
-        srcFrames: Int,
-        srcRate: Int,
-        dst: ShortArray,
-        targetRate: Int = TARGET_SAMPLE_RATE
-    ): Int {
-        if (srcFrames <= 0 || srcRate <= 0 || targetRate <= 0) return 0
-        if (srcRate == targetRate) {
-            val frames = srcFrames.coerceAtMost(dst.size / CHANNELS)
-            System.arraycopy(src, 0, dst, 0, frames * CHANNELS)
-            return frames
-        }
-        val outFrames = ((srcFrames.toLong() * targetRate) / srcRate)
-            .toInt()
-            .coerceAtMost(dst.size / CHANNELS)
-        if (outFrames <= 0) return 0
-
-        val step = srcRate.toDouble() / targetRate.toDouble()
-        for (i in 0 until outFrames) {
-            val srcPos = i * step
-            val idx0 = srcPos.toInt().coerceIn(0, srcFrames - 1)
-            val idx1 = (idx0 + 1).coerceAtMost(srcFrames - 1)
-            val frac = srcPos - idx0
-
-            val l0 = src[idx0 * 2].toInt()
-            val r0 = src[idx0 * 2 + 1].toInt()
-            val l1 = src[idx1 * 2].toInt()
-            val r1 = src[idx1 * 2 + 1].toInt()
-
-            dst[i * 2] = (l0 + ((l1 - l0) * frac)).toInt().coerceIn(Short.MIN_VALUE.toInt(), Short.MAX_VALUE.toInt()).toShort()
-            dst[i * 2 + 1] = (r0 + ((r1 - r0) * frac)).toInt().coerceIn(Short.MIN_VALUE.toInt(), Short.MAX_VALUE.toInt()).toShort()
-        }
-        return outFrames
+internal class PcmResampler {
+    companion object {
+        const val TARGET_SAMPLE_RATE = 48_000
+        const val MIN_SOURCE_SAMPLE_RATE = 8_000
+        const val CHANNELS = 2
     }
+
+    private var previousLeft = 0
+    private var previousRight = 0
+    // Position of the next output sample relative to the previous input frame.
+    // One input-frame interval is TARGET_SAMPLE_RATE units.
+    private var phase = 0L
+    private var hasPreviousFrame = false
+
+    fun reset() {
+        phase = 0L
+        hasPreviousFrame = false
+    }
+
+    fun resampleStereoI16(src: ShortArray, srcFrames: Int, srcRate: Int, dst: ShortArray): Int {
+        if (srcFrames <= 0 || srcRate < MIN_SOURCE_SAMPLE_RATE) return 0
+        if (srcRate == TARGET_SAMPLE_RATE) {
+            src.copyInto(dst, endIndex = srcFrames * CHANNELS)
+            return srcFrames
+        }
+
+        var outSamples = 0
+        var inputFrame = 0
+        if (!hasPreviousFrame) {
+            previousLeft = src[0].toInt()
+            previousRight = src[1].toInt()
+            dst[outSamples++] = src[0]
+            dst[outSamples++] = src[1]
+            phase = srcRate.toLong()
+            hasPreviousFrame = true
+            inputFrame = 1
+        }
+        while (inputFrame < srcFrames) {
+            val left = src[inputFrame * CHANNELS].toInt()
+            val right = src[inputFrame * CHANNELS + 1].toInt()
+            while (phase <= TARGET_SAMPLE_RATE) {
+                dst[outSamples++] = interpolate(previousLeft, left)
+                dst[outSamples++] = interpolate(previousRight, right)
+                phase += srcRate
+            }
+            phase -= TARGET_SAMPLE_RATE
+            previousLeft = left
+            previousRight = right
+            inputFrame++
+        }
+        return outSamples / CHANNELS
+    }
+
+    private fun interpolate(from: Int, to: Int): Short =
+        (from + (to - from) * phase / TARGET_SAMPLE_RATE).toShort()
 }
 
 /**
@@ -68,6 +84,8 @@ class RaopAudioDecoder {
     companion object {
         private const val TAG = "RaopAudioDecoder"
         private const val MAX_PCM_FRAMES = 4096
+        private const val MAX_RESAMPLED_FRAMES =
+            MAX_PCM_FRAMES * PcmResampler.TARGET_SAMPLE_RATE / PcmResampler.MIN_SOURCE_SAMPLE_RATE
         private const val DEQUEUE_TIMEOUT_US = 2_000L
 
         fun defaultAudioSpecificConfig(
@@ -119,9 +137,11 @@ class RaopAudioDecoder {
             "pcmRejected=${producedFrames - queuedFrames} decodeFailures=$decodeFailures"
 
     private val srcSamples = ShortArray(MAX_PCM_FRAMES * PcmResampler.CHANNELS)
-    private val resampledSamples = ShortArray(MAX_PCM_FRAMES * PcmResampler.CHANNELS)
+    private val resampler = PcmResampler()
+    private var resamplerGeneration: Int? = null
+    private val resampledSamples = ShortArray(MAX_RESAMPLED_FRAMES * PcmResampler.CHANNELS)
     private val directOut: ByteBuffer = ByteBuffer
-        .allocateDirect(MAX_PCM_FRAMES * PcmResampler.CHANNELS * 2)
+        .allocateDirect(MAX_RESAMPLED_FRAMES * PcmResampler.CHANNELS * 2)
         .order(ByteOrder.LITTLE_ENDIAN)
 
     @Synchronized
@@ -133,7 +153,7 @@ class RaopAudioDecoder {
     ): Boolean {
         release()
         codecType = codec
-        inputSampleRate = sampleRate.coerceAtLeast(8000)
+        inputSampleRate = sampleRate.coerceAtLeast(PcmResampler.MIN_SOURCE_SAMPLE_RATE)
         producedFrames = 0L
         queuedFrames = 0L
         decodeFailures = 0L
@@ -249,7 +269,11 @@ class RaopAudioDecoder {
     }
 
     private fun publishResampled(srcFrames: Int, generationId: Int) {
-        val outFrames = PcmResampler.resampleStereoI16(
+        if (resamplerGeneration != generationId) {
+            resampler.reset()
+            resamplerGeneration = generationId
+        }
+        val outFrames = resampler.resampleStereoI16(
             src = srcSamples,
             srcFrames = srcFrames,
             srcRate = inputSampleRate,
@@ -267,6 +291,8 @@ class RaopAudioDecoder {
 
     @Synchronized
     fun release() {
+        resampler.reset()
+        resamplerGeneration = null
         mediaCodec?.let {
             runCatching { it.stop() }
             runCatching { it.release() }

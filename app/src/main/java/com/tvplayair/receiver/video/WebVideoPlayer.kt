@@ -9,6 +9,7 @@ import android.view.SurfaceView
 import androidx.annotation.OptIn
 import androidx.media3.common.AudioAttributes
 import androidx.media3.common.C
+import androidx.media3.common.Format
 import androidx.media3.common.ForwardingSimpleBasePlayer
 import androidx.media3.common.MediaItem
 import androidx.media3.common.PlaybackException
@@ -16,6 +17,7 @@ import androidx.media3.common.Player
 import androidx.media3.common.Timeline
 import androidx.media3.common.util.UnstableApi
 import androidx.media3.datasource.DefaultHttpDataSource
+import androidx.media3.exoplayer.DecoderReuseEvaluation
 import androidx.media3.exoplayer.ExoPlayer
 import androidx.media3.exoplayer.analytics.AnalyticsListener
 import androidx.media3.exoplayer.source.DefaultMediaSourceFactory
@@ -86,16 +88,38 @@ class WebVideoPlayer(context: Context) : DirectVideoEngine {
     private val eventWindow = Timeline.Window()
 
     @OptIn(UnstableApi::class)
+    private fun playbackIdFor(eventTime: AnalyticsListener.EventTime): Long? {
+        val id = playbackId ?: return null
+        val timeline = eventTime.timeline
+        val index = eventTime.windowIndex
+        return id.takeIf {
+            index in 0 until timeline.windowCount &&
+                timeline.getWindow(index, eventWindow).mediaItem.mediaId == id.toString()
+        }
+    }
+
+    @OptIn(UnstableApi::class)
     private val videoEvents = object : AnalyticsListener {
         override fun onRenderedFirstFrame(eventTime: AnalyticsListener.EventTime, output: Any, renderTimeMs: Long) {
-            val id = playbackId ?: return
-            val timeline = eventTime.timeline
-            val index = eventTime.windowIndex
-            if (renderTimeMs < prepareStartedMs || output != surfaceView?.holder?.surface ||
-                index !in 0 until timeline.windowCount ||
-                timeline.getWindow(index, eventWindow).mediaItem.mediaId != id.toString()
-            ) return
+            if (renderTimeMs < prepareStartedMs || output != surfaceView?.holder?.surface) return
+            val id = playbackIdFor(eventTime) ?: return
             viewCallbacks?.onMediaReady(id)
+        }
+
+        override fun onVideoInputFormatChanged(
+            eventTime: AnalyticsListener.EventTime, format: Format, decoderReuseEvaluation: DecoderReuseEvaluation?
+        ) {
+            val id = playbackIdFor(eventTime) ?: return
+            Log.i(TAG, "Video format id=$id mime=${format.sampleMimeType} codecs=${format.codecs} " +
+                "size=${format.width}x${format.height} fps=${format.frameRate} color=${format.colorInfo}")
+        }
+
+        override fun onAudioInputFormatChanged(
+            eventTime: AnalyticsListener.EventTime, format: Format, decoderReuseEvaluation: DecoderReuseEvaluation?
+        ) {
+            val id = playbackIdFor(eventTime) ?: return
+            Log.i(TAG, "Audio format id=$id mime=${format.sampleMimeType} codecs=${format.codecs} " +
+                "sampleRate=${format.sampleRate} channels=${format.channelCount}")
         }
     }
 
