@@ -2,6 +2,8 @@ package com.tvplayair.receiver.session
 
 import com.tvplayair.receiver.video.DirectPlaybackTelemetry
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
+import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
 import java.net.Socket
@@ -112,6 +114,33 @@ class AirPlayPlaybackEventsTest {
             events.update(current, telemetry) { accepted++ }
             assertEquals(1, accepted)
             previous = current
+        }
+    }
+
+    @Test
+    fun reverseSignalOnlyWakesForTheActiveSessionAndIsRearmedAfterDisconnect() {
+        val events = AirPlayPlaybackEvents()
+        val channels = listOf(peerA, peerB).map { AirPlayPlaybackEvents.Channel(it, Socket()) }
+        try {
+            var id = 0L
+            events.start(peerA) { id = it }
+            val initialSignal = events.reverseSignal(id)!!
+            assertFalse(initialSignal.isDone)
+
+            events.attach(channels[1])
+            assertFalse(initialSignal.isDone)
+            events.attach(channels[0])
+            assertTrue(initialSignal.isDone)
+
+            events.detach(channels[0])
+            val nextSignal = events.reverseSignal(id)!!
+            assertFalse(nextSignal.isDone)
+            events.start(peerB)
+            assertTrue(nextSignal.isCancelled)
+            assertNull(events.reverseSignal(id))
+        } finally {
+            events.clear()
+            channels.forEach { it.close() }
         }
     }
 

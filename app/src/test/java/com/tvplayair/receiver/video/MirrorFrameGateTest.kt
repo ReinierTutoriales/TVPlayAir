@@ -20,9 +20,22 @@ class MirrorFrameGateTest {
         assertEquals(0L, gate.acceptedFrames)
 
         assertTrue(gate.shouldSubmitFrame(MirrorFrameGate.FLAG_KEY_FRAME))
+        gate.onFrameSubmitted(MirrorFrameGate.FLAG_KEY_FRAME)
         assertFalse(gate.isAwaitingIdr())
         assertTrue(gate.shouldSubmitFrame(0))
+        gate.onFrameSubmitted(0)
         assertEquals(2L, gate.acceptedFrames)
+    }
+
+    @Test
+    fun aKeyframeRejectedByMediaCodecDoesNotOpenTheGate() {
+        val gate = MirrorFrameGate()
+        assertTrue(gate.shouldSubmitFrame(MirrorFrameGate.FLAG_KEY_FRAME))
+        assertTrue(gate.isAwaitingIdr())
+        assertFalse(gate.shouldSubmitFrame(0))
+        assertEquals(0L, gate.acceptedFrames)
+        gate.onFrameSubmitted(MirrorFrameGate.FLAG_KEY_FRAME)
+        assertTrue(gate.shouldSubmitFrame(0))
     }
 
     @Test
@@ -33,6 +46,7 @@ class MirrorFrameGateTest {
         assertTrue(gate.hasCachedCodecConfig())
         assertTrue(gate.shouldSubmitFrame(MirrorFrameGate.FLAG_CODEC_CONFIG))
         assertTrue(gate.shouldSubmitFrame(MirrorFrameGate.FLAG_KEY_FRAME))
+        gate.onFrameSubmitted(MirrorFrameGate.FLAG_KEY_FRAME)
         assertFalse(gate.isAwaitingIdr())
 
         // Returning from ExoPlayer: reset gate but preserve SPS/PPS/VPS cache.
@@ -47,7 +61,7 @@ class MirrorFrameGateTest {
     fun clearAllRemovesCachedCodecConfigAndRearmsGate() {
         val gate = MirrorFrameGate()
         gate.onCodecConfig(byteArrayOf(1, 2, 3, 4))
-        gate.shouldSubmitFrame(MirrorFrameGate.FLAG_KEY_FRAME)
+        gate.onFrameSubmitted(MirrorFrameGate.FLAG_KEY_FRAME)
 
         gate.clearAll()
         assertNull(gate.getCachedCodecConfig())

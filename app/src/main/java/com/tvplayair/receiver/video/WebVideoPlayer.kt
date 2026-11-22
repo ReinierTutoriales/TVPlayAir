@@ -348,6 +348,7 @@ class WebVideoPlayer(context: Context) : DirectVideoEngine {
             isPlaying = false,
             isBuffering = false
         )
+        val hasCurrentItem = playbackId?.let { exo.currentMediaItem?.mediaId == it.toString() } == true
         val rawDuration = exo.duration
         val durationSec = if (rawDuration == C.TIME_UNSET || rawDuration < 0L) {
             0.0
@@ -362,7 +363,11 @@ class WebVideoPlayer(context: Context) : DirectVideoEngine {
             rate = if (playing) exo.playbackParameters.speed else 0f,
             isPlaying = playing,
             isBuffering = exo.playbackState == Player.STATE_BUFFERING,
-            isReady = exo.playbackState == Player.STATE_READY
+            isReady = exo.playbackState == Player.STATE_READY,
+            title = if (hasCurrentItem) exo.mediaMetadata.title?.toString()?.trim()?.takeIf(String::isNotEmpty)
+                else null,
+            canSeek = hasCurrentItem && exo.isCurrentMediaItemSeekable &&
+                exo.isCommandAvailable(Player.COMMAND_SEEK_IN_CURRENT_MEDIA_ITEM)
         )
     }
 

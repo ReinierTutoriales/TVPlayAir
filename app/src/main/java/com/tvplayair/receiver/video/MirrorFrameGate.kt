@@ -48,19 +48,14 @@ class MirrorFrameGate {
     }
 
     fun shouldSubmitFrame(flags: Int): Boolean {
-        if ((flags and FLAG_CODEC_CONFIG) != 0) {
-            return true
-        }
-        if (awaitingIdr) {
-            if ((flags and FLAG_KEY_FRAME) != 0) {
-                awaitingIdr = false
-                acceptedFrames++
-                return true
-            }
-            droppedNonIdrFrames++
-            return false
-        }
+        if (!awaitingIdr || (flags and (FLAG_CODEC_CONFIG or FLAG_KEY_FRAME)) != 0) return true
+        droppedNonIdrFrames++
+        return false
+    }
+
+    fun onFrameSubmitted(flags: Int) {
+        if ((flags and FLAG_CODEC_CONFIG) != 0) return
+        if ((flags and FLAG_KEY_FRAME) != 0) awaitingIdr = false
         acceptedFrames++
-        return true
     }
 }

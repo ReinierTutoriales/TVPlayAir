@@ -249,10 +249,9 @@ class MainActivity : ComponentActivity(), SurfaceLayerController {
                     dismissVideoControls()
                     presentationCoordinator.onSessionDied()
                 }
-                overlayState = overlayState.copy(
+                overlayState = overlayState.clearAudioMetadata().copy(
                     connectedClient = null,
                     audioProjectionActive = false,
-                    nowPlaying = null,
                     presentationState = presentationCoordinator.state
                 )
                 updateScreenWake()
@@ -316,8 +315,8 @@ class MainActivity : ComponentActivity(), SurfaceLayerController {
 
             override fun onClientDisconnected() {
                 mirrorRequested = false
-                overlayState = overlayState.copy(
-                    connectedClient = null, audioProjectionActive = false, nowPlaying = null
+                overlayState = overlayState.clearAudioMetadata().copy(
+                    connectedClient = null, audioProjectionActive = false
                 )
                 audioConsumer.stop()
                 presentationCoordinator.onMirrorDisconnected()
@@ -325,7 +324,7 @@ class MainActivity : ComponentActivity(), SurfaceLayerController {
             }
 
             override fun onAudioStreamStarted(generationId: Int) {
-                overlayState = overlayState.copy(audioProjectionActive = true)
+                overlayState = overlayState.withAudioStreamStarted()
                 updateScreenWake()
                 mirrorDecoder.setGeneration(generationId)
                 audioConsumer.setGeneration(generationId)
@@ -337,7 +336,7 @@ class MainActivity : ComponentActivity(), SurfaceLayerController {
             override fun onNowPlaying(metadata: RaopNowPlaying?) {
                 // Metadata is not a transport stop signal: artwork/title may disappear
                 // while the sender keeps its audio stream alive (including on lock).
-                overlayState = overlayState.copy(nowPlaying = metadata)
+                overlayState = overlayState.withNowPlaying(metadata)
                 updateScreenWake()
             }
         }
@@ -587,6 +586,7 @@ class MainActivity : ComponentActivity(), SurfaceLayerController {
         if (video.url.isBlank() || !video.airPlayPosition.isFinite() || id == 0L) return false
         if (directPlaybackId == id && presentationCoordinator.hasDirectPlayback) return true
         dismissVideoControls()
+        overlayState = overlayState.clearAudioMetadata()
         cancelDirectStartupTimeout()
         if (directPlaybackId < 0L) {
             if (id > 0L) releaseCastPlayback() else castReceiver?.attachSession(null)
@@ -681,7 +681,7 @@ class MainActivity : ComponentActivity(), SurfaceLayerController {
             dismissVideoControls()
         }
         if (overlayState.presentationState != state) {
-            overlayState = overlayState.copy(presentationState = state)
+            overlayState = overlayState.withPresentation(state)
         }
         closeOverlayOnBack.isEnabled = overlayState.visible ||
             overlayState.showingVideoControls ||

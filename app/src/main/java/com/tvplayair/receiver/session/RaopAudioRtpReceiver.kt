@@ -93,6 +93,8 @@ class RaopAudioRtpReceiver(
     @Volatile
     private var candidateAesKeys: List<ByteArray> = emptyList()
     @Volatile
+    private var alacKeySelector: RaopAlacKeySelector? = null
+    @Volatile
     private var keyConfirmed: Boolean = false
     @Volatile
     private var aesIv: ByteArray? = null
@@ -128,7 +130,11 @@ class RaopAudioRtpReceiver(
         aesKey = primary
         candidateAesKeys = candidates
         keyConfirmed = candidates.size <= 1
-        aesIv = sessionAesIv?.takeIf { it.size == 16 }?.copyOf()
+        val iv = sessionAesIv?.takeIf { it.size == 16 }?.copyOf()
+        aesIv = iv
+        alacKeySelector = if (codec == RaopAudioCodec.ALAC && iv != null && candidates.isNotEmpty()) {
+            RaopAlacKeySelector(candidates, iv)
+        } else null
         lastSeqNumber = -1
         unencryptedPrefix0 = -1
         unencryptedPrefix1 = -1
@@ -171,6 +177,8 @@ class RaopAudioRtpReceiver(
     private fun receiveLoop(udp: DatagramSocket) {
         val packet = DatagramPacket(rxBuf, rxBuf.size)
         var rxPackets = 0L
+        var unmatchedAlacPackets = 0L
+        var lastAlacSelector: RaopAlacKeySelector? = null
         while (running.get()) {
             val ok = runCatching { udp.receive(packet); true }.getOrDefault(false)
             if (!ok) continue
@@ -188,12 +196,31 @@ class RaopAudioRtpReceiver(
             val iv = aesIv
             val generation = generationProvider()
             rxPackets++
+            val selector = alacKeySelector
+            if (lastAlacSelector !== selector) {
+                unmatchedAlacPackets = 0L
+                lastAlacSelector = selector
+            }
             if (rxPackets == 1L || rxPackets % 200L == 0L) {
                 Log.i(
                     TAG,
                     "RAOP audio rx: pkts=$rxPackets len=${parsed.payloadLength} gen=$generation " +
-                        "encrypted=${key != null} pcmFrames=${decoder.decodedFramesTotal} pcmBytes=${decoder.pcmBytesTotal}"
+                        "encrypted=${key != null && iv != null} alacUnmatched=$unmatchedAlacPackets " +
+                        decoder.pcmStats()
                 )
+            }
+            if (selector != null && parsed.payloadLength >= 16) {
+                val previousIndex = selector.selectedIndex
+                val plain = selector.decrypt(rxBuf, parsed.payloadOffset, parsed.payloadLength)
+                if (plain == null) {
+                    unmatchedAlacPackets++
+                } else {
+                    if (previousIndex == null) {
+                        Log.i(TAG, "Selected RAOP ALAC key idx=${selector.selectedIndex} after $unmatchedAlacPackets unmatched packets")
+                    }
+                    decoder.decodeAndPublish(plain, 0, plain.size, generation)
+                }
+                continue
             }
             if (key != null && iv != null) {
                 if (parsed.payloadLength < 16) {

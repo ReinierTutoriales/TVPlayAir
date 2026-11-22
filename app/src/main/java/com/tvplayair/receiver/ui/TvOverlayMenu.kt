@@ -1,14 +1,11 @@
 package com.tvplayair.receiver.ui
 
-import android.graphics.BitmapFactory
-import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
-import androidx.compose.foundation.layout.aspectRatio
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
@@ -24,12 +21,11 @@ import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.remember
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.draw.clip
 import androidx.compose.ui.focus.FocusRequester
 import androidx.compose.ui.focus.focusRequester
+import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.graphics.asImageBitmap
-import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
@@ -37,8 +33,8 @@ import androidx.tv.material3.Button
 import androidx.tv.material3.ButtonDefaults
 import androidx.tv.material3.MaterialTheme
 import androidx.tv.material3.Text
+import com.tvplayair.receiver.R
 import com.tvplayair.receiver.control.DacpCommand
-import com.tvplayair.receiver.session.RaopNowPlaying
 import com.tvplayair.receiver.video.DirectPlaybackTelemetry
 import java.util.Locale
 
@@ -125,105 +121,57 @@ fun TvOverlayMenu(
 }
 
 @Composable
-private fun TvNowPlayingScreen(metadata: RaopNowPlaying?, onAudioCommand: (DacpCommand) -> Unit) {
-    val playFocus = remember { FocusRequester() }
-    LaunchedEffect(Unit) { playFocus.requestFocus() }
-    val artwork = metadata?.artwork
-    val cover = remember(artwork) {
-        artwork?.let { BitmapFactory.decodeByteArray(it, 0, it.size)?.asImageBitmap() }
+private fun TvVideoControls(telemetry: DirectPlaybackTelemetry) {
+    val hasDuration = telemetry.durationSec.isFinite() && telemetry.durationSec > 0.0
+    val status = when {
+        telemetry.isBuffering -> R.string.video_loading
+        telemetry.isPlaying -> R.string.video_pause_hint
+        else -> R.string.video_play_hint
     }
-
-    Box(
-        modifier = Modifier.fillMaxSize().background(Color.Black).padding(horizontal = 48.dp, vertical = 24.dp),
-        contentAlignment = Alignment.Center
-    ) {
-        Row(
-            modifier = Modifier.widthIn(max = 880.dp).fillMaxWidth(),
-            verticalAlignment = Alignment.CenterVertically,
-            horizontalArrangement = Arrangement.spacedBy(32.dp)
+    Box(Modifier.fillMaxSize(), contentAlignment = Alignment.BottomCenter) {
+        Column(
+            modifier = Modifier.fillMaxWidth()
+                .background(Brush.verticalGradient(listOf(Color.Transparent, Color(0xF5000000))))
+                .padding(horizontal = 48.dp)
+                .padding(top = 72.dp, bottom = 32.dp),
+            verticalArrangement = Arrangement.spacedBy(12.dp)
         ) {
-            if (cover != null) {
-                Image(
-                    bitmap = cover,
-                    contentDescription = null,
-                    modifier = Modifier.fillMaxWidth(0.30f).aspectRatio(1f).clip(RoundedCornerShape(12.dp)),
-                    contentScale = ContentScale.Fit
-                )
-            }
-            Column(
-                modifier = Modifier.weight(1f),
-                verticalArrangement = Arrangement.spacedBy(12.dp)
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.spacedBy(24.dp),
+                verticalAlignment = Alignment.Bottom
             ) {
                 Text(
-                    text = metadata?.track?.title ?: "Audio de AirPlay",
-                    style = MaterialTheme.typography.headlineLarge,
+                    text = telemetry.title ?: stringResource(R.string.video_playback),
+                    modifier = Modifier.weight(1f),
                     color = PrimaryText,
+                    style = MaterialTheme.typography.headlineMedium,
                     maxLines = 2,
                     overflow = TextOverflow.Ellipsis
                 )
-                val details = listOfNotNull(metadata?.track?.artist, metadata?.track?.album)
-                if (details.isNotEmpty()) {
-                    Text(
-                        details.joinToString(" · "),
-                        color = SecondaryText,
-                        style = MaterialTheme.typography.titleMedium,
-                        maxLines = 1,
-                        overflow = TextOverflow.Ellipsis
-                    )
-                }
-                Row(
-                    modifier = Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.spacedBy(8.dp)
-                ) {
-                    TvControl({ onAudioCommand(DacpCommand.PREVIOUS) }, Modifier.weight(1f)) {
-                        Text("Anterior", Modifier.fillMaxWidth(), textAlign = TextAlign.Center)
-                    }
-                    TvControl(
-                        { onAudioCommand(DacpCommand.PLAY_PAUSE) },
-                        Modifier.weight(1.25f).focusRequester(playFocus)
-                    ) {
-                        Text("Play / Pausa", Modifier.fillMaxWidth(), textAlign = TextAlign.Center)
-                    }
-                    TvControl({ onAudioCommand(DacpCommand.NEXT) }, Modifier.weight(1f)) {
-                        Text("Siguiente", Modifier.fillMaxWidth(), textAlign = TextAlign.Center)
-                    }
-                }
-            }
-        }
-    }
-}
-
-@Composable
-private fun TvVideoControls(telemetry: DirectPlaybackTelemetry) {
-    Box(
-        modifier = Modifier.fillMaxSize().padding(horizontal = 48.dp, vertical = 28.dp),
-        contentAlignment = Alignment.BottomCenter
-    ) {
-        Column(
-            modifier = Modifier.widthIn(max = 880.dp).fillMaxWidth()
-                .background(Color.Black.copy(alpha = 0.88f), RoundedCornerShape(12.dp))
-                .padding(horizontal = 20.dp, vertical = 14.dp),
-            verticalArrangement = Arrangement.spacedBy(8.dp)
-        ) {
-            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
-                val status = when {
-                    telemetry.isBuffering -> "Cargando"
-                    telemetry.isPlaying -> "OK para pausar"
-                    else -> "OK para reproducir"
-                }
-                Text(status, color = PrimaryText, style = MaterialTheme.typography.bodyMedium)
-                if (telemetry.durationSec > 0.0) {
+                if (hasDuration) {
                     Text(
                         "${videoTime(telemetry.positionSec)} / ${videoTime(telemetry.durationSec)}",
                         color = PrimaryText,
-                        style = MaterialTheme.typography.bodyMedium
+                        style = MaterialTheme.typography.titleMedium
                     )
                 }
             }
-            if (telemetry.durationSec > 0.0) {
-                val progress = (telemetry.positionSec / telemetry.durationSec).toFloat().coerceIn(0f, 1f)
-                Box(Modifier.fillMaxWidth().height(3.dp).background(SecondaryText.copy(alpha = 0.35f))) {
-                    Box(Modifier.fillMaxWidth(progress).height(3.dp).background(FocusColor))
+            if (hasDuration) {
+                val progress = (telemetry.positionSec / telemetry.durationSec).toFloat()
+                    .takeIf { it.isFinite() }?.coerceIn(0f, 1f) ?: 0f
+                Box(Modifier.fillMaxWidth().height(4.dp).background(Color.White.copy(alpha = 0.28f))) {
+                    Box(Modifier.fillMaxWidth(progress).height(4.dp).background(FocusColor))
+                }
+            }
+            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(20.dp)) {
+                Text(stringResource(status), color = PrimaryText, style = MaterialTheme.typography.bodyMedium)
+                if (telemetry.canSeek) {
+                    Text(
+                        stringResource(R.string.video_seek_hint),
+                        color = SecondaryText,
+                        style = MaterialTheme.typography.bodyMedium
+                    )
                 }
             }
         }

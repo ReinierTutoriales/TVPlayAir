@@ -23,7 +23,9 @@ data class TvOverlayState(
     val projectionHome: Boolean = false,
     val audioProjectionActive: Boolean = false,
     val nowPlaying: RaopNowPlaying? = null,
-    val videoControls: DirectPlaybackTelemetry? = null
+    val videoControls: DirectPlaybackTelemetry? = null,
+    private val awaitingAudioPresentation: Boolean = false,
+    private val pendingNowPlaying: RaopNowPlaying? = null
 ) {
     companion object {
         const val OFFSET_STEP_MS = 10
@@ -38,6 +40,35 @@ data class TvOverlayState(
 
     val showingVideoControls: Boolean
         get() = !visible && presentationState == PresentationState.DIRECT_ACTIVE && videoControls != null
+
+    fun withPresentation(state: PresentationState): TvOverlayState {
+        val showAudio = state == PresentationState.IDLE || state == PresentationState.RECOVERING
+        return copy(
+            presentationState = state,
+            nowPlaying = if (showAudio) pendingNowPlaying ?: nowPlaying else null,
+            videoControls = videoControls.takeIf { state == PresentationState.DIRECT_ACTIVE },
+            awaitingAudioPresentation = awaitingAudioPresentation && !showAudio,
+            pendingNowPlaying = pendingNowPlaying.takeUnless { showAudio }
+        )
+    }
+
+    fun withAudioStreamStarted(): TvOverlayState = copy(
+        audioProjectionActive = true,
+        awaitingAudioPresentation = !showStandby,
+        pendingNowPlaying = null
+    )
+
+    fun withNowPlaying(metadata: RaopNowPlaying?): TvOverlayState = when {
+        showStandby -> copy(nowPlaying = metadata)
+        awaitingAudioPresentation -> copy(pendingNowPlaying = metadata)
+        else -> this
+    }
+
+    fun clearAudioMetadata(): TvOverlayState = copy(
+        nowPlaying = null,
+        awaitingAudioPresentation = false,
+        pendingNowPlaying = null
+    )
 
     fun stepAudioOffset(deltaMs: Int): TvOverlayState = copy(
         audioOffsetMs = (audioOffsetMs + deltaMs).coerceIn(

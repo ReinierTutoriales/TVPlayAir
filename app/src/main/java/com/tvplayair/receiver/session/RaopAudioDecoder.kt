@@ -109,12 +109,14 @@ class RaopAudioDecoder {
     private var codecType: RaopAudioCodec = RaopAudioCodec.PCM_L16_48K
     private var inputSampleRate: Int = PcmResampler.TARGET_SAMPLE_RATE
     private var mediaCodec: MediaCodec? = null
-    @Volatile
-    var decodedFramesTotal: Long = 0L
-        private set
-    @Volatile
-    var pcmBytesTotal: Long = 0L
-        private set
+    private var producedFrames = 0L
+    private var queuedFrames = 0L
+    private var decodeFailures = 0L
+
+    @Synchronized
+    fun pcmStats(): String =
+        "pcmProduced=$producedFrames pcmQueued=$queuedFrames " +
+            "pcmRejected=${producedFrames - queuedFrames} decodeFailures=$decodeFailures"
 
     private val srcSamples = ShortArray(MAX_PCM_FRAMES * PcmResampler.CHANNELS)
     private val resampledSamples = ShortArray(MAX_PCM_FRAMES * PcmResampler.CHANNELS)
@@ -132,8 +134,9 @@ class RaopAudioDecoder {
         release()
         codecType = codec
         inputSampleRate = sampleRate.coerceAtLeast(8000)
-        decodedFramesTotal = 0L
-        pcmBytesTotal = 0L
+        producedFrames = 0L
+        queuedFrames = 0L
+        decodeFailures = 0L
 
         if (codec == RaopAudioCodec.PCM_L16_48K || codec == RaopAudioCodec.PCM_L16_44K1) {
             Log.i(TAG, "Configured PCM decoder ($codec @ $inputSampleRate Hz)")
@@ -209,6 +212,8 @@ class RaopAudioDecoder {
                 )
                 if (frameCount > 0) {
                     publishResampled(frameCount, generationId)
+                } else {
+                    decodeFailures++
                 }
             }
             RaopAudioCodec.AAC_LC, RaopAudioCodec.AAC_ELD -> {
@@ -255,11 +260,9 @@ class RaopAudioDecoder {
         directOut.clear()
         directOut.asShortBuffer().put(resampledSamples, 0, outFrames * 2)
         directOut.limit(byteCount)
+        producedFrames += outFrames
         val written = NativeSharedMemory.nativeWriteAudioPcm(directOut, byteCount, generationId)
-        if (written > 0) {
-            decodedFramesTotal += outFrames
-            pcmBytesTotal += byteCount
-        }
+        queuedFrames += written.coerceIn(0, byteCount) / 4
     }
 
     @Synchronized
