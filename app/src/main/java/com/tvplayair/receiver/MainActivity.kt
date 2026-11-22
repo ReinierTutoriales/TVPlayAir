@@ -340,10 +340,7 @@ class MainActivity : ComponentActivity(), SurfaceLayerController {
 
             override fun onAudioStreamStopped() {
                 audioConsumer.stop()
-                overlayState = overlayState.clearAudioMetadata().copy(
-                    audioProjectionActive = false,
-                    audioControlsAvailable = false
-                )
+                overlayState = overlayState.withAudioStreamStopped()
                 updateScreenWake()
             }
 

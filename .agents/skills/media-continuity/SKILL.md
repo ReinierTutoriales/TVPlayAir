@@ -24,12 +24,11 @@ Read `AGENTS.md`, `docs/TVPLAYAIR_CONTINUITY_ARCHITECTURE_2026.md`, `docs/ENGINE
 10. Keep a record of observable limitations: app-specific AirPlay, DRM, iOS routing, hardware HDR and codec support.
 
 ## Implementation sequence
-- Reproduce the failure using an event trace; record base SHA, source, timestamps and active generation.
-- Write a failing deterministic regression test before the fix; include events arriving late, duplicated or out of order.
-- Implement smallest cause-focused change in the orchestrator, engine or presentation layer. No speculative refactor or UI-only masking.
-- Run focused tests, adjacent tests, native stress, build/lint and exact-HEAD CI; report what was and was not executed.
-- Measure request-to-audio, first frame, artwork freshness, p50/p95/p99 transition latency, A/V drift, underruns, dropped frames, memory and recovery.
-- Validate compatibility claims on real devices when required; CI/emulator is not proof of real AirPlay or VPU behavior.
+
+- Use [the stabilization baseline](../../../docs/BASELINE_ESTABILIZACION.md) to audit the Android TV destination, direct AirPlay and mirroring as a complete sequence. Record the exact APK SHA, action, identity and first missing or incorrect event. Distinguish the sender's route from the receiver's output.
+- Replay complete sequences in `MediaContinuityBaselineTest`. Extend the scenario or add a focused assertion when a fault escapes. Cover stale responses and the return path before grouping demonstrated fixes into a candidate.
+- Use official releases and platform contracts to choose an implementation. For undocumented AirPlay behavior, preserve a redacted trace and explicitly distinguish observation from inference.
+- Run the focused tests, then the complete Android and native CI once on the candidate SHA. Keep the scenario and assertions reproducible. Record actual hardware output and timings before claiming A/V or routing stability.
 
 ## Mandatory scenarios
 - Same app next track, same transport; old artwork response arrives last.

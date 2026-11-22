@@ -65,6 +65,11 @@ data class TvOverlayState(
         pendingNowPlaying = null
     )
 
+    fun withAudioStreamStopped(): TvOverlayState = clearAudioMetadata().copy(
+        audioProjectionActive = false,
+        audioControlsAvailable = false
+    )
+
     fun withNowPlaying(metadata: RaopNowPlaying?): TvOverlayState = when {
         showStandby -> copy(nowPlaying = metadata)
         awaitingAudioPresentation -> copy(pendingNowPlaying = metadata)
