@@ -180,3 +180,11 @@ La configuración pública de Apple para reproducir con el iPhone bloqueado se a
 Fuentes: [Apple AVFoundation](https://developer.apple.com/documentation/avfoundation/configuring-your-app-for-media-playback) · [Interrupciones de audio en iOS](https://developer.apple.com/documentation/avfaudio/handling-audio-interruptions) · [Política de carga de Media3](https://developer.android.com/reference/androidx/media3/exoplayer/upstream/LoadErrorHandlingPolicy) · [Implementación de Media3 1.11.1](https://github.com/androidx/media/blob/1.11.1/libraries/exoplayer/src/main/java/androidx/media3/exoplayer/upstream/DefaultLoadErrorHandlingPolicy.java).
 
 Validación en TV pendiente: Safari con y sin una app de música previa, `/stop` explícito del usuario, cambio ABR con un manifiesto fallido y retorno a ALAC sobre la misma conexión RTSP. Correlacionar el primer PCM válido, el primer frame y la identidad de la carátula con la generación activa.
+
+## Run #185 — diagnóstico en onn. 4K
+
+Captura de `483aeb5` entre 21:46:53 y 21:48:55. Los manifiestos HLS mostrados respondieron `200` y el último vídeo seguía activo al terminar el extracto. Esto verifica reproducción en ese tramo. No se reprodujo el `504` ni aparecen muestras de PCM que permitan dar por cerrado el silencio ALAC del Run #182.
+
+- Dos sockets locales expiraron unos 30 segundos después de servir sus manifiestos. El lector HTTP cierra el keep-alive FCUP sin registro de fallo si todavía no ha llegado ningún byte de la siguiente petición. Los timeouts de cabeceras parciales, del canal inverso y de la entrega del manifiesto conservan su tratamiento.
+- El diagnóstico HTTP conserva tamaños, identificador FCUP y estados. Omite las URL firmadas, las consultas completas y el contenido de los manifiestos o plists.
+- El primer frame de duplicación llegó 327 ms después de configurar el decoder. `lowLatency=false` y los avisos de fences no miden el desfase audiovisual. Los 97,47 ms corresponden a la estadística de escritura de AudioFlinger en HDMI, y los contadores acumulados requieren una captura antes/después para atribuir incrementos a TVPlayAir. Tampoco se puede cuantificar el desfase con esos datos. Medirlo requiere un estímulo audiovisual común y comparar su salida física de imagen y audio.

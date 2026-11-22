@@ -11,6 +11,7 @@ import java.io.OutputStream
 import java.net.InetSocketAddress
 import java.net.ServerSocket
 import java.net.Socket
+import java.net.SocketTimeoutException
 import java.net.URI
 import java.net.URLDecoder
 import java.net.URLEncoder
@@ -33,7 +34,6 @@ class AirPlayDirectHttpServer(
 
     companion object {
         private const val TAG = "AirPlayDirectHttpServer"
-        private const val MAX_HEADER_BYTES = 16 * 1024
         private const val MAX_BODY_BYTES = 2 * 1024 * 1024
         private const val CLIENT_SO_TIMEOUT_MS = 30_000
         private const val EVENT_ACK_TIMEOUT_MS = 5_000
@@ -170,10 +170,11 @@ class AirPlayDirectHttpServer(
         val output = sock.getOutputStream()
         val peer = sock.inetAddress?.hostAddress ?: "unknown"
         var pendingHeader = firstHeader
+        var awaitingNextFcupRequest = false
 
         while (running.get()) {
             val headerText = pendingHeader
-                ?: readUntilHeaderEnd(input)?.toString(StandardCharsets.UTF_8)
+                ?: readAirPlayHttpHeader(input, awaitingNextFcupRequest)?.toString(StandardCharsets.UTF_8)
                 ?: break
             pendingHeader = null
 
@@ -218,7 +219,7 @@ class AirPlayDirectHttpServer(
             val cseq = headers["cseq"]
             currentRequestProtocol.set(if (isRtsp) "RTSP/1.0" else "HTTP/1.1")
             currentRequestCSeq.set(cseq)
-            Log.i(TAG, "<- $peer $method $fullPath (proto=${if (isRtsp) "RTSP/1.0" else "HTTP/1.1"} cseq=${cseq ?: "-"} ct=$contentType len=${body.size})")
+            Log.i(TAG, "<- $peer $method $path (proto=${if (isRtsp) "RTSP/1.0" else "HTTP/1.1"} cseq=${cseq ?: "-"} ct=$contentType len=${body.size})")
 
             val sessionId = headers["x-apple-session-id"]?.takeIf { value ->
                 value.length in 1..128 && value.all { it in '!'..'~' }
@@ -231,6 +232,8 @@ class AirPlayDirectHttpServer(
             val keepAlive = !headers["connection"].equals("close", ignoreCase = true)
             dispatchRequest(method, path, fullPath, body, output, sessionKey)
             if (!keepAlive) break
+            awaitingNextFcupRequest = sock.inetAddress?.isLoopbackAddress == true &&
+                method == "GET" && path.startsWith("/__fcup/")
         }
     }
 
@@ -260,7 +263,7 @@ class AirPlayDirectHttpServer(
                 Log.i(TAG, "-> /reverse POST /event (${reqBytes.size}B fcup=${event.customXmlBody != null})")
                 output.write(reqBytes)
                 output.flush()
-                val acknowledgement = readUntilHeaderEnd(input)?.toString(StandardCharsets.US_ASCII)
+                val acknowledgement = readAirPlayHttpHeader(input)?.toString(StandardCharsets.US_ASCII)
                     ?: break
                 val firstAckLine = acknowledgement.substringBefore("\r\n")
                 Log.i(TAG, "<- /reverse ack: $firstAckLine")
@@ -332,10 +335,7 @@ class AirPlayDirectHttpServer(
             rawBytes
         }
 
-        val preview = runCatching {
-            dataBytes.toString(StandardCharsets.UTF_8).replace("\r", " ").replace("\n", " | ").take(220)
-        }.getOrDefault("binary(${dataBytes.size}B)")
-        Log.i(TAG, "<- FCUP response id=$reqId url=$respUrl len=${dataBytes.size} preview=$preview")
+        Log.i(TAG, "<- FCUP response id=$reqId len=${dataBytes.size}")
 
         if (!fcupRequests.complete(reqId, respUrl, dataBytes)) {
             Log.i(TAG, "Ignoring unmatched FCUP response id=$reqId")
@@ -500,10 +500,10 @@ class AirPlayDirectHttpServer(
                 val text = runCatching { dataBytes.toString(StandardCharsets.UTF_8) }.getOrNull()
                 if (text != null && text.trimStart().startsWith("#EXTM3U")) {
                     val rewritten = rewriteM3u8ForFcupProxy(text, targetUrl, playbackId)
-                    Log.i(TAG, "-> /__fcup 200 OK m3u8 (${rewritten.length}B) for $targetUrl")
+                    Log.i(TAG, "-> /__fcup 200 OK m3u8 (${rewritten.length}B) id=${pending.id}")
                     writeResponse(output, 200, "OK", "application/vnd.apple.mpegurl", rewritten)
                 } else {
-                    Log.i(TAG, "-> /__fcup 200 OK binary (${dataBytes.size}B) for $targetUrl")
+                    Log.i(TAG, "-> /__fcup 200 OK binary (${dataBytes.size}B) id=${pending.id}")
                     writeBinaryResponse(output, 200, "OK", "application/octet-stream", dataBytes)
                 }
             }
@@ -543,12 +543,11 @@ class AirPlayDirectHttpServer(
                     startDirectPlayback(sessionKey, parsed)
                     Log.i(
                         TAG,
-                        "-> /play 200 OK url=${parsed.url} startPosition=${parsed.startPosition} " +
-                            "plist=${AirPlayHttpRequestParser.summarizePlist(bodyBytes)}"
+                        "-> /play 200 OK startPosition=${parsed.startPosition}"
                     )
                     writeResponse(output, 200, "OK")
                 } else {
-                    Log.w(TAG, "-> /play had no direct URL (${AirPlayHttpRequestParser.summarizePlist(bodyBytes)})")
+                    Log.w(TAG, "-> /play had no direct URL (${bodyBytes.size}B)")
                     writeResponse(output, 200, "OK")
                 }
             }
@@ -559,9 +558,9 @@ class AirPlayDirectHttpServer(
                     val parsed = AirPlayHttpRequestParser.parsePlayBody(bodyBytes)
                     if (parsed != null) {
                         startDirectPlayback(sessionKey, parsed)
-                        Log.i(TAG, "-> /action started direct video url=${parsed.url} pos=${parsed.startPosition}")
+                        Log.i(TAG, "-> /action started direct video pos=${parsed.startPosition}")
                     } else {
-                        Log.i(TAG, "-> /action 200 OK (${AirPlayHttpRequestParser.summarizePlist(bodyBytes)})")
+                        Log.i(TAG, "-> /action 200 OK (${bodyBytes.size}B)")
                     }
                     writeResponse(output, 200, "OK")
                 }
@@ -588,6 +587,7 @@ class AirPlayDirectHttpServer(
             method == "POST" && path == "/rate" -> {
                 val rate = AirPlayHttpRequestParser.parseQueryDouble(fullPath, "value")
                 if (rate != null) {
+                    Log.i(TAG, "AirPlay playback rate=$rate")
                     playbackEvents.control(sessionKey) { id ->
                         listener.onDirectVideoCommand(if (rate > 0.0) "play" else "pause", rate, id)
                     }
@@ -628,9 +628,9 @@ class AirPlayDirectHttpServer(
                     val parsed = AirPlayHttpRequestParser.parsePlayBody(bodyBytes)
                     if (parsed != null) {
                         startDirectPlayback(sessionKey, parsed)
-                        Log.i(TAG, "-> PUT /setProperty started direct video url=${parsed.url}")
+                        Log.i(TAG, "-> PUT /setProperty started direct video")
                     } else if (fullPath.contains("selectedMediaArray", ignoreCase = true)) {
-                        Log.i(TAG, "-> PUT $fullPath (${AirPlayHttpRequestParser.summarizePlist(bodyBytes)})")
+                        Log.i(TAG, "-> PUT /setProperty selectedMediaArray (${bodyBytes.size}B)")
                     }
                 }
                 val reply = BinaryPlistWriter.encode(mapOf("errorCode" to 0L))
@@ -651,24 +651,6 @@ class AirPlayDirectHttpServer(
                 writeResponse(output, 404, "Not Found")
             }
         }
-    }
-
-    private fun readUntilHeaderEnd(input: BufferedInputStream): ByteArray? {
-        val out = ByteArrayOutputStream()
-        var matched = 0
-        while (out.size() < MAX_HEADER_BYTES) {
-            val b = input.read()
-            if (b == -1) return null
-            out.write(b)
-            matched = when {
-                (matched == 0 || matched == 2) && b == '\r'.code -> matched + 1
-                (matched == 1 || matched == 3) && b == '\n'.code -> matched + 1
-                b == '\r'.code -> 1
-                else -> 0
-            }
-            if (matched == 4) return out.toByteArray()
-        }
-        return null
     }
 
     private fun readExactBytes(input: BufferedInputStream, length: Int): ByteArray {
@@ -722,4 +704,30 @@ class AirPlayDirectHttpServer(
         if (bodyBytes.isNotEmpty()) output.write(bodyBytes)
         output.flush()
     }
+}
+
+internal fun readAirPlayHttpHeader(
+    input: BufferedInputStream,
+    allowIdleTimeout: Boolean = false
+): ByteArray? {
+    val out = ByteArrayOutputStream()
+    var matched = 0
+    while (out.size() < 16 * 1024) {
+        val b = try {
+            input.read()
+        } catch (error: SocketTimeoutException) {
+            if (allowIdleTimeout && out.size() == 0) return null
+            throw error
+        }
+        if (b == -1) return null
+        out.write(b)
+        matched = when {
+            (matched == 0 || matched == 2) && b == '\r'.code -> matched + 1
+            (matched == 1 || matched == 3) && b == '\n'.code -> matched + 1
+            b == '\r'.code -> 1
+            else -> 0
+        }
+        if (matched == 4) return out.toByteArray()
+    }
+    return null
 }

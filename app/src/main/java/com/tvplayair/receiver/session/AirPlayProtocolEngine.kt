@@ -60,28 +60,6 @@ object AirPlayHttpRequestParser {
         return ParsedDirectPlayRequest(url, normalizeStartPosition(position))
     }
 
-    fun summarizePlist(body: ByteArray): String {
-        if (!BinaryPlistParser.isBinaryPlist(body)) {
-            return body.toString(Charsets.UTF_8).replace("\r", " ").replace("\n", " ").take(240)
-        }
-        val root = BinaryPlistParser.parse(body)
-        return summarizeObject(root).take(300)
-    }
-
-    private fun summarizeObject(node: Any?, depth: Int = 0): String {
-        if (depth > 4) return "..."
-        return when (node) {
-            null -> "null"
-            is Map<*, *> -> node.entries.joinToString(prefix = "{", postfix = "}") { (k, v) ->
-                "$k:${summarizeObject(v, depth + 1)}"
-            }
-            is List<*> -> node.joinToString(prefix = "[", postfix = "]") { summarizeObject(it, depth + 1) }
-            is ByteArray -> "bytes(${node.size})"
-            is String -> if (node.length > 80) node.take(77) + "..." else node
-            else -> node.toString()
-        }
-    }
-
     private fun findUrlInPlist(node: Any?, depth: Int = 0): String? {
         if (depth > 8 || node == null) return null
         when (node) {
