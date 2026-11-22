@@ -13,7 +13,9 @@ data class AirPlayServerConfig(
 )
 
 interface AirPlayProtocolListener {
-    fun onVideoConfigChanged(mimeType: String, width: Int, height: Int, generationId: Int)
+    fun onVideoConfigChanged(
+        mimeType: String, width: Int, height: Int, generationId: Int, codecConfig: ByteArray, opensProjection: Boolean
+    )
     fun onDirectVideoUrl(url: String, startPosition: Double, playbackId: Long)
     fun onDirectVideoCommand(command: String, value: Double, playbackId: Long)
     fun onClientConnected(clientName: String, dacpId: String, activeRemote: String)

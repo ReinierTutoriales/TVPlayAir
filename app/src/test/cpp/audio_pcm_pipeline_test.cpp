@@ -104,6 +104,24 @@ static void testStaleGenerationSkipped() {
     assert(pipeline.underrunCount() == 0);
 }
 
+static void testGenerationChangeDiscardsPartiallyRenderedPacket() {
+    SharedRingBuffer ring;
+    initAudioRing(ring);
+    AudioPcmPipeline pipeline;
+    pipeline.setGenerationId(1);
+    const std::array<int16_t, 4> previous{11, 11, 11, 11};
+    const std::array<int16_t, 2> current{22, 22};
+    std::array<int16_t, 2> out{};
+    assert(ring.writePacket(previous.data(), sizeof(previous), 1) == RingResult::Ok);
+    pipeline.render(ring, out.data(), 1);
+    assert(out[0] == 11 && out[1] == 11);
+
+    pipeline.setGenerationId(2);
+    assert(ring.writePacket(current.data(), sizeof(current), 2) == RingResult::Ok);
+    pipeline.render(ring, out.data(), 1);
+    assert(out[0] == 22 && out[1] == 22);
+}
+
 static void testOffsetClampingAndPositiveDelay() {
     assert(AudioPcmPipeline::clampOffsetMs(-500) == kMinAudioOffsetMs);
     assert(AudioPcmPipeline::clampOffsetMs(500) == kMaxAudioOffsetMs);
@@ -198,6 +216,7 @@ int main() {
     testPacketBoundariesAndStreaming();
     testUnderrunOutputsSilence();
     testStaleGenerationSkipped();
+    testGenerationChangeDiscardsPartiallyRenderedPacket();
     testOffsetClampingAndPositiveDelay();
     testNegativeOffsetAdvancesStream();
     testMuteAndDuck();

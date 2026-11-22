@@ -10,6 +10,7 @@ import java.net.Socket
 import java.nio.ByteBuffer
 import java.nio.ByteOrder
 import java.util.concurrent.atomic.AtomicBoolean
+import java.util.concurrent.atomic.AtomicInteger
 import javax.crypto.Cipher
 import javax.crypto.spec.IvParameterSpec
 import javax.crypto.spec.SecretKeySpec
@@ -102,8 +103,9 @@ object AirPlayMirrorHeaderParser {
  * using a single reusable DirectByteBuffer (zero per-frame heap allocations).
  */
 class AirPlayMirrorStreamReceiver(
-    private val generationProvider: () -> Int,
-    private val onCodecConfigReady: (isHevc: Boolean, width: Int, height: Int, generationId: Int) -> Unit,
+    private val onCodecConfigReady: (
+        isHevc: Boolean, width: Int, height: Int, generationId: Int, codecConfig: ByteArray, opensProjection: Boolean
+    ) -> Unit,
     private val onStreamEnded: () -> Unit
 ) {
     companion object {
@@ -113,6 +115,7 @@ class AirPlayMirrorStreamReceiver(
     }
 
     private val running = AtomicBoolean(false)
+    private val videoGeneration = AtomicInteger()
     private val directPayload: ByteBuffer = ByteBuffer.allocateDirect(
         AirPlayMirrorHeaderParser.MAX_MIRROR_PAYLOAD_BYTES
     )
@@ -229,6 +232,8 @@ class AirPlayMirrorStreamReceiver(
         var streamIsHevc: Boolean? = null
         var streamWidth = 0
         var streamHeight = 0
+        var streamConfig: ByteArray? = null
+        var generationId = 0
         client.use { sock ->
             sock.soTimeout = CLIENT_TIMEOUT_MS
             sock.tcpNoDelay = true
@@ -254,42 +259,46 @@ class AirPlayMirrorStreamReceiver(
                 if (!readIntoDirectBuffer(input, header.payloadSize, decrypt = isVideo)) {
                     break
                 }
-                val payload = if (isConfig) AirPlayMirrorHeaderParser.unwrapCodecConfig(directPayload) ?: continue
-                    else directPayload
-                val isHevc = if (isConfig) AirPlayMirrorHeaderParser.isHevcCodecConfig(payload)
-                    else streamIsHevc.takeIf { isVideo }
-                if (isHevc == null) continue
-                val generationId = generationProvider()
+                if (isConfig) {
+                    val payload = AirPlayMirrorHeaderParser.unwrapCodecConfig(directPayload) ?: continue
+                    val isHevc = AirPlayMirrorHeaderParser.isHevcCodecConfig(payload) ?: continue
+                    val codecConfig = NativeSharedMemory.nativeConvertMirrorCodecConfig(
+                        payload, payload.remaining(), isHevc
+                    ) ?: continue
+                    if (streamIsHevc == isHevc && streamWidth == header.width &&
+                        streamHeight == header.height && streamConfig.contentEquals(codecConfig)
+                    ) continue
+
+                    val opensProjection = streamConfig == null
+                    streamIsHevc = isHevc
+                    streamWidth = header.width
+                    streamHeight = header.height
+                    streamConfig = codecConfig
+                    generationId = videoGeneration.incrementAndGet()
+                    // Publish codec setup even if the frame ring is full or the mirror is suspended.
+                    onConfigPublished()
+                    onCodecConfigReady(isHevc, streamWidth, streamHeight, generationId, codecConfig, opensProjection)
+                    continue
+                }
+                val isHevc = streamIsHevc ?: continue
+                if (!isVideo) continue
                 packetCount++
                 if (packetCount == 1L || packetCount % 120L == 0L) {
-                    Log.i(TAG, "Mirror TCP rx: packets=$packetCount type=${header.payloadType} size=${header.payloadSize} gen=${generationProvider()}")
-                }
-                val extraFlags = if (isConfig) {
-                    MirrorFrameGate.FLAG_CODEC_CONFIG
-                } else {
-                    0
+                    Log.i(TAG, "Mirror TCP rx: packets=$packetCount size=${header.payloadSize} gen=$generationId")
                 }
                 val writeRes = NativeSharedMemory.nativeWriteVideoFrame(
-                    directBuffer = payload,
-                    size = payload.remaining(),
+                    directBuffer = directPayload,
+                    size = directPayload.remaining(),
                     ptsUs = header.ptsUs,
                     isHevc = isHevc,
-                    isLengthPrefixed = isVideo,
+                    isLengthPrefixed = true,
                     generationId = generationId,
-                    extraFlags = extraFlags
+                    extraFlags = 0
                 )
-                if (writeRes == NativeSharedMemory.VIDEO_WRITE_OK && isConfig) {
-                    if (streamIsHevc != isHevc || streamWidth != header.width || streamHeight != header.height) {
-                        streamIsHevc = isHevc
-                        streamWidth = header.width
-                        streamHeight = header.height
-                        onConfigPublished()
-                        onCodecConfigReady(isHevc, streamWidth, streamHeight, generationId)
-                    }
-                } else if (writeRes != NativeSharedMemory.VIDEO_WRITE_OK &&
+                if (writeRes != NativeSharedMemory.VIDEO_WRITE_OK &&
                     (packetCount <= 3L || packetCount % 60L == 0L)
                 ) {
-                    Log.w(TAG, "nativeWriteVideoFrame failed: res=$writeRes size=${header.payloadSize} type=${header.payloadType}")
+                    Log.w(TAG, "nativeWriteVideoFrame failed: res=$writeRes size=${header.payloadSize}")
                 }
             }
         }

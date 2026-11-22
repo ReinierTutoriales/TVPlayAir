@@ -11,6 +11,7 @@ object NativeSharedMemory {
 
     external fun nativeCreateProducerBuffer(kind: Int): Int
     external fun nativeMapConsumerBuffer(kind: Int, fd: Int, bytes: Long): Boolean
+    external fun nativeDiscardPendingVideoPackets()
     external fun nativeReadVideoPacket(directBuffer: ByteBuffer, generationId: Int): Int
     external fun nativeWriteVideoFrame(
         directBuffer: ByteBuffer,
@@ -21,6 +22,11 @@ object NativeSharedMemory {
         generationId: Int,
         extraFlags: Int
     ): Int
+    external fun nativeConvertMirrorCodecConfig(
+        directBuffer: ByteBuffer,
+        size: Int,
+        isHevc: Boolean
+    ): ByteArray?
     external fun nativeWriteAudioPcm(
         directBuffer: ByteBuffer,
         byteCount: Int,

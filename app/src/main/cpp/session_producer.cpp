@@ -7,6 +7,7 @@
 #include <jni.h>
 #include <memory>
 #include <mutex>
+#include <vector>
 
 namespace {
 std::mutex gVideoProducerMutex;
@@ -45,6 +46,26 @@ Java_com_tvplayair_receiver_session_NativeSharedMemory_nativeWriteVideoFrame(
         static_cast<uint32_t>(generationId),
         static_cast<uint32_t>(extraFlags));
     return static_cast<jint>(res);
+}
+
+JNIEXPORT jbyteArray JNICALL
+Java_com_tvplayair_receiver_session_NativeSharedMemory_nativeConvertMirrorCodecConfig(
+    JNIEnv* env, jobject, jobject directBuffer, jint size, jboolean isHevc) {
+    // Codec setup travels over Binder. Keep the rare control payload bounded.
+    constexpr size_t kMaxCodecConfigBytes = 64 * 1024;
+    if (!directBuffer || size <= 0 || size > static_cast<jint>(kMaxCodecConfigBytes)) return nullptr;
+    auto* src = static_cast<const uint8_t*>(env->GetDirectBufferAddress(directBuffer));
+    if (!src || env->GetDirectBufferCapacity(directBuffer) < size) return nullptr;
+
+    std::vector<uint8_t> annexB(std::min(kMaxCodecConfigBytes, static_cast<size_t>(size) * 2));
+    const auto length = static_cast<jsize>(tvplayair::convertDecoderConfigToAnnexB(
+        src, static_cast<size_t>(size), annexB.data(), annexB.size(), isHevc == JNI_TRUE));
+    if (length <= 0) return nullptr;
+    jbyteArray output = env->NewByteArray(length);
+    if (output) {
+        env->SetByteArrayRegion(output, 0, length, reinterpret_cast<const jbyte*>(annexB.data()));
+    }
+    return output;
 }
 
 JNIEXPORT jint JNICALL

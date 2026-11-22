@@ -17,7 +17,9 @@ import com.tvplayair.receiver.video.NO_DIRECT_CHECKPOINT_MS
 interface SessionEventListener {
     fun onSharedMemoryReady(generationId: Int, activeDirectPlaybackId: Long) = Unit
     fun onSharedMemoryDetached() = Unit
-    fun onVideoConfigChanged(mimeType: String, width: Int, height: Int, generationId: Int, isSnapshot: Boolean) = Unit
+    fun onVideoConfigChanged(
+        mimeType: String, width: Int, height: Int, generationId: Int, codecConfig: ByteArray, opensProjection: Boolean
+    ) = Unit
     fun onDirectVideoUrl(video: DirectPlaybackStart) = Unit
     fun onDirectVideoCommand(command: String, value: Double, playbackId: Long) = Unit
     fun onClientConnected(clientName: String, dacpId: String, activeRemote: String) = Unit
@@ -90,9 +92,9 @@ class SessionConnection(
         override fun onSessionUnavailable() = deliver(epoch) { handleBinderDeath(epoch) }
 
         override fun onVideoConfigChanged(
-            mimeType: String, width: Int, height: Int, generationId: Int, isSnapshot: Boolean
+            mimeType: String, width: Int, height: Int, generationId: Int, codecConfig: ByteArray, opensProjection: Boolean
         ) = deliver(epoch) {
-            listener.onVideoConfigChanged(mimeType, width, height, generationId, isSnapshot)
+            listener.onVideoConfigChanged(mimeType, width, height, generationId, codecConfig, opensProjection)
         }
 
         override fun onDirectVideoUrl(

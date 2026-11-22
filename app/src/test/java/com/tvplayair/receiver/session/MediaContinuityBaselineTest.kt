@@ -138,7 +138,7 @@ class MediaContinuityBaselineTest {
         var visibleVideo: Long? = null
             private set
 
-        override fun start(): Boolean {
+        override fun start(discardPendingFrames: Boolean): Boolean {
             assertNull(preparedVideo)
             mirrorGate.resetGate()
             mirrorRunning = true

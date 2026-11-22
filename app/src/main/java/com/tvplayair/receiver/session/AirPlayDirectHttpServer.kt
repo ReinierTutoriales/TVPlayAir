@@ -59,15 +59,14 @@ class AirPlayDirectHttpServer(
         activeConfig.ed25519PrivateKey?.takeIf { it.size == 32 } ?: fallbackPairingKey
     }
     private val mirrorReceiver = AirPlayMirrorStreamReceiver(
-        generationProvider = { generationId.get() },
-        onCodecConfigReady = { isHevc, width, height, generation ->
+        onCodecConfigReady = { isHevc, width, height, generation, codecConfig, opensProjection ->
             val config = activeConfig
             val mimeType = if (isHevc) MediaFormat.MIMETYPE_VIDEO_HEVC else MediaFormat.MIMETYPE_VIDEO_AVC
             val defaultWidth = if (isHevc) config.maxWidth else config.maxWidth.coerceAtMost(1920)
             val defaultHeight = if (isHevc) config.maxHeight else config.maxHeight.coerceAtMost(1080)
             val w = width.takeIf { it > 0 } ?: defaultWidth
             val h = height.takeIf { it > 0 } ?: defaultHeight
-            listener.onVideoConfigChanged(mimeType, w, h, generation)
+            listener.onVideoConfigChanged(mimeType, w, h, generation, codecConfig, opensProjection)
         },
         onStreamEnded = listener::onMirrorStreamEnded
     )

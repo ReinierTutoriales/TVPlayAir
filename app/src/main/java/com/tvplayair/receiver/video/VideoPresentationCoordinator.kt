@@ -29,7 +29,7 @@ interface AudioHandoffController {
 }
 
 interface MirrorVideoEngine {
-    fun start(): Boolean
+    fun start(discardPendingFrames: Boolean = false): Boolean
     fun stopAndRelease()
 }
 
@@ -95,7 +95,11 @@ class VideoPresentationCoordinator(
         return true
     }
 
-    fun startMirror(reconfigured: Boolean = false): Boolean {
+    fun startMirror(reconfigured: Boolean = false, opensProjection: Boolean = true): Boolean {
+        if (!opensProjection && hasDirectPlayback) {
+            onCachedMirrorAvailable()
+            return false
+        }
         if (state == PresentationState.MIRROR_ACTIVE) {
             if (!reconfigured || mirrorEngine.start()) return true
             state = PresentationState.RECOVERING
@@ -133,20 +137,20 @@ class VideoPresentationCoordinator(
     }
 
     private fun restoreAfterDirect(senderStop: Boolean = false) {
-        if (resumeMirrorAfterDirect && state != PresentationState.DIRECT_WITHOUT_SURFACE) {
-            switchToMirror()
+        if (resumeMirrorAfterDirect) {
+            switchToMirror(discardPendingFrames = true)
         } else {
             returnToStandbyFromDirect(senderStop)
         }
     }
 
-    private fun switchToMirror(): Boolean {
+    private fun switchToMirror(discardPendingFrames: Boolean = false): Boolean {
         resumeMirrorAfterDirect = false
         directPlaybackId = null
         state = PresentationState.SWITCHING_TO_MIRROR
         directEngine.stopAndClear()
         surfaceController.showMirrorSurface()
-        val started = mirrorEngine.start()
+        val started = mirrorEngine.start(discardPendingFrames)
         audioController.setPausedForExternalPlayer(false)
         state = if (started) PresentationState.MIRROR_ACTIVE else PresentationState.RECOVERING
         return started
