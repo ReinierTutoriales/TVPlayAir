@@ -47,6 +47,7 @@ class MirrorDecoder(
 
     @Volatile
     private var config = MirrorVideoConfig()
+    @Volatile
     private var codec: MediaCodec? = null
     private var workerThread: Thread? = null
 
@@ -97,11 +98,7 @@ class MirrorDecoder(
         }
         workerThread = null
 
-        codec?.let { activeCodec ->
-            runCatching { activeCodec.stop() }
-            runCatching { activeCodec.release() }
-        }
-        codec = null
+        codec?.let(::releaseCodec)
     }
 
     private fun createAndConfigureCodec(
@@ -168,6 +165,12 @@ class MirrorDecoder(
         }.getOrNull()
     }
 
+    private fun releaseCodec(activeCodec: MediaCodec) {
+        if (codec === activeCodec) codec = null
+        runCatching { activeCodec.stop() }
+        runCatching { activeCodec.release() }
+    }
+
     private fun decodeLoop() {
         val bufferInfo = MediaCodec.BufferInfo()
         var activeCodec = codec
@@ -221,11 +224,19 @@ class MirrorDecoder(
                 }
             }
 
-            val currentCodec = activeCodec ?: continue
-
             if (!frameGate.shouldSubmitFrame(flags)) {
                 continue
             }
+
+            if (activeCodec == null && (flags and MirrorFrameGate.FLAG_KEY_FRAME) != 0) {
+                val surface = surfaceProvider()
+                val csd = frameGate.getCachedCodecConfig()
+                if (surface != null && surface.isValid && csd != null) {
+                    activeCodec = createAndConfigureCodec(surface, config, csd)
+                    codec = activeCodec
+                }
+            }
+            val currentCodec = activeCodec ?: continue
 
             var inputIndex = -1
             var attempts = 0
@@ -237,18 +248,24 @@ class MirrorDecoder(
                 attempts++
             }
             if (inputIndex < 0) {
-                Log.w(TAG, "MediaCodec input congested; flushing decoder and waiting for next IDR")
-                runCatching { currentCodec.flush() }
-                frameGate.resetGate()
+                if (running.get()) {
+                    Log.w(TAG, "MediaCodec input congested; rebuilding on next keyframe")
+                    releaseCodec(currentCodec)
+                    activeCodec = null
+                    frameGate.resetGate()
+                }
                 continue
             }
 
-            val inputBuffer = currentCodec.getInputBuffer(inputIndex) ?: continue
-            inputBuffer.clear()
-            if (payloadSize > inputBuffer.capacity()) {
-                currentCodec.queueInputBuffer(inputIndex, 0, 0, 0L, 0)
+            val inputBuffer = runCatching { currentCodec.getInputBuffer(inputIndex) }.getOrNull()
+            if (inputBuffer == null || payloadSize > inputBuffer.capacity()) {
+                releaseCodec(currentCodec)
+                activeCodec = null
+                frameGate.resetGate()
+                Log.w(TAG, "Mirror input buffer unavailable for ${payloadSize}B")
                 continue
             }
+            inputBuffer.clear()
 
             packetBuffer.limit(MirrorFrameGate.PACKET_HEADER_BYTES + payloadSize)
             packetBuffer.position(MirrorFrameGate.PACKET_HEADER_BYTES)
@@ -265,8 +282,12 @@ class MirrorDecoder(
 
             runCatching {
                 currentCodec.queueInputBuffer(inputIndex, 0, payloadSize, ptsUs, codecFlags)
+                frameGate.onFrameSubmitted(flags)
             }.onFailure {
-                Log.w(TAG, "queueInputBuffer failed", it)
+                Log.w(TAG, "queueInputBuffer failed; rebuilding on next keyframe", it)
+                releaseCodec(currentCodec)
+                activeCodec = null
+                frameGate.resetGate()
             }
         }
     }
@@ -297,7 +318,7 @@ class MirrorDecoder(
                     if (w > 0 && h > 0) {
                         Log.i(TAG, "Mirror output format changed: ${w}x$h")
                         onVideoSizeChanged?.let { callback ->
-                            renderListenerHandler.post { callback(w, h) }
+                            renderListenerHandler.post { if (codec === activeCodec) callback(w, h) }
                         }
                     }
                 }

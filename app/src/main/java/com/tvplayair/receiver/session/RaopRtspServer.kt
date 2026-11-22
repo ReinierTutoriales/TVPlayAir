@@ -400,17 +400,28 @@ class RaopRtspServer(
         BitmapFactory.decodeByteArray(bytes, 0, bytes.size, bounds)
         val largestSide = maxOf(bounds.outWidth, bounds.outHeight)
         if (bounds.outWidth !in 1..8192 || bounds.outHeight !in 1..8192) return null
+        val maxBytes = 128 * 1024
+        if (largestSide <= 768 && bytes.size <= maxBytes) return bytes
+
         val options = BitmapFactory.Options().apply {
             inSampleSize = 1
-            while (largestSide / inSampleSize > 384) inSampleSize *= 2
+            while (largestSide / inSampleSize > 768) inSampleSize *= 2
         }
-        val bitmap = BitmapFactory.decodeByteArray(bytes, 0, bytes.size, options) ?: return null
-        return try {
-            val output = ByteArrayOutputStream()
-            if (!bitmap.compress(Bitmap.CompressFormat.JPEG, 80, output) || output.size() > 128 * 1024) null
-            else output.toByteArray()
-        } finally {
-            bitmap.recycle()
+        val output = ByteArrayOutputStream()
+        while (true) {
+            val bitmap = BitmapFactory.decodeByteArray(bytes, 0, bytes.size, options) ?: return null
+            try {
+                for (quality in intArrayOf(85, 65)) {
+                    output.reset()
+                    if (bitmap.compress(Bitmap.CompressFormat.JPEG, quality, output) &&
+                        output.size() <= maxBytes
+                    ) return output.toByteArray()
+                }
+            } finally {
+                bitmap.recycle()
+            }
+            if (largestSide / options.inSampleSize <= 384) return null
+            options.inSampleSize *= 2
         }
     }
 

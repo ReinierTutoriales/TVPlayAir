@@ -1,10 +1,13 @@
 package com.tvplayair.receiver.ui
 
 import com.tvplayair.receiver.audio.OboeAudioConsumer
+import com.tvplayair.receiver.session.RaopNowPlaying
+import com.tvplayair.receiver.session.RaopTrack
 import com.tvplayair.receiver.video.DirectPlaybackTelemetry
 import com.tvplayair.receiver.video.PresentationState
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
+import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
@@ -29,6 +32,48 @@ class TvOverlayStateTest {
         assertFalse(controls.copy(visible = true).showingVideoControls)
         assertFalse(controls.copy(presentationState = PresentationState.MIRROR_ACTIVE).showingVideoControls)
         assertFalse(controls.copy(presentationState = PresentationState.IDLE).showingVideoControls)
+    }
+
+    @Test
+    fun switchingAppsNeverRestoresArtworkOrVideoControlsFromThePreviousMode() {
+        val oldTrack = RaopNowPlaying(RaopTrack("Anterior", null, null), byteArrayOf(1))
+        val newTrack = RaopNowPlaying(RaopTrack("Actual", null, null), byteArrayOf(2))
+        var state = TvOverlayState(audioProjectionActive = true).withNowPlaying(oldTrack)
+
+        repeat(100) {
+            state = state.withPresentation(PresentationState.SWITCHING_TO_DIRECT)
+            assertNull(state.nowPlaying)
+            assertFalse(state.showingAudio)
+            state = state.withNowPlaying(oldTrack).withPresentation(PresentationState.DIRECT_ACTIVE)
+                .copy(videoControls = DirectPlaybackTelemetry(10.0, 1.0, 1f, true, false))
+            assertNull(state.nowPlaying)
+            state = state.withPresentation(PresentationState.MIRROR_ACTIVE).withNowPlaying(oldTrack)
+            assertNull(state.videoControls)
+            state = state.withPresentation(PresentationState.IDLE)
+            assertNull(state.nowPlaying)
+            assertTrue(state.showingAudio)
+            state = state.withNowPlaying(newTrack)
+            assertEquals(newTrack, state.nowPlaying)
+        }
+    }
+
+    @Test
+    fun freshAudioMetadataSurvivesVideoToAudioHandoff() {
+        val old = RaopNowPlaying(RaopTrack("Anterior", null, null), byteArrayOf(1))
+        val artwork = byteArrayOf(2)
+        val fresh = RaopNowPlaying(RaopTrack("Actual", null, null), artwork)
+        val direct = TvOverlayState(audioProjectionActive = true).withNowPlaying(old)
+            .withPresentation(PresentationState.DIRECT_ACTIVE)
+        assertNull(direct.withNowPlaying(old).withPresentation(PresentationState.IDLE).nowPlaying)
+
+        val handoff = direct.withAudioStreamStarted()
+            .withNowPlaying(RaopNowPlaying(artwork = artwork))
+            .withNowPlaying(fresh)
+        assertNull(handoff.nowPlaying)
+        assertFalse(handoff.showingAudio)
+        assertEquals(fresh, handoff.withPresentation(PresentationState.IDLE).nowPlaying)
+        assertNull(handoff.clearAudioMetadata().withPresentation(PresentationState.IDLE).nowPlaying)
+        assertNull(handoff.withNowPlaying(null).withPresentation(PresentationState.IDLE).nowPlaying)
     }
 
     @Test

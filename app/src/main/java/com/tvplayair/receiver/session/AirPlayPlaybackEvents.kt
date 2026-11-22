@@ -4,6 +4,7 @@ import com.tvplayair.receiver.video.DirectPlaybackTelemetry
 import java.net.Socket
 import java.nio.charset.StandardCharsets
 import java.util.concurrent.ArrayBlockingQueue
+import java.util.concurrent.CompletableFuture
 
 internal class AirPlayPlaybackEvents {
     data class SessionKey(val peer: String, val appleSessionId: String?)
@@ -74,6 +75,7 @@ internal class AirPlayPlaybackEvents {
     private var currentEvent: Event? = null
     private var playbackId = 0L
     private var stopRequested = false
+    private var reverseReady = CompletableFuture<Unit>()
 
     @Synchronized
     fun attach(connection: Channel) {
@@ -85,12 +87,16 @@ internal class AirPlayPlaybackEvents {
             standbyChannel?.close()
             standbyChannel = connection
         }
+        if (activeReverse() != null) reverseReady.complete(Unit)
     }
 
     @Synchronized
     fun detach(connection: Channel) {
         if (channel === connection) channel = null
         if (standbyChannel === connection) standbyChannel = null
+        if (activeReverse() == null && reverseReady.isDone) {
+            reverseReady = CompletableFuture()
+        }
     }
 
     @Synchronized
@@ -107,6 +113,9 @@ internal class AirPlayPlaybackEvents {
             }
             activeSession = key
         }
+        reverseReady.cancel(false)
+        reverseReady = CompletableFuture()
+        if (activeReverse() != null) reverseReady.complete(Unit)
         playbackId++
         stopRequested = false
         currentEvent = null
@@ -122,6 +131,7 @@ internal class AirPlayPlaybackEvents {
         if (stopRequested) return
         if (stop) {
             stopRequested = true
+            reverseReady.cancel(false)
             publish(State.STOPPED)
         }
         dispatch(playbackId)
@@ -138,6 +148,7 @@ internal class AirPlayPlaybackEvents {
     fun finish(id: Long, onAccepted: () -> Unit = {}) {
         if (activeSession == null || id != playbackId || stopRequested) return
         stopRequested = true
+        reverseReady.cancel(false)
         onAccepted()
         publish(State.STOPPED)
     }
@@ -150,8 +161,23 @@ internal class AirPlayPlaybackEvents {
     }
 
     @Synchronized
+    fun <T> withPlayback(id: Long, action: () -> T): T? =
+        if (activeSession != null && playbackId == id && !stopRequested) action() else null
+
+    @Synchronized
+    fun reverseSignal(id: Long): CompletableFuture<Unit>? = withPlayback(id) { reverseReady }
+
+    private fun activeReverse(): Channel? {
+        val active = activeSession ?: return null
+        return channel ?: standbyChannel?.takeIf {
+            it.key.peer == active.peer &&
+                (it.key.appleSessionId == null || active.appleSessionId == null)
+        }
+    }
+
+    @Synchronized
     fun sendFcupRequest(url: String, requestId: Int, sessionIdOverride: Long? = null): Boolean {
-        val activeChannel = channel ?: standbyChannel ?: return false
+        val activeChannel = activeReverse() ?: return false
         val escapedUrl = url
             .replace("&", "&amp;")
             .replace("<", "&lt;")
@@ -203,5 +229,7 @@ internal class AirPlayPlaybackEvents {
         standbyChannel = null
         activeSession = null
         currentEvent = null
+        reverseReady.cancel(false)
+        reverseReady = CompletableFuture()
     }
 }
