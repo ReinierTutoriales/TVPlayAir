@@ -4,11 +4,23 @@ import java.io.BufferedInputStream
 import java.io.InputStream
 import java.net.SocketTimeoutException
 import org.junit.Assert.assertArrayEquals
+import org.junit.Assert.assertFalse
+import org.junit.Assert.assertTrue
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertThrows
 import org.junit.Test
 
 class AirPlayHttpHeaderTest {
+    @Test
+    fun acceptsTheReverseAcknowledgementObservedDuringTrackChange() {
+        assertTrue(isAirPlayReverseAck("EVENT/1.0 200 OK"))
+        assertTrue(isAirPlayReverseAck("HTTP/1.1 200 OK"))
+        assertTrue(isAirPlayReverseAck("RTSP/1.0 200 OK"))
+        assertFalse(isAirPlayReverseAck("EVENT/1.0 400 Bad Request"))
+        assertFalse(isAirPlayReverseAck("OTHER/1.0 200 OK"))
+        assertFalse(isAirPlayReverseAck("EVENT/1.0"))
+    }
+
     @Test
     fun idleLocalKeepAliveClosesWithoutReportingRequestFailure() {
         assertNull(readAirPlayHttpHeader(streamEndingInTimeout(""), allowIdleTimeout = true))

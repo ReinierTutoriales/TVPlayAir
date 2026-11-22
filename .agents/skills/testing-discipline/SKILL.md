@@ -16,7 +16,7 @@ description: Use for TVPlayAir product changes, dependency/build fixes and miles
 
 For changes affecting playback, transport, metadata, UI or process boundaries, read `../media-continuity/SKILL.md`. Add deterministic tests for: audio A->audio B (same transport and new transport), audio->video->audio, video A->video B, mirror->video->mirror, rapid app switching, delayed artwork, reordered metadata, duplicated stop/flush, outdated reverse-channel commands, first-frame timeout, disconnect/reconnect, binder death, background/foreground and D-pad long-press. Assert that no stale generation can update the UI or receive controls; no state can remain in Preparing/Recovering forever.
 
-Instrument request-to-first-frame, first-audio, artwork freshness, A/V drift, dropped frames, underruns, p50/p95/p99 transition latency and error recovery. Run at least 100 simulated transitions in CI; publish actual measurements rather than inventing latency guarantees.
+Instrument request-to-first-frame, first-audio, artwork freshness, A/V drift, dropped frames, underruns, p50/p95/p99 transition latency and error recovery. The JVM suite runs a 100-cycle `MediaContinuityBaselineTest` across RAOP, mirroring, direct playback, stale FCUP, and the return to audio. Follow the single-candidate capture and verification workflow in [the stabilization baseline](../../../docs/BASELINE_ESTABILIZACION.md). Record actual measurements for latency claims.
 
 ## Required verification
 
@@ -45,7 +45,7 @@ If hardware was not tested, mark it pending. Never convert a target requirement 
 2. Identify the first causal error, not the last cascade message.
 3. Reproduce it with a minimal fixture or command.
 4. Add the smallest assertion that detects the original defect.
-5. Apply one cause-focused fix.
+5. Apply the smallest fixes for the demonstrated breaks in the same continuity contract.
 6. Re-run the focused test and required suites.
 7. Require results for the new exact SHA. Never reuse a prior green result.
 

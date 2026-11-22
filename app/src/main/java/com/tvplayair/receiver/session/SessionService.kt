@@ -49,10 +49,11 @@ class SessionService : Service() {
         val mimeType: String,
         val width: Int,
         val height: Int,
-        val generationId: Int
+        val generationId: Int,
+        val codecConfig: ByteArray
     ) {
-        fun sendTo(callback: ITvPlayCallback, isSnapshot: Boolean = false) =
-            callback.onVideoConfigChanged(mimeType, width, height, generationId, isSnapshot)
+        fun sendTo(callback: ITvPlayCallback, opensProjection: Boolean = false) =
+            callback.onVideoConfigChanged(mimeType, width, height, generationId, codecConfig, opensProjection)
     }
 
     private val callbackLock = Any()
@@ -88,12 +89,14 @@ class SessionService : Service() {
             mimeType: String,
             width: Int,
             height: Int,
-            generationId: Int
+            generationId: Int,
+            codecConfig: ByteArray,
+            opensProjection: Boolean
         ) {
             synchronized(callbackLock) {
-                val config = MirrorConfig(mimeType, width, height, generationId)
+                val config = MirrorConfig(mimeType, width, height, generationId, codecConfig)
                 latestMirrorConfig = config
-                runCatching { callback?.let { config.sendTo(it) } }
+                runCatching { callback?.let { config.sendTo(it, opensProjection) } }
             }
             ensureUiForeground()
         }
@@ -128,13 +131,10 @@ class SessionService : Service() {
             }
         }
 
-        override fun onClientDisconnected() {
+        override fun onMirrorStreamEnded() {
             synchronized(callbackLock) {
-                dacpController.onClientDisconnected()
                 latestMirrorConfig = null
-                latestNowPlaying = null
-                activeAudioGeneration = null
-                runCatching { callback?.onClientDisconnected() }
+                runCatching { callback?.onMirrorStreamEnded() }
             }
         }
 
@@ -157,11 +157,17 @@ class SessionService : Service() {
             }
         }
 
+        override fun onAudioStreamStopped() {
+            synchronized(callbackLock) {
+                activeAudioGeneration = null
+                runCatching { callback?.onAudioStreamStopped() }
+            }
+        }
+
         override fun onAudioStreamStarted(generationId: Int) {
             synchronized(callbackLock) {
                 if (activeAudioGeneration == generationId) return
                 activeAudioGeneration = generationId
-                latestMirrorConfig = latestMirrorConfig?.copy(generationId = generationId)
                 runCatching { callback?.onAudioStreamStarted(generationId) }
             }
             ensureUiForeground()
@@ -196,10 +202,10 @@ class SessionService : Service() {
                     videoCopy.close()
                 }
                 callback = cb
+                activeAudioGeneration?.let { runCatching { cb.onAudioStreamStarted(it) } }
                 sendNowPlaying(cb, latestNowPlaying)
                 sendAudioControlsAvailability(cb)
-                activeAudioGeneration?.let { runCatching { cb.onAudioStreamStarted(it) } }
-                latestMirrorConfig?.let { config -> runCatching { config.sendTo(cb, isSnapshot = true) } }
+                latestMirrorConfig?.let { config -> runCatching { config.sendTo(cb) } }
                 directPlayback?.let { video -> runCatching { cb.showDirectVideo(video) } }
             }
         }

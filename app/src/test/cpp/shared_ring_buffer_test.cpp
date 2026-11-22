@@ -33,7 +33,11 @@ static void testOverflowAndGeneration() {
 
     std::array<char, payload> out{};
     uint32_t outSize = 0;
+    ring.discardPending();
+    assert(ring.readPacket(out.data(), out.size(), &outSize, capacity) == RingResult::Empty);
+    assert(ring.droppedPackets() == 1);
     for (uint32_t generation = 1; generation <= capacity; ++generation) {
+        assert(ring.writePacket(value, sizeof(value), generation) == RingResult::Ok);
         assert(ring.readPacket(out.data(), out.size(), &outSize, generation) == RingResult::Ok);
         assert(outSize == sizeof(value) && std::memcmp(out.data(), value, sizeof(value)) == 0);
     }

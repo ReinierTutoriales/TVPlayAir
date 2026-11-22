@@ -100,6 +100,12 @@ Java_com_tvplayair_receiver_session_NativeSharedMemory_nativeReadVideoPacket(
 }
 
 extern "C" JNIEXPORT void JNICALL
+Java_com_tvplayair_receiver_session_NativeSharedMemory_nativeDiscardPendingVideoPackets(
+    JNIEnv*, jobject) {
+    gConsumerVideo.discardPending();
+}
+
+extern "C" JNIEXPORT void JNICALL
 Java_com_tvplayair_receiver_session_NativeSharedMemory_nativeDestroyProducerBuffers(
     JNIEnv*, jobject) {
     gProducerVideo.detach();

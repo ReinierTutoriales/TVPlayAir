@@ -173,6 +173,13 @@ public:
         return RingResult::Ok;
     }
 
+    // Consumer only: discard the backlog present at this instant without copying it.
+    void discardPending() {
+        if (!valid()) return;
+        const uint32_t write = header_->writePos.load(std::memory_order_acquire);
+        header_->readPos.store(write, std::memory_order_release);
+    }
+
     uint32_t droppedPackets() const {
         return valid() ? header_->droppedPackets.load(std::memory_order_relaxed) : 0;
     }

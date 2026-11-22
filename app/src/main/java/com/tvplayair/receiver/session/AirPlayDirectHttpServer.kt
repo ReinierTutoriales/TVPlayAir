@@ -59,16 +59,16 @@ class AirPlayDirectHttpServer(
         activeConfig.ed25519PrivateKey?.takeIf { it.size == 32 } ?: fallbackPairingKey
     }
     private val mirrorReceiver = AirPlayMirrorStreamReceiver(
-        generationProvider = { generationId.get() },
-        onCodecConfigReady = { isHevc, width, height, generation ->
+        onCodecConfigReady = { isHevc, width, height, generation, codecConfig, opensProjection ->
             val config = activeConfig
             val mimeType = if (isHevc) MediaFormat.MIMETYPE_VIDEO_HEVC else MediaFormat.MIMETYPE_VIDEO_AVC
             val defaultWidth = if (isHevc) config.maxWidth else config.maxWidth.coerceAtMost(1920)
             val defaultHeight = if (isHevc) config.maxHeight else config.maxHeight.coerceAtMost(1080)
             val w = width.takeIf { it > 0 } ?: defaultWidth
             val h = height.takeIf { it > 0 } ?: defaultHeight
-            listener.onVideoConfigChanged(mimeType, w, h, generation)
-        }
+            listener.onVideoConfigChanged(mimeType, w, h, generation, codecConfig, opensProjection)
+        },
+        onStreamEnded = listener::onMirrorStreamEnded
     )
     private val raopRtspServer = RaopRtspServer(
         listener = listener,
@@ -274,9 +274,7 @@ class AirPlayDirectHttpServer(
                     ?: break
                 val firstAckLine = acknowledgement.substringBefore("\r\n")
                 Log.i(TAG, "<- /reverse ack: $firstAckLine")
-                val status = firstAckLine.split(' ')
-                val protoOk = status.getOrNull(0) == "HTTP/1.1" || status.getOrNull(0) == "RTSP/1.0"
-                if (!protoOk || status.getOrNull(1) != "200") break
+                if (!isAirPlayReverseAck(firstAckLine)) break
                 val ackLen = acknowledgement.lineSequence()
                     .firstOrNull { it.startsWith("Content-Length:", ignoreCase = true) }
                     ?.substringAfter(':')
@@ -738,4 +736,13 @@ internal fun readAirPlayHttpHeader(
         if (matched == 4) return out.toByteArray()
     }
     return null
+}
+
+
+internal fun isAirPlayReverseAck(statusLine: String): Boolean {
+    val fields = statusLine.split(' ', limit = 3)
+    return fields.getOrNull(1) == "200" && when (fields.first()) {
+        "HTTP/1.1", "RTSP/1.0", "EVENT/1.0" -> true
+        else -> false
+    }
 }

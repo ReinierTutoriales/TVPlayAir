@@ -51,25 +51,20 @@ class MirrorDecoder(
     private var codec: MediaCodec? = null
     private var workerThread: Thread? = null
 
-    fun setGeneration(generation: Int) {
-        generationId.set(generation)
-    }
-
-    fun updateConfig(newConfig: MirrorVideoConfig): Boolean {
-        if (config == newConfig) return false
-        val mimeChanged = config.mimeType != newConfig.mimeType
+    fun updateConfig(newConfig: MirrorVideoConfig, generation: Int, codecConfig: ByteArray): Boolean {
+        if (generationId.get() == generation && config == newConfig &&
+            frameGate.getCachedCodecConfig().contentEquals(codecConfig)
+        ) return false
         stopAndRelease()
         config = newConfig
-        if (mimeChanged) {
-            frameGate.clearAll()
-        } else {
-            frameGate.resetGate()
-        }
+        generationId.set(generation)
+        frameGate.clearAll()
+        frameGate.onCodecConfig(codecConfig)
         return true
     }
 
     @Synchronized
-    override fun start(): Boolean {
+    override fun start(discardPendingFrames: Boolean): Boolean {
         if (running.get()) return true
         val surface = surfaceProvider()
         if (surface == null || !surface.isValid) {
@@ -85,7 +80,10 @@ class MirrorDecoder(
         }
 
         running.set(true)
-        workerThread = Thread(::decodeLoop, "TVPlayAir-MirrorDecoder").apply { start() }
+        workerThread = Thread({
+            if (discardPendingFrames) NativeSharedMemory.nativeDiscardPendingVideoPackets()
+            decodeLoop()
+        }, "TVPlayAir-MirrorDecoder").apply { start() }
         return true
     }
 

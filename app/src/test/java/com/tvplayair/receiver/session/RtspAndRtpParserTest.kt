@@ -15,6 +15,46 @@ import javax.crypto.spec.SecretKeySpec
 class RtspAndRtpParserTest {
 
     @Test
+    fun mirroringRetiresPriorAudioButPreservesAudioNegotiatedOnTheSameConnection() {
+        val updates = mutableListOf<RaopNowPlaying?>()
+        val playback = RaopNowPlayingSession { updates += it }
+        val previous = Any()
+        val mirror = Any()
+        playback.activate(previous)
+        playback.track(previous, 90L, RaopTrack("Previous audio", null, null))
+        assertTrue(playback.retireAudioForMirror(mirror))
+        assertNull(updates.last())
+        playback.track(previous, 91L, RaopTrack("Late update", null, null))
+        assertNull(updates.last())
+
+        playback.activate(mirror)
+        assertFalse(playback.retireAudioForMirror(mirror))
+        assertNotNull(updates.last())
+    }
+
+    @Test
+    fun mirroringPreservesCompanionAudioOnASeparateConnectionWithTheSameSessionId() {
+        val playback = RaopNowPlayingSession { }
+        val audio = AirPlayConnectionCrypto { ByteArray(32) }.apply { mediaSessionId = "mirror-session" }
+        val mirror = AirPlayConnectionCrypto { ByteArray(32) }.apply { mediaSessionId = "mirror-session" }
+        playback.activate(audio)
+        assertFalse(playback.retireAudioForMirror(mirror))
+        mirror.mediaSessionId = "different-session"
+        assertTrue(playback.retireAudioForMirror(mirror))
+    }
+
+    @Test
+    fun combinedMirrorSetupKeepsBothVideoAndAudioDescriptors() {
+        val video = mapOf("type" to 110L, "streamConnectionID" to 7L)
+        val audio = mapOf("type" to 96L, "sr" to 44100L)
+        val encoded = BinaryPlistWriter.encode(mapOf("streams" to listOf(video, audio)))
+        val decoded = BinaryPlistParser.parse(encoded) as Map<*, *>
+        assertEquals(listOf(video, audio), airPlaySetupStreams(decoded))
+        assertTrue(airPlaySetupStreams(mapOf("streams" to listOf(mapOf("type" to 999L)))).isEmpty())
+        assertEquals(listOf(audio, video), airPlaySetupStreams(mapOf("streams" to listOf(audio, video))))
+    }
+
+    @Test
     fun freshSetupOnTheSameConnectionStartsANewAudioGeneration() {
         val published = mutableListOf<RaopNowPlaying?>()
         val playback = RaopNowPlayingSession { published += it }
@@ -45,6 +85,30 @@ class RtspAndRtpParserTest {
         playback.artwork(source, 2L, null)
         assertEquals(3, events.size)
         assertNull(events.last()?.artwork)
+    }
+
+    @Test
+    fun clearArtworkWithoutRtpTimeKeepsTrackAndRejectsRetiredSources() {
+        var visible: RaopNowPlaying? = null
+        val playback = RaopNowPlayingSession { visible = it }
+        val oldSource = Any()
+        val source = Any()
+        val track = RaopTrack("Current song", null, null)
+        val artwork = byteArrayOf(1)
+        playback.activate(oldSource)
+        playback.activate(source)
+        playback.track(source, 20L, track)
+        playback.artwork(source, 20L, artwork)
+
+        playback.artwork(oldSource, null, null)
+        playback.artwork(source, 19L, null)
+        assertArrayEquals(artwork, visible?.artwork)
+        playback.artwork(source, null, null)
+        assertNull(visible?.artwork)
+        assertEquals(track, visible?.track)
+
+        playback.artwork(source, 20L, artwork)
+        assertArrayEquals(artwork, visible?.artwork)
     }
 
     @Test

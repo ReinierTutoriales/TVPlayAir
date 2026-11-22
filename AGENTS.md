@@ -63,13 +63,13 @@ Hardware validation is a separate gate for claims CI cannot prove: codec/VPU tra
 
 ## Working method
 
-1. Read this file, the relevant skill, implementation, tests, engineering spec and official Android/AndroidX/NDK/Oboe/Media3 docs before changing behavior.
-2. Record base SHA, exact failing check or missing behavior, expected outcome, affected consumers and the smallest regression test.
-3. Classify failures before editing: product defect, dependency resolution, build configuration, test fixture or runner/environment. Fix the cause, not the symptom.
-4. One root cause and one reviewable commit per change where practical. Avoid broad refactors and duplicate tests.
-5. Inspect resolved dependencies when version alignment is in question. Do not assume the BOM controls artifacts outside its constraints.
-6. Require exact-HEAD CI success before integration. Keep the next milestone blocked until the current milestone is closed.
-7. Report evidence, unverified assumptions, residual risks and hardware checks separately. Never claim zero regressions or unmeasured performance gains.
+1. Read the product goal, relevant skill, implementation, configuration and tests. Check official platform and provider documentation for the exact source-to-TV route before proposing code.
+2. Record the base SHA, expected outcome, first failing or missing behavior, route owner and applicable API/configuration. Use the provider's supported integration when it already delivers the outcome. Inspect and reuse the implementation already in the repo.
+3. Distinguish a project defect from missing external integration, configuration, dependency resolution, a test fixture or a runner/device issue. For undocumented behavior, distinguish a reproducible observation from a hypothesis.
+4. Trace the affected entry points and shared lifecycle once. Group changes that fix the same contract in a reviewable candidate. Add the smallest regression that would have caught the failure.
+5. Use stable documented APIs and official samples. Check current release notes and resolved dependency versions for the change. Upgrade compatible groups together when needed, and evaluate previews against a documented benefit.
+6. Run focused checks locally, then one full CI pass on the candidate SHA before integration. Repeat a failed check once the identified cause has changed.
+7. Report the actual commit, checks, prerequisites and device behavior verified. Separate conclusions from build, tests and device evidence.
 
 ## Git and authorship
 

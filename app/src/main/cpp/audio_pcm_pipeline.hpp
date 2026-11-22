@@ -81,6 +81,10 @@ public:
         }
 
         const uint32_t expectedGen = generationId_.load(std::memory_order_relaxed);
+        if (packetGenerationId_ != expectedGen) {
+            packetFrameOffset_ = 0;
+            packetFrameCount_ = 0;
+        }
         const bool duck = ducked_.load(std::memory_order_relaxed);
         const int32_t targetFrames =
             targetOffsetMs_.load(std::memory_order_relaxed) * kAudioFramesPerMs;
@@ -153,6 +157,7 @@ private:
                 if (frames > 0) {
                     packetFrameOffset_ = 0;
                     packetFrameCount_ = frames;
+                    packetGenerationId_ = expectedGen;
                     return true;
                 }
                 continue;
@@ -168,6 +173,7 @@ private:
     std::array<int16_t, kMaxAudioPacketBytes / sizeof(int16_t)> packetBuf_{};
     uint32_t packetFrameOffset_ = 0;
     uint32_t packetFrameCount_ = 0;
+    uint32_t packetGenerationId_ = 0;
     int32_t appliedOffsetFrames_ = 0;
 
     std::atomic<int32_t> targetOffsetMs_{0};

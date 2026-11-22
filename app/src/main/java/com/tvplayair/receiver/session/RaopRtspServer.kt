@@ -60,7 +60,6 @@ internal class RaopRtspServer(
 
     private val running = AtomicBoolean(false)
     private val generationId = sharedGenerationId
-    private val activeSessions = AtomicInteger(0)
     private val nowPlaying = RaopNowPlayingSession(listener::onNowPlaying)
     private val audioReceiver = RaopAudioRtpReceiver { generationId.get() }
     private val timingAndEventServers = AirPlayTimingAndEventServers()
@@ -100,9 +99,11 @@ internal class RaopRtspServer(
 
     fun stop() {
         running.set(false)
-        nowPlaying.clear()
+        synchronized(nowPlaying) {
+            nowPlaying.clear()
+            audioReceiver.stop()
+        }
         timingAndEventServers.stop()
-        audioReceiver.stop()
         runCatching { serverSocket?.close() }
         serverSocket = null
         acceptThread?.let {
@@ -138,7 +139,6 @@ internal class RaopRtspServer(
     ) {
         val peer = socket.inetAddress?.hostAddress ?: "unknown"
         val source = crypto
-        activeSessions.incrementAndGet()
         try {
             socket.soTimeout = CLIENT_SO_TIMEOUT_MS
             val output = socket.getOutputStream()
@@ -189,8 +189,10 @@ internal class RaopRtspServer(
         } catch (error: IOException) {
             Log.i(TAG, "RTSP connection ended for $peer (${error.javaClass.simpleName})")
         } finally {
-            nowPlaying.clear(source)
-            activeSessions.decrementAndGet()
+            nowPlaying.withOwner(source) {
+                nowPlaying.clear(source)
+                stopAudioStream()
+            }
         }
     }
 
@@ -224,7 +226,9 @@ internal class RaopRtspServer(
                 }
             }
             "ANNOUNCE" -> {
-                configureFromSdp(String(request.body, StandardCharsets.UTF_8))
+                synchronized(nowPlaying) {
+                    configureFromSdp(String(request.body, StandardCharsets.UTF_8))
+                }
                 output.write(RtspMessageParser.formatResponse(200, "OK", cseq))
             }
             "POST" -> {
@@ -288,8 +292,10 @@ internal class RaopRtspServer(
                     handleBinaryPlistSetup(request, output, source)
                 } else {
                     val transport = RtspMessageParser.parseTransport(request.header("transport"))
-                    if (audioReceiver.start(RaopAudioRtpReceiver.DEFAULT_AUDIO_PORT)) {
-                        activateAudioSource(source, request)
+                    synchronized(nowPlaying) {
+                        if (audioReceiver.start(RaopAudioRtpReceiver.DEFAULT_AUDIO_PORT)) {
+                            activateAudioSource(source, request)
+                        }
                     }
                     val responseTransport = buildString {
                         append("RTP/AVP/UDP;unicast;mode=record")
@@ -338,9 +344,10 @@ internal class RaopRtspServer(
                     "application/x-dmap-tagged" -> RaopMetadataParser.track(request.body)?.let {
                         nowPlaying.track(source, timestamp, it, remoteFor(request))
                     }
-                    "image/jpeg", "image/png" -> {
-                        nowPlaying.artwork(source, timestamp, artworkThumbnail(request.body))
+                    "image/jpeg", "image/png" -> artworkThumbnail(request.body)?.let {
+                        nowPlaying.artwork(source, timestamp, it)
                     }
+                    "image/none" -> nowPlaying.artwork(source, timestamp, null)
                     "text/parameters", null -> updateVolume(request.body)
                 }
                 output.write(RtspMessageParser.formatResponse(200, "OK", cseq))
@@ -353,11 +360,6 @@ internal class RaopRtspServer(
                 output.write(RtspMessageParser.formatResponse(200, "OK", cseq))
             }
             "TEARDOWN" -> {
-                if (activeSessions.get() <= 1) {
-                    audioReceiver.stop()
-                    mirrorReceiver?.clearStreamCipher()
-                    listener.onClientDisconnected()
-                }
                 output.write(RtspMessageParser.formatResponse(200, "OK", cseq))
                 output.flush()
                 return false
@@ -368,6 +370,11 @@ internal class RaopRtspServer(
         }
         output.flush()
         return true
+    }
+
+    private fun stopAudioStream() {
+        audioReceiver.stop()
+        listener.onAudioStreamStopped()
     }
 
     private fun activateAudioSource(source: Any, request: RtspRequest) {
@@ -446,87 +453,18 @@ internal class RaopRtspServer(
             source.sessionIv = eiv.copyOf()
         }
 
-        val streams = parsed?.get("streams") as? List<*>
-        val firstStream = streams?.firstOrNull() as? Map<*, *>
-        val streamType = (firstStream?.get("type") as? Long)?.toInt()
-
-        val responseMap: Map<String, Any> = when (streamType) {
-            110 -> { // AirPlay Screen Mirroring video stream
-                val connId = (firstStream["streamConnectionID"] as? Long) ?: 0L
-                val ecdhSecret = source.pairing.sharedSecret
-                val key16 = source.fairplayAesKey ?: ecdhSecret?.takeIf { it.size >= 16 }?.copyOfRange(0, 16)
-                if (key16 != null && connId != 0L) {
-                    mirrorReceiver?.configureStreamCipherCandidates(key16, ecdhSecret, connId)
-                    Log.i(TAG, "Configured mirror AES-CTR stream cipher candidates (connId=$connId hasEcdh=${ecdhSecret != null})")
-                }
-                linkedMapOf(
-                    "streams" to listOf(
-                        linkedMapOf<String, Any>(
-                            "dataPort" to AirPlayMirrorStreamReceiver.DEFAULT_MIRROR_PORT.toLong(),
-                            "type" to 110L
-                        )
-                    )
-                )
-            }
-            96 -> { // AirPlay Audio stream
-                val sampleRate = (firstStream["sr"] as? Long)?.toInt() ?: PcmResampler.TARGET_SAMPLE_RATE
-                val ct = (firstStream["ct"] as? Long)?.toInt() ?: 8
-                val spf = (firstStream["spf"] as? Long)?.toInt() ?: 480
-                val shk = (firstStream["shk"] as? ByteArray)?.takeIf { it.size >= 16 }?.copyOfRange(0, 16)
-                val rawKey = source.fairplayAesKey ?: shk
-                val ecdhSecret = source.pairing.sharedSecret
-                val pairedKey = if (rawKey != null && ecdhSecret != null && ecdhSecret.size >= 16) {
-                    AirPlayPairingSession.sha512Trunc16(rawKey, ecdhSecret)
-                } else {
-                    rawKey
-                }
-                val extraKeys = buildList {
-                    if (shk != null) {
-                        add(shk)
-                        if (ecdhSecret != null && ecdhSecret.size >= 16) {
-                            add(AirPlayPairingSession.sha512Trunc16(shk, ecdhSecret))
-                        }
-                    }
-                }
-                val codec = when (ct) {
-                    8 -> RaopAudioCodec.AAC_ELD
-                    4 -> RaopAudioCodec.AAC_LC
-                    2 -> RaopAudioCodec.ALAC
-                    else -> if (sampleRate == 44100) RaopAudioCodec.PCM_L16_44K1 else RaopAudioCodec.PCM_L16_48K
-                }
-                Log.i(
-                    TAG,
-                    "SETUP audio stream: ct=$ct sr=$sampleRate spf=$spf codec=$codec " +
-                        "hasKey=${pairedKey != null} hasShk=${shk != null} hasEcdh=${ecdhSecret != null} hasIv=${source.sessionIv != null} keys=${firstStream.keys}"
-                )
-                audioReceiver.configureSession(
-                    codec = codec,
-                    sampleRate = sampleRate,
-                    sessionAesKey = pairedKey,
-                    sessionAesIv = source.sessionIv,
-                    samplesPerFrame = spf,
-                    alternateAesKey = rawKey,
-                    extraAesKeys = extraKeys
-                )
-                if (audioReceiver.start(RaopAudioRtpReceiver.DEFAULT_AUDIO_PORT)) {
-                    activateAudioSource(source, request)
-                }
-                linkedMapOf(
-                    "streams" to listOf(
-                        linkedMapOf<String, Any>(
-                            "dataPort" to RaopAudioRtpReceiver.DEFAULT_AUDIO_PORT.toLong(),
-                            "controlPort" to RaopAudioRtpReceiver.DEFAULT_CONTROL_PORT.toLong(),
-                            "type" to 96L
-                        )
-                    )
-                )
-            }
-            else -> { // Initial session SETUP (eiv/ekey + eventPort/timingPort)
-                linkedMapOf(
-                    "eventPort" to AirPlayTimingAndEventServers.DEFAULT_EVENT_PORT.toLong(),
-                    "timingPort" to RaopAudioRtpReceiver.DEFAULT_TIMING_PORT.toLong()
-                )
-            }
+        (parsed?.get("sessionUUID") as? String)?.takeIf(String::isNotBlank)?.let {
+            source.mediaSessionId = it
+        }
+        val streams = airPlaySetupStreams(parsed)
+        val responseMap = if (streams.isEmpty()) {
+            mapOf(
+                "eventPort" to AirPlayTimingAndEventServers.DEFAULT_EVENT_PORT.toLong(),
+                "timingPort" to RaopAudioRtpReceiver.DEFAULT_TIMING_PORT.toLong()
+            )
+        } else synchronized(nowPlaying) {
+            val responses = streams.mapNotNull { configureStream(it, request, source) }
+            mapOf("streams" to responses)
         }
 
         val encoded = BinaryPlistWriter.encode(responseMap)
@@ -537,6 +475,74 @@ internal class RaopRtspServer(
                 encoded
             )
         )
+    }
+
+    private fun configureStream(
+        stream: Map<*, *>,
+        request: RtspRequest,
+        source: AirPlayConnectionCrypto
+    ): Map<String, Long>? = when (stream["type"]) {
+        110L -> { // AirPlay Screen Mirroring video stream
+            val connId = (stream["streamConnectionID"] as? Long) ?: 0L
+            val ecdhSecret = source.pairing.sharedSecret
+            val key16 = source.fairplayAesKey ?: ecdhSecret?.takeIf { it.size >= 16 }?.copyOfRange(0, 16)
+            if (key16 != null && connId != 0L) {
+                mirrorReceiver?.configureStreamCipherCandidates(key16, ecdhSecret, connId)
+                if (nowPlaying.retireAudioForMirror(source)) stopAudioStream()
+                Log.i(TAG, "Configured mirror AES-CTR stream cipher candidates (connId=$connId hasEcdh=${ecdhSecret != null})")
+            }
+            mapOf("dataPort" to AirPlayMirrorStreamReceiver.DEFAULT_MIRROR_PORT.toLong(), "type" to 110L)
+        }
+        96L -> { // AirPlay Audio stream
+            val sampleRate = (stream["sr"] as? Long)?.toInt() ?: PcmResampler.TARGET_SAMPLE_RATE
+            val ct = (stream["ct"] as? Long)?.toInt() ?: 8
+            val spf = (stream["spf"] as? Long)?.toInt() ?: 480
+            val shk = (stream["shk"] as? ByteArray)?.takeIf { it.size >= 16 }?.copyOfRange(0, 16)
+            val rawKey = source.fairplayAesKey ?: shk
+            val ecdhSecret = source.pairing.sharedSecret
+            val pairedKey = if (rawKey != null && ecdhSecret != null && ecdhSecret.size >= 16) {
+                AirPlayPairingSession.sha512Trunc16(rawKey, ecdhSecret)
+            } else {
+                rawKey
+            }
+            val extraKeys = buildList {
+                if (shk != null) {
+                    add(shk)
+                    if (ecdhSecret != null && ecdhSecret.size >= 16) {
+                        add(AirPlayPairingSession.sha512Trunc16(shk, ecdhSecret))
+                    }
+                }
+            }
+            val codec = when (ct) {
+                8 -> RaopAudioCodec.AAC_ELD
+                4 -> RaopAudioCodec.AAC_LC
+                2 -> RaopAudioCodec.ALAC
+                else -> if (sampleRate == 44100) RaopAudioCodec.PCM_L16_44K1 else RaopAudioCodec.PCM_L16_48K
+            }
+            Log.i(
+                TAG,
+                "SETUP audio stream: ct=$ct sr=$sampleRate spf=$spf codec=$codec " +
+                    "hasKey=${pairedKey != null} hasShk=${shk != null} hasEcdh=${ecdhSecret != null} hasIv=${source.sessionIv != null} keys=${stream.keys}"
+            )
+            audioReceiver.configureSession(
+                codec = codec,
+                sampleRate = sampleRate,
+                sessionAesKey = pairedKey,
+                sessionAesIv = source.sessionIv,
+                samplesPerFrame = spf,
+                alternateAesKey = rawKey,
+                extraAesKeys = extraKeys
+            )
+            if (audioReceiver.start(RaopAudioRtpReceiver.DEFAULT_AUDIO_PORT)) {
+                activateAudioSource(source, request)
+            }
+            mapOf(
+                "dataPort" to RaopAudioRtpReceiver.DEFAULT_AUDIO_PORT.toLong(),
+                "controlPort" to RaopAudioRtpReceiver.DEFAULT_CONTROL_PORT.toLong(),
+                "type" to 96L
+            )
+        }
+        else -> null
     }
 
     private fun configureFromSdp(sdp: String) {
@@ -590,3 +596,9 @@ internal class RaopRtspServer(
         return true
     }
 }
+
+internal fun airPlaySetupStreams(plist: Map<*, *>?): List<Map<*, *>> =
+    (plist?.get("streams") as? List<*>).orEmpty()
+        .filterIsInstance<Map<*, *>>()
+        .filter { it["type"] == 96L || it["type"] == 110L }
+        .distinctBy { it["type"] }

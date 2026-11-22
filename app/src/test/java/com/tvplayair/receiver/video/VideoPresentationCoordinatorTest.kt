@@ -9,6 +9,32 @@ import org.junit.Test
 class VideoPresentationCoordinatorTest {
 
     @Test
+    fun senderStopDefersAudioAndTheNextVideoCancelsTheResumeBeforePreparing() {
+        val events = mutableListOf<String>()
+        val coordinator = VideoPresentationCoordinator(
+            FakeMirrorEngine(events), FakeDirectEngine(events),
+            FakeAudioController(events), FakeSurfaceController(events)
+        )
+        val first = DirectPlaybackStart("https://example.com/first", 0.0, playbackId = 1)
+        val second = DirectPlaybackStart("https://example.com/second", 0.0, playbackId = 2)
+        assertTrue(coordinator.switchToDirectVideo(first))
+        events.clear()
+
+        assertTrue(coordinator.finishDirectPlayback(1, senderStop = true))
+        assertEquals(PresentationState.IDLE, coordinator.state)
+        assertEquals(
+            listOf("direct.stopAndClear", "audio.resumeAfterSenderStop", "surface.hideAll"),
+            events
+        )
+        events.clear()
+
+        assertTrue(coordinator.switchToDirectVideo(second))
+        assertEquals("audio.pausedForExternal(true)", events.first())
+        assertFalse(coordinator.finishDirectPlayback(1, senderStop = true))
+        assertEquals(PresentationState.SWITCHING_TO_DIRECT, coordinator.state)
+    }
+
+    @Test
     fun resolvesAirPlayStartFractionOnlyAfterDurationIsKnown() {
         assertNull(initialDirectPositionMs(0.25, durationMs = 0L))
         assertEquals(30_000L, initialDirectPositionMs(0.25, durationMs = 120_000L))
@@ -89,6 +115,32 @@ class VideoPresentationCoordinatorTest {
     }
 
     @Test
+    fun liveMirrorReconfigurationKeepsDirectVideoUntilANewMirrorOpens() {
+        val events = mutableListOf<String>()
+        val coordinator = VideoPresentationCoordinator(
+            FakeMirrorEngine(events), FakeDirectEngine(events),
+            FakeAudioController(events), FakeSurfaceController(events)
+        )
+        val video = DirectPlaybackStart("https://example.com/movie", 0.0, 1)
+        assertTrue(coordinator.startMirror())
+        assertTrue(coordinator.switchToDirectVideo(video))
+        assertTrue(coordinator.onDirectMediaReady(video.playbackId))
+        events.clear()
+
+        assertFalse(coordinator.startMirror(reconfigured = true, opensProjection = false))
+        assertEquals(PresentationState.DIRECT_ACTIVE, coordinator.state)
+        assertTrue(events.isEmpty())
+
+        assertTrue(coordinator.startMirror(reconfigured = true, opensProjection = true))
+        assertEquals(PresentationState.MIRROR_ACTIVE, coordinator.state)
+        assertEquals(
+            listOf("direct.stopAndClear", "surface.showMirror", "mirror.start", "audio.pausedForExternal(false)"),
+            events
+        )
+        assertFalse(coordinator.finishDirectPlayback(video.playbackId))
+    }
+
+    @Test
     fun invalidStartPositionsNeverBecomeSeekCommands() {
         assertNull(initialDirectPositionMs(Double.NaN, 120_000L))
         assertNull(initialDirectPositionMs(Double.POSITIVE_INFINITY, 120_000L))
@@ -97,8 +149,11 @@ class VideoPresentationCoordinatorTest {
 
     private class FakeMirrorEngine(private val events: MutableList<String>) : MirrorVideoEngine {
         var failStart = false
-        override fun start(): Boolean {
+        var discardedPendingFrames = false
+
+        override fun start(discardPendingFrames: Boolean): Boolean {
             events += "mirror.start"
+            discardedPendingFrames = discardPendingFrames
             return !failStart
         }
 
@@ -146,6 +201,10 @@ class VideoPresentationCoordinatorTest {
     ) : AudioHandoffController {
         override fun setPausedForExternalPlayer(paused: Boolean) {
             events += "audio.pausedForExternal($paused)"
+        }
+
+        override fun resumeAfterSenderStop() {
+            events += "audio.resumeAfterSenderStop"
         }
 
         override fun stop() {
@@ -299,6 +358,28 @@ class VideoPresentationCoordinatorTest {
         assertTrue(coordinator.onDirectMediaReady(1))
         assertEquals(PresentationState.DIRECT_ACTIVE, coordinator.state)
         assertEquals(listOf("surface.revealDirect"), events)
+    }
+
+    @Test
+    fun directStopWithoutItsSurfaceStillRestoresLiveMirroring() {
+        val events = mutableListOf<String>()
+        val mirror = FakeMirrorEngine(events)
+        val coordinator = VideoPresentationCoordinator(
+            mirror, FakeDirectEngine(events),
+            FakeAudioController(events), FakeSurfaceController(events)
+        )
+        assertTrue(coordinator.startMirror())
+        assertTrue(coordinator.switchToDirectVideo(DirectPlaybackStart("https://example.com/video.mp4", 0.0, 1)))
+        coordinator.onSurfaceDestroyed(isDirectSurface = true)
+        events.clear()
+
+        assertTrue(coordinator.finishDirectPlayback(1, senderStop = true))
+        assertEquals(PresentationState.MIRROR_ACTIVE, coordinator.state)
+        assertTrue(mirror.discardedPendingFrames)
+        assertEquals(
+            listOf("direct.stopAndClear", "surface.showMirror", "mirror.start", "audio.pausedForExternal(false)"),
+            events
+        )
     }
 
     @Test

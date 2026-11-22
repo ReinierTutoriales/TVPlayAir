@@ -227,7 +227,6 @@ class MainActivity : ComponentActivity(), SurfaceLayerController {
                 ) webVideoPlayer.stopAndClear()
                 directVideoModel.sessionBinder = binder
                 if (awaitingDirectSnapshot) audioConsumer.setPausedForExternalPlayer(true)
-                mirrorDecoder.setGeneration(generationId)
                 audioConsumer.setGeneration(generationId)
                 if (mirrorRequested && !awaitingDirectSnapshot) {
                     presentationCoordinator.startMirror()
@@ -267,18 +266,19 @@ class MainActivity : ComponentActivity(), SurfaceLayerController {
                 width: Int,
                 height: Int,
                 generationId: Int,
-                isSnapshot: Boolean
+                codecConfig: ByteArray,
+                opensProjection: Boolean
             ) {
                 updateMirrorSurfaceAspectRatio(width, height)
-                val reconfigured = mirrorDecoder.updateConfig(MirrorVideoConfig(mimeType, width, height))
-                mirrorDecoder.setGeneration(generationId)
-                audioConsumer.setGeneration(generationId)
+                val reconfigured = mirrorDecoder.updateConfig(
+                    MirrorVideoConfig(mimeType, width, height), generationId, codecConfig
+                )
                 mirrorRequested = true
-                if (isSnapshot && presentationCoordinator.hasDirectPlayback) {
-                    presentationCoordinator.onCachedMirrorAvailable()
-                } else if (sharedMemoryReady && !awaitingDirectSnapshot) {
-                    presentationCoordinator.startMirror(reconfigured)
-                    if (directPlaybackId != 0L) finishDirectSession(directPlaybackId)
+                if (sharedMemoryReady && !awaitingDirectSnapshot) {
+                    presentationCoordinator.startMirror(reconfigured, opensProjection)
+                    if (!presentationCoordinator.hasDirectPlayback && directPlaybackId != 0L) {
+                        finishDirectSession(directPlaybackId)
+                    }
                 }
                 syncPresentationState()
             }
@@ -302,7 +302,7 @@ class MainActivity : ComponentActivity(), SurfaceLayerController {
                     "pause" -> presentationCoordinator.pauseDirect()
                     "seek" -> presentationCoordinator.seekDirect(value)
                     "stop" -> {
-                        if (presentationCoordinator.finishDirectPlayback(playbackId)) {
+                        if (presentationCoordinator.finishDirectPlayback(playbackId, senderStop = true)) {
                             finishDirectSession(playbackId)
                         }
                     }
@@ -318,12 +318,11 @@ class MainActivity : ComponentActivity(), SurfaceLayerController {
                 overlayState = overlayState.copy(connectedClient = clientName)
             }
 
-            override fun onClientDisconnected() {
+            override fun onMirrorStreamEnded() {
                 mirrorRequested = false
-                overlayState = overlayState.clearAudioMetadata().copy(
-                    connectedClient = null, audioProjectionActive = false, audioControlsAvailable = false
-                )
-                audioConsumer.stop()
+                if (!overlayState.audioProjectionActive) {
+                    overlayState = overlayState.copy(connectedClient = null)
+                }
                 presentationCoordinator.onMirrorDisconnected()
                 syncPresentationState()
             }
@@ -331,11 +330,16 @@ class MainActivity : ComponentActivity(), SurfaceLayerController {
             override fun onAudioStreamStarted(generationId: Int) {
                 overlayState = overlayState.withAudioStreamStarted()
                 updateScreenWake()
-                mirrorDecoder.setGeneration(generationId)
                 audioConsumer.setGeneration(generationId)
                 if (sharedMemoryReady) {
                     audioConsumer.start(generationId)
                 }
+            }
+
+            override fun onAudioStreamStopped() {
+                audioConsumer.stop()
+                overlayState = overlayState.withAudioStreamStopped()
+                updateScreenWake()
             }
 
             override fun onAudioControlsAvailable(available: Boolean) {

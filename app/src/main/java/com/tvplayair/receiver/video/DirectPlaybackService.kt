@@ -93,9 +93,9 @@ class DirectPlaybackService : MediaSessionService() {
             }
 
             override fun onVideoConfigChanged(
-                mimeType: String, width: Int, height: Int, generationId: Int, isSnapshot: Boolean
+                mimeType: String, width: Int, height: Int, generationId: Int, codecConfig: ByteArray, opensProjection: Boolean
             ) {
-                if (!isSnapshot) finishRetained()
+                if (opensProjection) finishRetained()
             }
 
             override fun onDirectVideoCommand(command: String, value: Double, playbackId: Long) {

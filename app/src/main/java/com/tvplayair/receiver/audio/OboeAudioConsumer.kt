@@ -16,6 +16,7 @@ import com.tvplayair.receiver.video.AudioHandoffController
 class OboeAudioConsumer(context: Context) : AudioHandoffController {
     companion object {
         private const val TAG = "OboeAudioConsumer"
+        private const val SENDER_STOP_AUDIO_RESUME_DELAY_MS = 850L
         const val MIN_OFFSET_MS = -200
         const val MAX_OFFSET_MS = 200
 
@@ -32,6 +33,21 @@ class OboeAudioConsumer(context: Context) : AudioHandoffController {
     private var pausedForExternalPlayer = false
     private var hasFocus = false
     private var currentGenerationId = 0
+
+    private val resumeExistingAudio = Runnable {
+        setPausedForExternalPlayer(false)
+    }
+    private var resumeScheduled = false
+
+    override fun resumeAfterSenderStop() {
+        if (!active) {
+            setPausedForExternalPlayer(false)
+            return
+        }
+        mainHandler.removeCallbacks(resumeExistingAudio)
+        resumeScheduled = true
+        mainHandler.postDelayed(resumeExistingAudio, SENDER_STOP_AUDIO_RESUME_DELAY_MS)
+    }
 
     private val focusChangeListener = AudioManager.OnAudioFocusChangeListener { focusChange ->
         when (focusChange) {
@@ -75,6 +91,10 @@ class OboeAudioConsumer(context: Context) : AudioHandoffController {
     fun start(generationId: Int = currentGenerationId): Boolean {
         currentGenerationId = generationId
         active = true
+        if (resumeScheduled) {
+            cancelScheduledResume()
+            pausedForExternalPlayer = false
+        }
         Log.i(TAG, "start(gen=$generationId) pausedForExternal=$pausedForExternalPlayer running=${isRunning()}")
         if (pausedForExternalPlayer) {
             return false
@@ -85,6 +105,7 @@ class OboeAudioConsumer(context: Context) : AudioHandoffController {
     override fun stop() {
         Log.i(TAG, "stop(gen=$currentGenerationId)")
         active = false
+        if (resumeScheduled) setPausedForExternalPlayer(false)
         nativeStop()
         abandonAudioFocus()
     }
@@ -94,6 +115,7 @@ class OboeAudioConsumer(context: Context) : AudioHandoffController {
      * direct web video playback, and restores focus + playback when returning to mirror.
      */
     override fun setPausedForExternalPlayer(paused: Boolean) {
+        cancelScheduledResume()
         if (pausedForExternalPlayer == paused) return
         pausedForExternalPlayer = paused
         if (paused) {
@@ -102,6 +124,12 @@ class OboeAudioConsumer(context: Context) : AudioHandoffController {
         } else if (active) {
             requestFocusAndStart()
         }
+    }
+
+    private fun cancelScheduledResume() {
+        if (!resumeScheduled) return
+        mainHandler.removeCallbacks(resumeExistingAudio)
+        resumeScheduled = false
     }
 
     fun setGeneration(generationId: Int) {

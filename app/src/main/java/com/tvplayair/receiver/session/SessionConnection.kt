@@ -17,12 +17,15 @@ import com.tvplayair.receiver.video.NO_DIRECT_CHECKPOINT_MS
 interface SessionEventListener {
     fun onSharedMemoryReady(generationId: Int, activeDirectPlaybackId: Long) = Unit
     fun onSharedMemoryDetached() = Unit
-    fun onVideoConfigChanged(mimeType: String, width: Int, height: Int, generationId: Int, isSnapshot: Boolean) = Unit
+    fun onVideoConfigChanged(
+        mimeType: String, width: Int, height: Int, generationId: Int, codecConfig: ByteArray, opensProjection: Boolean
+    ) = Unit
     fun onDirectVideoUrl(video: DirectPlaybackStart) = Unit
     fun onDirectVideoCommand(command: String, value: Double, playbackId: Long) = Unit
     fun onClientConnected(clientName: String, dacpId: String, activeRemote: String) = Unit
-    fun onClientDisconnected() = Unit
+    fun onMirrorStreamEnded() = Unit
     fun onAudioStreamStarted(generationId: Int) = Unit
+    fun onAudioStreamStopped() = Unit
     fun onAudioControlsAvailable(available: Boolean) = Unit
     fun onNowPlaying(metadata: RaopNowPlaying?) = Unit
 }
@@ -89,9 +92,9 @@ class SessionConnection(
         override fun onSessionUnavailable() = deliver(epoch) { handleBinderDeath(epoch) }
 
         override fun onVideoConfigChanged(
-            mimeType: String, width: Int, height: Int, generationId: Int, isSnapshot: Boolean
+            mimeType: String, width: Int, height: Int, generationId: Int, codecConfig: ByteArray, opensProjection: Boolean
         ) = deliver(epoch) {
-            listener.onVideoConfigChanged(mimeType, width, height, generationId, isSnapshot)
+            listener.onVideoConfigChanged(mimeType, width, height, generationId, codecConfig, opensProjection)
         }
 
         override fun onDirectVideoUrl(
@@ -108,11 +111,14 @@ class SessionConnection(
         override fun onClientConnected(clientName: String, dacpId: String, activeRemote: String) =
             deliver(epoch) { listener.onClientConnected(clientName, dacpId, activeRemote) }
 
-        override fun onClientDisconnected() =
-            deliver(epoch) { listener.onClientDisconnected() }
+        override fun onMirrorStreamEnded() =
+            deliver(epoch) { listener.onMirrorStreamEnded() }
 
         override fun onAudioStreamStarted(generationId: Int) =
             deliver(epoch) { listener.onAudioStreamStarted(generationId) }
+
+        override fun onAudioStreamStopped() =
+            deliver(epoch) { listener.onAudioStreamStopped() }
 
         override fun onAudioControlsAvailable(available: Boolean) =
             deliver(epoch) { listener.onAudioControlsAvailable(available) }
