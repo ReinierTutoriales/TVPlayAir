@@ -12,6 +12,18 @@ El destino es Android TV. La experiencia v1.0 abarca AirPlay de audio y vídeo d
 | Duplicación | MediaCodec sobre la superficie nativa. Tratar el vídeo reflejado y su audio como flujos negociados. Al recuperar el decoder, exigir configuración y una imagen clave antes de continuar. | Registrar tamaño y códec **codificados**, capacidades del decoder elegido, disponibilidad de la superficie, primer paquete, primera imagen clave y primer frame. Una salida visual escalada no reduce la resolución que el decoder tiene que aceptar. |
 | Paso entre modos | Conservar un solo decoder en uso. Invalidar metadatos y flujos del medio anterior antes de mostrar el siguiente. | Verificar audio → duplicación → vídeo → audio, dos vídeos consecutivos con el iPhone bloqueado y vuelta a duplicación. Separar audio simultáneo dentro del TV de salida simultánea en TV y altavoz del iPhone. |
 
+## Rutas de reproducción
+
+| Lo que debe aparecer en el TV | Ruta y responsable | Qué hace falta para darla por operativa |
+|---|---|---|
+| App oficial del proveedor, con control desde iPhone | Usar la función Cast del proveedor cuando la ofrezca. El proveedor elige el receptor y gestiona su sesión. | Probar el emisor y destino compatibles. Confirmar qué app o receptor se abrió y qué controles siguen disponibles. |
+| Un contenido concreto en la app oficial de Android TV | Abrir un enlace de contenido publicado por el proveedor y comprobar que lo atiende su app. Un Android App Link verificado requiere la asociación entre dominio y app del proveedor. | Confirmar app instalada, enlace, paquete resuelto e ítem abierto en el TV. El enlace por sí solo abre el contenido. Cualquier control desde iPhone requiere su propia integración. |
+| Medio reproducible en TVPlayAir desde su emisor iOS | Cast Connect de TVPlayAir recibe la carga en su propio reproductor Media3. | Registrar el Cast App ID asociado a `com.tvplayair.receiver`, configurar el emisor y habilitar el receptor. Si se prueba por instalación lateral, registrar el TV según la guía de Google. [Configuración del emisor](../ios/TVPlayAirSender/README.md) |
+| Audio o vídeo en TVPlayAir desde una app con AirPlay | El emisor selecciona TVPlayAir y entrega audio o vídeo directo según la ruta negociada. | Verificar primer audio o frame, metadatos y comandos para la sesión activa. Las órdenes de pausa o parada del emisor se aplican a esa sesión. |
+| La pantalla del iPhone en el TV | Duplicación seleccionada en iOS. TVPlayAir recibe y presenta los flujos negociados. | Verificar códec, dimensiones, audio negociado, primer frame y salida al cambiar a otro modo. |
+
+Una URL multimedia por sí sola sirve para evaluar reproducción directa. Para abrir un ítem en la app oficial hace falta un enlace o identificador que el proveedor documente para esa acción. La interfaz y el control de una app abierta por separado quedan bajo su propia integración.
+
 ## Qué mostró la captura y qué sigue abierto
 
 - **Run #191, Android TV.** Tras el cambio directo a otro ítem, el emisor envió `/stop` seguido de `/play`. El vídeo se preparó y los manifiestos observados respondieron. La captura posterior del paso de duplicación a vídeo muestra que Oboe se cerró antes de que ExoPlayer entrara en preparación. El log del receptor por sí solo no identifica cómo sonó el iPhone.
@@ -34,4 +46,5 @@ La JVM comprueba los contratos entre componentes mediante dobles de motor. Andro
 - AndroidX Media3 `1.11.1` es la estable publicada en la tabla consultada. `1.12.0-alpha02` queda como candidata cuando exista una mejora aplicable y verificable. [Notas de versiones](https://developer.android.com/jetpack/androidx/releases/media3)
 - [Foco de audio de Android](https://developer.android.com/media/optimize/audio-focus) · [Oboe](https://developer.android.com/games/sdk/oboe/low-latency-audio) · [AAudio y MMAP](https://source.android.com/docs/core/audio/aaudio)
 - [Capacidades de MediaCodec](https://developer.android.com/reference/android/media/MediaCodecInfo.CodecCapabilities) · [Métricas de Media3](https://developer.android.com/media/media3/exoplayer/analytics) · [AIDL](https://developer.android.com/develop/background-work/services/aidl)
+- [Google Cast Connect](https://developers.google.com/cast/docs/android_tv_receiver) · [Android App Links](https://developer.android.com/training/app-links) · [Enviar YouTube al TV](https://support.google.com/youtube/answer/7640706)
 - [Selección de ruta AirPlay en iOS](https://developer.apple.com/documentation/avfoundation/supporting-airplay-in-your-app) · [Uso de AirPlay y duplicación](https://support.apple.com/en-us/102661)

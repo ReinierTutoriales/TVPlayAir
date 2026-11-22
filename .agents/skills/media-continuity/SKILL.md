@@ -11,6 +11,13 @@ A CarPlay-inspired Android TV presentation, not CarPlay protocol/API emulation. 
 ## Required reading and sources
 Read `AGENTS.md`, `docs/TVPLAYAIR_CONTINUITY_ARCHITECTURE_2026.md`, `docs/ENGINEERING_SPEC_v1.0.md`, `docs/DEPENDENCY_UPDATE_POLICY.md`, affected implementation and tests. Consult current official Media3 release notes (https://developer.android.com/jetpack/androidx/releases/media3), Android TV playback guidance (https://developer.android.com/media/implement/surfaces/android-tv), Android media sessions and Apple CarPlay/Now Playing docs. Distinguish CarPlay UI inspiration from actual AirPlay protocol capabilities.
 
+## Choose the supported route first
+
+1. Decide what the user needs to see on the TV: the provider's app, a playable item in TVPlayAir or the iPhone screen. Check the [route table](../../../docs/BASELINE_ESTABILIZACION.md#rutas-de-reproducción) and identify who owns launching the app, playback and remote commands.
+2. Check Apple, Google and the provider's current docs, then the sender, receiver and configuration in the repo. Record the applicable API or sample and its prerequisites. An existing provider Cast route requires no TVPlayAir bridge. An official content link can open that item in the provider app; it does not transfer the transport session or playback controls.
+3. Wire the smallest supported API/configuration change when TVPlayAir owns the gap. Choose stable documented APIs by default. Require an actual playable URL for direct media and a documented provider content identifier for native handoff. Never infer the provider app, item or active controls from an opaque CDN URL. Preserve the AirPlay paths when the sender uses them.
+4. For an observed failure, trace the first broken transition from the sender through session, item and generation to the output. Replay the full transition and its return path in the existing regression before grouping fixes against the confirmed cause.
+
 ## Invariants
 1. One serialized orchestrator owns active transport session, media item, presentation mode and generation. A transport session is not the same as a media item.
 2. All callbacks and jobs carry a generation/session/media identity. Late artwork, video frames, decoder events, DACP, IPC, network responses and timers cannot mutate current state.
