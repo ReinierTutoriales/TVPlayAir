@@ -10,6 +10,35 @@ import org.junit.Test
 class MirrorFrameGateTest {
 
     @Test
+    fun outputRecoveryRequiresQueuedWorkAndRearmsOnlyAfterOutputReturns() {
+        var nowMs = 0L
+        val watchdog = MirrorOutputWatchdog { nowMs }
+        nowMs += 10_000
+        assertFalse(watchdog.takeRecovery())
+        repeat(3) { watchdog.onFrameQueued() }
+        nowMs += 3_000
+        assertFalse(watchdog.takeRecovery())
+
+        watchdog.clearQueuedFrames()
+        repeat(4) { watchdog.onFrameQueued() }
+        nowMs += 1_999
+        assertFalse(watchdog.takeRecovery())
+        nowMs += 1
+        assertTrue(watchdog.takeRecovery())
+
+        repeat(4) { watchdog.onFrameQueued() }
+        nowMs += 2_000
+        assertFalse(watchdog.takeRecovery())
+        watchdog.onOutputReleased()
+        watchdog.onFrameQueued()
+        nowMs += 1_999
+        assertFalse(watchdog.takeRecovery())
+        nowMs += 1
+        assertTrue(watchdog.takeRecovery())
+    }
+
+
+    @Test
     fun dropsNonIdrFramesUntilKeyframeArrives() {
         val gate = MirrorFrameGate()
         assertTrue(gate.isAwaitingIdr())

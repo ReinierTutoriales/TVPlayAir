@@ -5,6 +5,7 @@ import android.graphics.BitmapFactory
 import android.util.Log
 import java.io.BufferedInputStream
 import java.io.ByteArrayOutputStream
+import java.io.EOFException
 import java.io.IOException
 import java.io.OutputStream
 import java.net.InetSocketAddress
@@ -144,9 +145,11 @@ internal class RaopRtspServer(
             val output = socket.getOutputStream()
             var pendingHeader = firstHeader
             while (running.get()) {
-                val headerText = pendingHeader
-                    ?: readUntilHeaderEnd(input)?.toString(StandardCharsets.UTF_8)
-                    ?: break
+                val headerText = pendingHeader ?: readUntilHeaderEnd(input)?.toString(StandardCharsets.UTF_8)
+                if (headerText == null) {
+                    nowPlaying.withOwner(source) { Log.i(TAG, "Active RTSP audio control reached EOF") }
+                    break
+                }
                 pendingHeader = null
 
                 val firstLine = headerText.substringBefore("\r\n")
@@ -561,7 +564,10 @@ internal class RaopRtspServer(
         var matched = 0
         while (out.size() < MAX_HEADER_BYTES) {
             val b = input.read()
-            if (b == -1) return null
+            if (b == -1) {
+                if (out.size() != 0) throw EOFException("Incomplete RTSP header")
+                return null
+            }
             out.write(b)
             matched = when {
                 (matched == 0 || matched == 2) && b == '\r'.code -> matched + 1
@@ -571,7 +577,7 @@ internal class RaopRtspServer(
             }
             if (matched == 4) return out.toByteArray()
         }
-        return null
+        throw IOException("RTSP header exceeds size limit")
     }
 
     private fun readExact(input: BufferedInputStream, length: Int): ByteArray {

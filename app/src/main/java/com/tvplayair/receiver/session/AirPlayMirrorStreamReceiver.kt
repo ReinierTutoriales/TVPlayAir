@@ -3,10 +3,12 @@ package com.tvplayair.receiver.session
 import android.util.Log
 import com.tvplayair.receiver.video.MirrorFrameGate
 import java.io.BufferedInputStream
+import java.io.EOFException
 import java.io.IOException
 import java.net.InetSocketAddress
 import java.net.ServerSocket
 import java.net.Socket
+import java.net.SocketTimeoutException
 import java.nio.ByteBuffer
 import java.nio.ByteOrder
 import java.util.concurrent.atomic.AtomicBoolean
@@ -219,6 +221,8 @@ class AirPlayMirrorStreamReceiver(
             var configPublished = false
             try {
                 handleMirrorClient(client) { configPublished = true }
+            } catch (_: SocketTimeoutException) {
+                Log.i(TAG, "Mirror TCP connection ended: read timeout after ${CLIENT_TIMEOUT_MS}ms")
             } catch (error: IOException) {
                 Log.i(TAG, "Mirror TCP connection ended (${error.javaClass.simpleName})")
             } finally {
@@ -241,6 +245,7 @@ class AirPlayMirrorStreamReceiver(
             val input = BufferedInputStream(sock.getInputStream())
             while (running.get()) {
                 if (!readExact(input, headerScratch, AirPlayMirrorHeaderParser.HEADER_BYTES)) {
+                    Log.i(TAG, "Mirror TCP peer reached EOF between packets")
                     break
                 }
                 val header = AirPlayMirrorHeaderParser.parse(headerScratch)
@@ -308,8 +313,11 @@ class AirPlayMirrorStreamReceiver(
     private fun readExact(input: BufferedInputStream, dst: ByteArray, length: Int): Boolean {
         var offset = 0
         while (offset < length) {
-            val n = runCatching { input.read(dst, offset, length - offset) }.getOrDefault(-1)
-            if (n <= 0) return false
+            val n = input.read(dst, offset, length - offset)
+            if (n < 0) {
+                if (offset != 0) throw EOFException("Incomplete mirror packet")
+                return false
+            }
             offset += n
         }
         return true
@@ -324,7 +332,7 @@ class AirPlayMirrorStreamReceiver(
         val candidates = if (decrypt) candidateCiphers else emptyList()
         if (candidates.isNotEmpty()) {
             val encryptedPacket = ByteArray(length)
-            if (!readExact(input, encryptedPacket, length)) return false
+            if (!readExact(input, encryptedPacket, length)) throw EOFException("Missing mirror payload")
             var selectedName: String? = null
             var selectedCipher: Cipher? = null
             var selectedPlain: ByteArray? = null
@@ -360,8 +368,8 @@ class AirPlayMirrorStreamReceiver(
         var remaining = length
         while (remaining > 0) {
             val toRead = remaining.coerceAtMost(readChunk.size)
-            val n = runCatching { input.read(readChunk, 0, toRead) }.getOrDefault(-1)
-            if (n <= 0) return false
+            val n = input.read(readChunk, 0, toRead)
+            if (n < 0) throw EOFException("Incomplete mirror payload")
             if (cipher != null) {
                 val plain = cipher.update(readChunk, 0, n)
                 if (plain != null && plain.isNotEmpty()) {

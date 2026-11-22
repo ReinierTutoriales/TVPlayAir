@@ -43,6 +43,14 @@ Una URL multimedia por sí sola sirve para evaluar reproducción directa. Para a
 
 La configuración SPS/PPS/VPS de duplicación viaja por AIDL con una generación de vídeo propia. El ring conserva el transporte de los frames y puede llenarse sin impedir que el destino reciba una configuración nueva. La prueba física sigue siendo necesaria para confirmar imagen y sonido con el iPhone, incluidos reproducción con el móvil bloqueado, cambio de orientación, silencio o eco entre el altavoz del teléfono y el TV, y tiempos hasta la primera imagen y el primer audio.
 
+## Captura del 22 de noviembre de 2026
+
+En el onn. 4K, los dos inicios de duplicación a 884×1920 presentaron una primera imagen. En la segunda sesión, desde las 11:51:46.267, Realtek informó repetidamente que sus 12 buffers de salida estaban ocupados, con cinco trabajos pendientes en el primer informe de reintentos. El canal RTSP seguía contestando al control a las 11:52:12 y RAOP seguía produciendo PCM a las 11:52:13.898. La captura no registra la hora en que se bloqueó el iPhone.
+
+El decoder ahora intenta reconstruirse una vez si acumula al menos cuatro frames sin entregar salida durante dos segundos. Retoma desde un fotograma clave con la configuración vigente y vuelve a habilitar la recuperación cuando entrega salida. El log de TCP distingue fin de datos del emisor, timeout y lectura truncada. Se conserva el timeout de red existente.
+
+En esta captura se observó duplicación con audio AAC-ELD. No se observó una solicitud de vídeo directo ni una medición del altavoz del iPhone. La reproducción con pantalla bloqueada se prueba por separado con AirPlay desde el reproductor y con duplicación, registrando la hora del bloqueo y ambas salidas. [Rutas AirPlay](https://support.apple.com/en-us/102661) · [Reproducción en segundo plano de la app emisora](https://developer.apple.com/documentation/avfoundation/configuring-your-app-for-media-playback)
+
 ## Una sola pasada de verificación por candidato
 
 1. Fijar un único SHA de APK, el modelo y SoC del destino, versión de Android, versión de iOS y app emisora. Marcar cada acción con su hora y registrar ambas salidas de audio.

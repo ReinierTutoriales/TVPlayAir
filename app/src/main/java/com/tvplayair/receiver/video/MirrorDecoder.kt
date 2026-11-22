@@ -7,6 +7,7 @@ import android.media.MediaFormat
 import android.os.Build
 import android.os.Handler
 import android.os.Looper
+import android.os.SystemClock
 import android.util.Log
 import android.view.Surface
 import com.tvplayair.receiver.session.NativeSharedMemory
@@ -171,11 +172,18 @@ class MirrorDecoder(
 
     private fun decodeLoop() {
         val bufferInfo = MediaCodec.BufferInfo()
+        val outputWatchdog = MirrorOutputWatchdog(SystemClock::elapsedRealtime)
         var activeCodec = codec
 
         while (running.get()) {
             if (activeCodec != null) {
-                drainOutputBuffers(activeCodec, bufferInfo)
+                drainOutputBuffers(activeCodec, bufferInfo, outputWatchdog)
+                if (running.get() && outputWatchdog.takeRecovery()) {
+                    Log.w(TAG, "Mirror output stalled with queued frames; rebuilding on next keyframe gen=${generationId.get()}")
+                    releaseCodec(activeCodec)
+                    activeCodec = null
+                    frameGate.resetGate()
+                }
             }
 
             val readBytes = NativeSharedMemory.nativeReadVideoPacket(
@@ -242,13 +250,14 @@ class MirrorDecoder(
                 inputIndex = runCatching { currentCodec.dequeueInputBuffer(DEQUEUE_TIMEOUT_US) }
                     .getOrDefault(-1)
                 if (inputIndex >= 0) break
-                drainOutputBuffers(currentCodec, bufferInfo)
+                drainOutputBuffers(currentCodec, bufferInfo, outputWatchdog)
                 attempts++
             }
             if (inputIndex < 0) {
                 if (running.get()) {
                     Log.w(TAG, "MediaCodec input congested; rebuilding on next keyframe")
                     releaseCodec(currentCodec)
+                    outputWatchdog.clearQueuedFrames()
                     activeCodec = null
                     frameGate.resetGate()
                 }
@@ -258,6 +267,7 @@ class MirrorDecoder(
             val inputBuffer = runCatching { currentCodec.getInputBuffer(inputIndex) }.getOrNull()
             if (inputBuffer == null || payloadSize > inputBuffer.capacity()) {
                 releaseCodec(currentCodec)
+                outputWatchdog.clearQueuedFrames()
                 activeCodec = null
                 frameGate.resetGate()
                 Log.w(TAG, "Mirror input buffer unavailable for ${payloadSize}B")
@@ -281,21 +291,32 @@ class MirrorDecoder(
             runCatching {
                 currentCodec.queueInputBuffer(inputIndex, 0, payloadSize, ptsUs, codecFlags)
                 frameGate.onFrameSubmitted(flags)
+                if ((flags and MirrorFrameGate.FLAG_CODEC_CONFIG) == 0) outputWatchdog.onFrameQueued()
             }.onFailure {
                 Log.w(TAG, "queueInputBuffer failed; rebuilding on next keyframe", it)
                 releaseCodec(currentCodec)
+                outputWatchdog.clearQueuedFrames()
                 activeCodec = null
                 frameGate.resetGate()
             }
         }
     }
 
-    private fun drainOutputBuffers(activeCodec: MediaCodec, bufferInfo: MediaCodec.BufferInfo) {
+    private fun drainOutputBuffers(
+        activeCodec: MediaCodec,
+        bufferInfo: MediaCodec.BufferInfo,
+        outputWatchdog: MirrorOutputWatchdog
+    ) {
         while (running.get()) {
             val outIndex = runCatching { activeCodec.dequeueOutputBuffer(bufferInfo, 0L) }
                 .getOrDefault(MediaCodec.INFO_TRY_AGAIN_LATER)
             if (outIndex >= 0) {
                 runCatching { activeCodec.releaseOutputBuffer(outIndex, true) }
+                    .onSuccess {
+                        if ((bufferInfo.flags and MediaCodec.BUFFER_FLAG_CODEC_CONFIG) == 0) {
+                            outputWatchdog.onOutputReleased()
+                        }
+                    }
             } else if (outIndex == MediaCodec.INFO_OUTPUT_FORMAT_CHANGED) {
                 runCatching {
                     val outFmt = activeCodec.outputFormat
@@ -327,5 +348,41 @@ class MirrorDecoder(
                 break
             }
         }
+    }
+}
+
+/** Runs on the decoder worker. An idle sender and an isolated dropped frame are normal. */
+internal class MirrorOutputWatchdog(private val elapsedMs: () -> Long) {
+    private companion object {
+        const val PENDING_FRAME_THRESHOLD = 4
+        const val STALL_TIMEOUT_MS = 2_000L
+    }
+
+    private var queuedFrames = 0
+    private var waitingSinceMs = 0L
+    private var recoveryAttempted = false
+
+    fun onFrameQueued() {
+        if (queuedFrames == 0) waitingSinceMs = elapsedMs()
+        queuedFrames++
+    }
+
+    fun onOutputReleased() {
+        if (queuedFrames > 0) queuedFrames--
+        waitingSinceMs = elapsedMs()
+        recoveryAttempted = false
+    }
+
+    fun clearQueuedFrames() {
+        queuedFrames = 0
+    }
+
+    fun takeRecovery(): Boolean {
+        if (recoveryAttempted || queuedFrames < PENDING_FRAME_THRESHOLD ||
+            elapsedMs() - waitingSinceMs < STALL_TIMEOUT_MS
+        ) return false
+        recoveryAttempted = true
+        clearQueuedFrames()
+        return true
     }
 }
