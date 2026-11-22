@@ -16,6 +16,7 @@ import java.net.URI
 import java.net.URLDecoder
 import java.net.URLEncoder
 import java.nio.charset.StandardCharsets
+import java.security.SecureRandom
 import java.util.Locale
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicBoolean
@@ -52,7 +53,11 @@ class AirPlayDirectHttpServer(
     @Volatile
     private var activeConfig = AirPlayServerConfig()
     private var acceptThread: Thread? = null
-    private val pairingSession = AirPlayPairingSession()
+    private val fallbackPairingKey by lazy { ByteArray(32).also(SecureRandom()::nextBytes) }
+
+    private fun newConnectionCrypto() = AirPlayConnectionCrypto {
+        activeConfig.ed25519PrivateKey?.takeIf { it.size == 32 } ?: fallbackPairingKey
+    }
     private val mirrorReceiver = AirPlayMirrorStreamReceiver(
         generationProvider = { generationId.get() },
         onCodecConfigReady = { isHevc, width, height, generation ->
@@ -69,14 +74,13 @@ class AirPlayDirectHttpServer(
         listener = listener,
         configProvider = { activeConfig },
         mirrorReceiver = mirrorReceiver,
-        pairingSession = pairingSession,
+        connectionCrypto = ::newConnectionCrypto,
         sharedGenerationId = generationId,
         httpConnectionHandler = ::handleHttpConnection
     )
 
     override fun start(config: AirPlayServerConfig): Boolean {
         activeConfig = config
-        config.ed25519PrivateKey?.let { pairingSession.setEdPrivateKey(it) }
         if (running.get()) return true
         val socket = runCatching {
             ServerSocket().apply {
@@ -153,7 +157,9 @@ class AirPlayDirectHttpServer(
 
     private fun handleClient(client: Socket) {
         client.use { sock ->
-            handleHttpConnection(sock, BufferedInputStream(sock.getInputStream()))
+            newConnectionCrypto().use { crypto ->
+                handleHttpConnection(sock, BufferedInputStream(sock.getInputStream()), crypto)
+            }
         }
     }
 
@@ -163,6 +169,7 @@ class AirPlayDirectHttpServer(
     internal fun handleHttpConnection(
         sock: Socket,
         input: BufferedInputStream,
+        crypto: AirPlayConnectionCrypto,
         firstHeader: String? = null
     ) {
         sock.soTimeout = CLIENT_SO_TIMEOUT_MS
@@ -182,7 +189,7 @@ class AirPlayDirectHttpServer(
             if (RtspMessageParser.isRtspRequestLine(firstLine) &&
                 !RaopRtspServer.isDirectVideoControlRequest(firstLine)
             ) {
-                raopRtspServer.handleConnection(sock, input, headerText)
+                raopRtspServer.handleConnection(sock, input, crypto, headerText)
                 return
             }
             val lines = headerText.split("\r\n")
@@ -230,7 +237,7 @@ class AirPlayDirectHttpServer(
                 return
             }
             val keepAlive = !headers["connection"].equals("close", ignoreCase = true)
-            dispatchRequest(method, path, fullPath, body, output, sessionKey)
+            dispatchRequest(method, path, fullPath, body, output, sessionKey, crypto)
             if (!keepAlive) break
             awaitingNextFcupRequest = sock.inetAddress?.isLoopbackAddress == true &&
                 method == "GET" && path.startsWith("/__fcup/")
@@ -442,7 +449,8 @@ class AirPlayDirectHttpServer(
         fullPath: String,
         bodyBytes: ByteArray,
         output: OutputStream,
-        sessionKey: AirPlayPlaybackEvents.SessionKey
+        sessionKey: AirPlayPlaybackEvents.SessionKey,
+        crypto: AirPlayConnectionCrypto
     ) {
         when {
             method == "GET" && path.startsWith("/__fcup/") -> {
@@ -508,7 +516,7 @@ class AirPlayDirectHttpServer(
                 }
             }
             method == "POST" && path == "/pair-setup" -> {
-                val reply = pairingSession.handlePairSetup(bodyBytes)
+                val reply = crypto.pairing.handlePairSetup(bodyBytes)
                 if (reply != null) {
                     Log.i(TAG, "-> /pair-setup 200 OK (${reply.size}B)")
                     writeBinaryResponse(output, 200, "OK", "application/octet-stream", reply)
@@ -518,9 +526,9 @@ class AirPlayDirectHttpServer(
                 }
             }
             method == "POST" && path == "/pair-verify" -> {
-                val reply = pairingSession.handlePairVerify(bodyBytes)
+                val reply = crypto.pairing.handlePairVerify(bodyBytes)
                 if (reply != null) {
-                    Log.i(TAG, "-> /pair-verify 200 OK (${reply.size}B verified=${pairingSession.isVerified})")
+                    Log.i(TAG, "-> /pair-verify 200 OK (${reply.size}B verified=${crypto.pairing.isVerified})")
                     writeBinaryResponse(output, 200, "OK", "application/octet-stream", reply)
                 } else {
                     Log.w(TAG, "-> /pair-verify 403 Forbidden (len=${bodyBytes.size})")
@@ -528,7 +536,7 @@ class AirPlayDirectHttpServer(
                 }
             }
             method == "POST" && path == "/fp-setup" -> {
-                val reply = FairPlayNative.handleFpSetup(bodyBytes)
+                val reply = crypto.fairPlay.handleFpSetup(bodyBytes)
                 if (reply != null) {
                     Log.i(TAG, "-> /fp-setup 200 OK (${reply.size}B)")
                     writeBinaryResponse(output, 200, "OK", "application/octet-stream", reply)

@@ -3,29 +3,41 @@
 #include <array>
 #include <jni.h>
 #include <mutex>
+#include <new>
 
 namespace {
-std::mutex gFairPlayMutex;
-tvplayair::FairPlayV3Session gFairPlaySession;
+std::mutex gDecryptMutex;
+
+tvplayair::FairPlayV3Session* sessionFrom(jlong handle) {
+    return reinterpret_cast<tvplayair::FairPlayV3Session*>(handle);
+}
 } // namespace
 
 extern "C" {
 
+JNIEXPORT jlong JNICALL
+Java_com_tvplayair_receiver_session_FairPlayNative_nativeCreate(JNIEnv*, jobject) {
+    return reinterpret_cast<jlong>(new (std::nothrow) tvplayair::FairPlayV3Session());
+}
+
+JNIEXPORT void JNICALL
+Java_com_tvplayair_receiver_session_FairPlayNative_nativeDestroy(JNIEnv*, jobject, jlong handle) {
+    delete sessionFrom(handle);
+}
+
 JNIEXPORT jbyteArray JNICALL
 Java_com_tvplayair_receiver_session_FairPlayNative_nativeSetup(
-    JNIEnv* env, jobject, jbyteArray reqArray) {
-    if (!reqArray || env->GetArrayLength(reqArray) != tvplayair::FairPlayV3Session::kSetupReqBytes) {
+    JNIEnv* env, jobject, jlong handle, jbyteArray reqArray) {
+    auto* session = sessionFrom(handle);
+    if (!session || !reqArray || env->GetArrayLength(reqArray) != tvplayair::FairPlayV3Session::kSetupReqBytes) {
         return nullptr;
     }
     std::array<uint8_t, tvplayair::FairPlayV3Session::kSetupReqBytes> req{};
     env->GetByteArrayRegion(reqArray, 0, req.size(), reinterpret_cast<jbyte*>(req.data()));
 
     std::array<uint8_t, tvplayair::FairPlayV3Session::kSetupResBytes> res{};
-    {
-        std::lock_guard<std::mutex> lock(gFairPlayMutex);
-        if (!gFairPlaySession.setup(req.data(), req.size(), res.data(), res.size())) {
-            return nullptr;
-        }
+    if (!session->setup(req.data(), req.size(), res.data(), res.size())) {
+        return nullptr;
     }
 
     jbyteArray out = env->NewByteArray(static_cast<jsize>(res.size()));
@@ -38,8 +50,9 @@ Java_com_tvplayair_receiver_session_FairPlayNative_nativeSetup(
 
 JNIEXPORT jbyteArray JNICALL
 Java_com_tvplayair_receiver_session_FairPlayNative_nativeHandshake(
-    JNIEnv* env, jobject, jbyteArray reqArray) {
-    if (!reqArray ||
+    JNIEnv* env, jobject, jlong handle, jbyteArray reqArray) {
+    auto* session = sessionFrom(handle);
+    if (!session || !reqArray ||
         env->GetArrayLength(reqArray) != tvplayair::FairPlayV3Session::kHandshakeReqBytes) {
         return nullptr;
     }
@@ -47,11 +60,8 @@ Java_com_tvplayair_receiver_session_FairPlayNative_nativeHandshake(
     env->GetByteArrayRegion(reqArray, 0, req.size(), reinterpret_cast<jbyte*>(req.data()));
 
     std::array<uint8_t, tvplayair::FairPlayV3Session::kHandshakeResBytes> res{};
-    {
-        std::lock_guard<std::mutex> lock(gFairPlayMutex);
-        if (!gFairPlaySession.handshake(req.data(), req.size(), res.data(), res.size())) {
-            return nullptr;
-        }
+    if (!session->handshake(req.data(), req.size(), res.data(), res.size())) {
+        return nullptr;
     }
 
     jbyteArray out = env->NewByteArray(static_cast<jsize>(res.size()));
@@ -64,8 +74,9 @@ Java_com_tvplayair_receiver_session_FairPlayNative_nativeHandshake(
 
 JNIEXPORT jbyteArray JNICALL
 Java_com_tvplayair_receiver_session_FairPlayNative_nativeDecryptKey(
-    JNIEnv* env, jobject, jbyteArray ekeyArray) {
-    if (!ekeyArray ||
+    JNIEnv* env, jobject, jlong handle, jbyteArray ekeyArray) {
+    auto* session = sessionFrom(handle);
+    if (!session || !ekeyArray ||
         env->GetArrayLength(ekeyArray) != tvplayair::FairPlayV3Session::kEncryptedKeyBytes) {
         return nullptr;
     }
@@ -74,8 +85,8 @@ Java_com_tvplayair_receiver_session_FairPlayNative_nativeDecryptKey(
 
     std::array<uint8_t, tvplayair::FairPlayV3Session::kAesKeyBytes> key{};
     {
-        std::lock_guard<std::mutex> lock(gFairPlayMutex);
-        if (!gFairPlaySession.decryptKey(ekey.data(), ekey.size(), key.data(), key.size())) {
+        std::lock_guard<std::mutex> lock(gDecryptMutex);
+        if (!session->decryptKey(ekey.data(), ekey.size(), key.data(), key.size())) {
             return nullptr;
         }
     }
@@ -86,12 +97,6 @@ Java_com_tvplayair_receiver_session_FairPlayNative_nativeDecryptKey(
                                 reinterpret_cast<const jbyte*>(key.data()));
     }
     return out;
-}
-
-JNIEXPORT void JNICALL
-Java_com_tvplayair_receiver_session_FairPlayNative_nativeReset(JNIEnv*, jobject) {
-    std::lock_guard<std::mutex> lock(gFairPlayMutex);
-    gFairPlaySession.reset();
 }
 
 } // extern "C"

@@ -15,6 +15,24 @@ import javax.crypto.spec.SecretKeySpec
 class RtspAndRtpParserTest {
 
     @Test
+    fun freshSetupOnTheSameConnectionStartsANewAudioGeneration() {
+        val published = mutableListOf<RaopNowPlaying?>()
+        val playback = RaopNowPlayingSession { published += it }
+        val connection = Any()
+        var generations = 0
+        playback.activate(connection) { generations++ }
+        playback.track(connection, 90L, RaopTrack("Previous track", null, null))
+        playback.artwork(connection, 90L, byteArrayOf(1))
+
+        playback.activate(connection) { generations++ }
+        assertEquals(2, generations)
+        assertNull(published.last()?.artwork)
+        assertNull(published.last()?.track)
+        playback.track(connection, 10L, RaopTrack("New track", null, null))
+        assertEquals("New track", published.last()?.track?.title)
+    }
+
+    @Test
     fun duplicateArtworkDoesNotRepublishButNewTrackStillClearsIt() {
         val events = mutableListOf<RaopNowPlaying?>()
         val playback = RaopNowPlayingSession { events += it }

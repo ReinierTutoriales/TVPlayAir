@@ -61,7 +61,6 @@ internal class RaopNowPlayingSession(private val publish: (RaopNowPlaying?) -> U
 
     @Synchronized
     fun activate(source: Any, remote: RaopRemote? = null, onActivated: () -> Unit = {}) {
-        if (owner === source) return
         owner = source
         timestamp = null
         trackTimestampUnconfirmed = false

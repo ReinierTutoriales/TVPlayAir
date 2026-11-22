@@ -42,6 +42,18 @@ int main() {
     assert(fp.handshake(hsReq.data(), hsReq.size(), hsRes.data(), hsRes.size()));
     assert(fp.decryptKey(ekey.data(), ekey.size(), key.data(), key.size()));
 
+    FairPlayV3Session otherConnection;
+    std::array<uint8_t, FairPlayV3Session::kAesKeyBytes> originalKey = key;
+    setupReq[14] = 0;
+    assert(otherConnection.setup(setupReq.data(), setupReq.size(), setupRes.data(), setupRes.size()));
+    assert(!otherConnection.decryptKey(ekey.data(), ekey.size(), key.data(), key.size()));
+    assert(fp.decryptKey(ekey.data(), ekey.size(), key.data(), key.size()));
+    assert(key == originalKey);
+    assert(otherConnection.handshake(hsReq.data(), hsReq.size(), hsRes.data(), hsRes.size()));
+    otherConnection.reset();
+    assert(fp.decryptKey(ekey.data(), ekey.size(), key.data(), key.size()));
+    assert(key == originalKey);
+
     // Reject out-of-bounds handshake mode and refuse subsequent decrypt
     hsReq[12] = 200;
     assert(!fp.handshake(hsReq.data(), hsReq.size(), hsRes.data(), hsRes.size()));
