@@ -14,6 +14,18 @@ import org.junit.Test
 class TvOverlayStateTest {
 
     @Test
+    fun visualAutoOpenIsOptInAndDoesNotChangeTransportPresentation() {
+        val initial = TvOverlayState()
+        assertFalse(initial.autoOpenVisual)
+        val enabled = initial.copy(autoOpenVisual = true)
+        assertTrue(enabled.autoOpenVisual)
+        assertTrue(enabled.showStandby)
+        assertTrue(enabled.withAudioStreamStarted(7).autoOpenVisual)
+        assertTrue(enabled.withPresentation(PresentationState.MIRROR_ACTIVE).autoOpenVisual)
+        assertTrue(enabled.withPresentation(PresentationState.DIRECT_ACTIVE).autoOpenVisual)
+    }
+
+    @Test
     fun aConnectedClientKeepsStandbyVisibleUntilVideoTakesOver() {
         val connected = TvOverlayState(connectedClient = "iPhone")
 
