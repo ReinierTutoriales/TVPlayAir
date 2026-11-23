@@ -29,7 +29,6 @@ import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.ImageBitmap
-import androidx.compose.ui.graphics.Path
 import androidx.compose.ui.graphics.lerp
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalDensity
@@ -73,7 +72,9 @@ internal fun TvNowPlayingScreen(
                 cover = decoded
             }
         }
-        val tint = cover?.tint ?: DefaultArtworkTint
+        // Do not retain or tint the next track with the previous track's artwork.
+        val currentCover = cover.takeIf { artworkKey != null }
+        val tint = currentCover?.tint ?: DefaultArtworkTint
         val compact = maxHeight < 360.dp || maxWidth < 640.dp
         val titleStyle = if (compact) MaterialTheme.typography.headlineMedium
             else MaterialTheme.typography.displaySmall
@@ -82,8 +83,8 @@ internal fun TvNowPlayingScreen(
             modifier = Modifier.fillMaxSize()
                 .drawWithCache {
                     val backdrop = Brush.radialGradient(
-                        0f to tint,
-                        0.53f to lerp(Color.Black, tint, 0.40f),
+                        0f to lerp(Color.Black, tint, 0.82f),
+                        0.53f to lerp(Color.Black, tint, 0.28f),
                         1f to Color.Black,
                         center = Offset(size.width * 0.23f, size.height * 0.44f),
                         radius = size.width * 0.72f
@@ -94,7 +95,7 @@ internal fun TvNowPlayingScreen(
             horizontalArrangement = Arrangement.spacedBy(horizontalInset),
             verticalAlignment = Alignment.CenterVertically
         ) {
-            AlbumCover(cover?.image, Modifier.size(coverSize))
+            AlbumCover(currentCover?.image, Modifier.size(coverSize))
             Column(
                 modifier = Modifier.weight(1f),
                 verticalArrangement = Arrangement.spacedBy(if (compact) 14.dp else 26.dp)
@@ -135,11 +136,11 @@ internal fun TvNowPlayingScreen(
 
 @Composable
 private fun AlbumCover(image: ImageBitmap?, modifier: Modifier) {
-    val shape = RoundedCornerShape(18.dp)
+    val shape = RoundedCornerShape(16.dp)
     Box(
         modifier = modifier.clip(shape)
             .background(Color(0xFF16181E))
-            .border(1.dp, Color.White.copy(alpha = 0.14f), shape),
+            .border(1.dp, Color.White.copy(alpha = 0.08f), shape),
         contentAlignment = Alignment.Center
     ) {
         if (image != null) {
@@ -150,14 +151,12 @@ private fun AlbumCover(image: ImageBitmap?, modifier: Modifier) {
                 contentScale = ContentScale.Crop
             )
         } else {
-            Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
-                Canvas(Modifier.size(44.dp)) {
-                    val note = Color(0xFFA6A9B3)
-                    val unit = size.width / 12f
-                    drawLine(note, Offset(7f * unit, 2f * unit), Offset(7f * unit, 9f * unit), unit)
-                    drawLine(note, Offset(7f * unit, 2f * unit), Offset(10f * unit, 3.5f * unit), unit)
-                    drawOval(note, Offset(3f * unit, 8f * unit), Size(4.5f * unit, 3f * unit))
-                }
+            Canvas(Modifier.size(44.dp)) {
+                val note = Color(0xFFA6A9B3)
+                val unit = size.width / 12f
+                drawLine(note, Offset(7f * unit, 2f * unit), Offset(7f * unit, 9f * unit), unit)
+                drawLine(note, Offset(7f * unit, 2f * unit), Offset(10f * unit, 3.5f * unit), unit)
+                drawOval(note, Offset(3f * unit, 8f * unit), Size(4.5f * unit, 3f * unit))
             }
         }
     }
@@ -188,7 +187,8 @@ internal fun TvMediaControl(
         modifier = modifier.size(if (primary) 64.dp else 52.dp)
             .semantics { contentDescription = label },
         shape = IconButtonDefaults.shape(shape = CircleShape),
-        scale = IconButtonDefaults.scale(focusedScale = 1f),
+        // TV focus must remain visible without requiring a decorative focus ring.
+        scale = IconButtonDefaults.scale(focusedScale = 1.08f),
         colors = IconButtonDefaults.colors(
             containerColor = if (primary) Color(0xFF303743) else Color.Transparent,
             contentColor = Color.White,
@@ -204,40 +204,17 @@ internal enum class MediaGlyph { Previous, PlayPause, Next, Play, Pause }
 
 @Composable
 internal fun MediaControlGlyph(glyph: MediaGlyph) {
-    val color = LocalContentColor.current
-    Canvas(Modifier.size(24.dp)) {
-        val unit = size.width / 24
-        fun triangle(left: Float, right: Float) {
-            val path = Path().apply {
-                moveTo(left * unit, 5 * unit)
-                lineTo(left * unit, 19 * unit)
-                lineTo(right * unit, 12 * unit)
-                close()
-            }
-            drawPath(path, color)
-        }
-        fun bar(x: Float, width: Float = 2f) {
-            drawRect(color, Offset(x * unit, 5 * unit), Size(width * unit, 14 * unit))
-        }
-        when (glyph) {
-            MediaGlyph.Previous -> {
-                triangle(19f, 7f)
-                bar(4f)
-            }
-            MediaGlyph.PlayPause -> {
-                triangle(4f, 14f)
-                bar(16f)
-                bar(20f)
-            }
-            MediaGlyph.Next -> {
-                triangle(5f, 17f)
-                bar(18f)
-            }
-            MediaGlyph.Play -> triangle(8f, 20f)
-            MediaGlyph.Pause -> {
-                bar(6f, 4f)
-                bar(14f, 4f)
-            }
-        }
+    val resource = when (glyph) {
+        MediaGlyph.Previous -> R.drawable.ic_tv_previous
+        MediaGlyph.PlayPause -> R.drawable.ic_tv_play_pause
+        MediaGlyph.Next -> R.drawable.ic_tv_next
+        MediaGlyph.Play -> R.drawable.ic_tv_play
+        MediaGlyph.Pause -> R.drawable.ic_tv_pause
     }
+    Image(
+        painter = androidx.compose.ui.res.painterResource(resource),
+        contentDescription = null,
+        modifier = Modifier.size(24.dp),
+        colorFilter = androidx.compose.ui.graphics.ColorFilter.tint(LocalContentColor.current)
+    )
 }

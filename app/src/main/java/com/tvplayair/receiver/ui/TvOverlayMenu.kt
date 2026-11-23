@@ -56,6 +56,7 @@ fun TvOverlayMenu(
     onAdjustAudioOffset: (Int) -> Unit,
     onAudioCommand: (DacpCommand) -> Unit,
     onVideoToggle: () -> Unit,
+    onSeekBy: (Double) -> Unit,
     onPlaybackInteraction: () -> Unit,
     onDismiss: () -> Unit
 ) {
@@ -84,7 +85,9 @@ fun TvOverlayMenu(
                     TvPlaybackControls(
                         telemetry = direct,
                         onToggle = onVideoToggle,
-                        onAudioCommand = remoteCommand
+                        onSeekBy = onSeekBy,
+                        // Direct playback must never expose DACP controls from a previous audio session.
+                        onAudioCommand = if (direct == null) remoteCommand else null
                     )
                 }
             }
@@ -104,7 +107,7 @@ fun TvOverlayMenu(
                 }
             }
             state.showingVideoControls -> {
-                state.videoControls?.let { TvVideoControls(it, onVideoToggle, onPlaybackInteraction) }
+                state.videoControls?.let { TvVideoControls(it, onVideoToggle, onSeekBy, onPlaybackInteraction) }
             }
             state.showStandby && !state.projectionHome -> TvStandbyScreen(state, onOpenMenu)
         }
@@ -169,6 +172,7 @@ fun TvOverlayMenu(
 private fun TvVideoControls(
     telemetry: DirectPlaybackTelemetry,
     onToggle: () -> Unit,
+    onSeekBy: (Double) -> Unit,
     onInteraction: () -> Unit
 ) {
     val hasDuration = telemetry.durationSec.isFinite() && telemetry.durationSec > 0.0
@@ -181,7 +185,7 @@ private fun TvVideoControls(
     ) {
         Column(
             modifier = Modifier.fillMaxWidth()
-                .background(Brush.verticalGradient(listOf(Color.Transparent, Color(0xF5000000))))
+                .background(Brush.verticalGradient(listOf(Color.Transparent, Color(0xE8000000))))
                 .padding(horizontal = 48.dp)
                 .padding(top = 72.dp, bottom = 32.dp),
             verticalArrangement = Arrangement.spacedBy(12.dp)
@@ -208,7 +212,7 @@ private fun TvVideoControls(
                 }
             }
             if (hasDuration) PlaybackProgress(telemetry)
-            TvPlaybackControls(telemetry, onToggle, Modifier.align(Alignment.CenterHorizontally))
+            TvPlaybackControls(telemetry, onToggle, Modifier.align(Alignment.CenterHorizontally), onSeekBy = onSeekBy)
             if (telemetry.isBuffering) {
                 Text(
                     stringResource(R.string.video_loading),
@@ -225,8 +229,9 @@ private fun TvVideoControls(
 private fun PlaybackProgress(telemetry: DirectPlaybackTelemetry) {
     val progress = (telemetry.positionSec / telemetry.durationSec).toFloat()
         .takeIf { it.isFinite() }?.coerceIn(0f, 1f) ?: 0f
-    Box(Modifier.fillMaxWidth().height(4.dp).background(Color.White.copy(alpha = 0.28f))) {
-        Box(Modifier.fillMaxWidth(progress).height(4.dp).background(FocusColor))
+    val trackShape = RoundedCornerShape(50)
+    Box(Modifier.fillMaxWidth().height(4.dp).background(Color.White.copy(alpha = 0.24f), trackShape)) {
+        Box(Modifier.fillMaxWidth(progress).height(4.dp).background(FocusColor, trackShape))
     }
 }
 
@@ -235,7 +240,8 @@ private fun TvPlaybackControls(
     telemetry: DirectPlaybackTelemetry?,
     onToggle: () -> Unit,
     modifier: Modifier = Modifier,
-    onAudioCommand: ((DacpCommand) -> Unit)? = null
+    onAudioCommand: ((DacpCommand) -> Unit)? = null,
+    onSeekBy: ((Double) -> Unit)? = null
 ) {
     val playFocus = remember { FocusRequester() }
     val canToggle = telemetry != null || onAudioCommand != null
@@ -243,11 +249,19 @@ private fun TvPlaybackControls(
         if (canToggle) playFocus.requestFocus()
     }
     TvMediaControlGroup(modifier) {
-        TvMediaControl(
-            label = stringResource(R.string.audio_previous),
-            enabled = onAudioCommand != null,
-            onClick = { onAudioCommand?.invoke(DacpCommand.PREVIOUS) }
-        ) { MediaControlGlyph(MediaGlyph.Previous) }
+        // Only expose remote transport commands when the active session supports DACP.
+        if (onAudioCommand != null) {
+            TvMediaControl(
+                label = stringResource(R.string.audio_previous),
+                onClick = { onAudioCommand(DacpCommand.PREVIOUS) }
+            ) { MediaControlGlyph(MediaGlyph.Previous) }
+        }
+
+        if (telemetry?.canSeek == true && onSeekBy != null) {
+            TvMediaControl(label = stringResource(R.string.video_seek_back_10), onClick = { onSeekBy(-10.0) }) {
+                Text("−10", style = MaterialTheme.typography.labelLarge)
+            }
+        }
 
         val (label, glyph) = when (telemetry?.playWhenReady) {
             true -> R.string.video_pause to MediaGlyph.Pause
@@ -265,11 +279,18 @@ private fun TvPlaybackControls(
             enabled = canToggle
         ) { MediaControlGlyph(glyph) }
 
-        TvMediaControl(
-            label = stringResource(R.string.audio_next),
-            enabled = onAudioCommand != null,
-            onClick = { onAudioCommand?.invoke(DacpCommand.NEXT) }
-        ) { MediaControlGlyph(MediaGlyph.Next) }
+        if (telemetry?.canSeek == true && onSeekBy != null) {
+            TvMediaControl(label = stringResource(R.string.video_seek_forward_10), onClick = { onSeekBy(10.0) }) {
+                Text("+10", style = MaterialTheme.typography.labelLarge)
+            }
+        }
+
+        if (onAudioCommand != null) {
+            TvMediaControl(
+                label = stringResource(R.string.audio_next),
+                onClick = { onAudioCommand(DacpCommand.NEXT) }
+            ) { MediaControlGlyph(MediaGlyph.Next) }
+        }
     }
 }
 

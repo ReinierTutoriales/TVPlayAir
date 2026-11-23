@@ -90,6 +90,7 @@ class WebVideoPlayer(context: Context) : DirectVideoEngine {
     }
 
     private var pendingStartFraction: Double? = null
+    private var pendingSeekPositionMs: Long? = null
     private var prepareStartedMs = 0L
     private val eventWindow = Timeline.Window()
     private val liveWindow = Timeline.Window()
@@ -217,6 +218,9 @@ class WebVideoPlayer(context: Context) : DirectVideoEngine {
         }
 
         override fun onEvents(player: Player, events: Player.Events) {
+            if (events.containsAny(Player.EVENT_TIMELINE_CHANGED, Player.EVENT_AVAILABLE_COMMANDS_CHANGED)) {
+                applyPendingSeek(player)
+            }
             val readinessChanged = events.containsAny(Player.EVENT_TRACKS_CHANGED, Player.EVENT_PLAYBACK_STATE_CHANGED)
             if (readinessChanged || events.containsAny(
                     Player.EVENT_MEDIA_METADATA_CHANGED,
@@ -238,6 +242,7 @@ class WebVideoPlayer(context: Context) : DirectVideoEngine {
 
         override fun onPlayerError(error: PlaybackException) {
             pendingStartFraction = null
+            pendingSeekPositionMs = null
             Log.e(TAG, "ExoPlayer error (${error.errorCodeName})")
             val detail = generateSequence<Throwable>(error) { it.cause }.take(6).toList()
             val http = detail.filterIsInstance<InvalidResponseCodeException>().firstOrNull()
@@ -393,6 +398,8 @@ class WebVideoPlayer(context: Context) : DirectVideoEngine {
         firstFrameLogged = false
         diagnostics.start(video.playbackId)
         exo.setVideoSurfaceView(surface)
+        // A pending seek belongs to the previous media item, never the new playback ID.
+        pendingSeekPositionMs = null
         pendingStartFraction = video.startFraction
         if (!video.playWhenReady) exo.playWhenReady = false
         exo.setMediaItem(
@@ -439,14 +446,22 @@ class WebVideoPlayer(context: Context) : DirectVideoEngine {
 
     override fun seekTo(positionSec: Double) {
         val exo = player ?: return
-        if (!exo.isCommandAvailable(Player.COMMAND_SEEK_IN_CURRENT_MEDIA_ITEM)) return
-        pendingStartFraction = null
         if (!positionSec.isFinite()) return
-        val durationMs = exo.duration
-        val maxMs = if (durationMs == C.TIME_UNSET || durationMs < 0L) Long.MAX_VALUE else durationMs
+        pendingStartFraction = null
         val targetMs = (positionSec.coerceAtLeast(0.0) * 1000.0)
-            .coerceAtMost(maxMs.toDouble()).toLong()
-        exo.seekTo(targetMs)
+            .coerceAtMost(Long.MAX_VALUE.toDouble()).toLong()
+        pendingSeekPositionMs = targetMs
+        applyPendingSeek(exo)
+    }
+
+    private fun applyPendingSeek(exo: Player) {
+        val targetMs = pendingSeekPositionMs ?: return
+        if (!exo.isCommandAvailable(Player.COMMAND_SEEK_IN_CURRENT_MEDIA_ITEM)) return
+        if (!exo.isCurrentMediaItemSeekable || exo.isCurrentMediaItemLive) return
+        val durationMs = exo.duration
+        if (durationMs == C.TIME_UNSET || durationMs < 0L) return
+        pendingSeekPositionMs = null
+        exo.seekTo(targetMs.coerceAtMost(durationMs))
     }
 
     override fun stopAndClear(releasePlayer: Boolean) {
@@ -470,6 +485,7 @@ class WebVideoPlayer(context: Context) : DirectVideoEngine {
         finishedPlaybackId = null
         releaseSystemControls()
         pendingStartFraction = null
+        pendingSeekPositionMs = null
         mainHandler.removeCallbacks(telemetryTicker)
     }
 
