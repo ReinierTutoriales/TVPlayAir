@@ -21,19 +21,21 @@ import com.tvplayair.receiver.session.SessionEventListener
  */
 class AudioContinuityService : Service() {
     private var ownsHandoff = false
+    private var ownedHandoffId = 0L
 
     private val listener = object : SessionEventListener {
         override fun onSharedMemoryReady(generationId: Int, activeDirectPlaybackId: Long) {
-            if (!ownsHandoff) return
+            if (!ownsCurrentHandoff()) return
             consumer?.setGeneration(generationId)
-            if (audioGeneration != null && activeDirectPlaybackId == 0L) {
-                consumer?.start(audioGeneration!!)
+            val activeGeneration = audioGeneration
+            if (activeGeneration != null && activeDirectPlaybackId == 0L) {
+                consumer?.start(activeGeneration)
             }
         }
 
         override fun onAudioStreamStarted(generationId: Int) {
             audioGeneration = generationId
-            if (ownsHandoff) {
+            if (ownsCurrentHandoff()) {
                 consumer?.setGeneration(generationId)
                 consumer?.start(generationId)
             }
@@ -52,13 +54,19 @@ class AudioContinuityService : Service() {
         }
     }
 
+    private fun ownsCurrentHandoff(): Boolean =
+        ownsHandoff && ownedHandoffId != 0L && ownedHandoffId == handoffId
+
     override fun onCreate() {
         super.onCreate()
         running = this
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
-        if (intent?.action != ACTION_HOST || connection == null || consumer == null) {
+        val requestedHandoffId = intent?.getLongExtra(EXTRA_HANDOFF_ID, 0L) ?: 0L
+        if (intent?.action != ACTION_HOST || requestedHandoffId == 0L ||
+            requestedHandoffId != handoffId || connection == null || consumer == null
+        ) {
             stopSelf(startId)
             return START_NOT_STICKY
         }
@@ -79,6 +87,7 @@ class AudioContinuityService : Service() {
             .setOngoing(true)
             .build()
         startForeground(1002, notification, ServiceInfo.FOREGROUND_SERVICE_TYPE_MEDIA_PLAYBACK)
+        ownedHandoffId = requestedHandoffId
         ownsHandoff = true
         connection?.replaceListener(listener, replay = true)
         return START_NOT_STICKY
@@ -90,39 +99,45 @@ class AudioContinuityService : Service() {
         ownsHandoff = false
         if (running === this) running = null
         // Activity reclaim removes ownership first; otherwise tear down resources.
-        if (!claimed) {
+        // A reclaimed or superseded handoff belongs to the Activity/new service.
+        if (ownedHandoffId != 0L && ownedHandoffId == handoffId) {
             consumer?.stop()
             connection?.close()
-            consumer = null
             connection = null
+            consumer = null
             audioGeneration = null
+            handoffId++
         }
-        claimed = false
         super.onDestroy()
     }
 
     companion object {
         private const val ACTION_HOST = "com.tvplayair.receiver.HOST_RAOP_AUDIO"
+        private const val EXTRA_HANDOFF_ID = "handoff_id"
         private var running: AudioContinuityService? = null
         private var connection: SessionConnection? = null
         private var consumer: OboeAudioConsumer? = null
         private var audioGeneration: Int? = null
-        private var claimed = false
+        private var handoffId = 0L
 
         fun retain(context: Context, session: SessionConnection, audio: OboeAudioConsumer, generation: Int?): Boolean {
             if (generation == null) return false
-            if (connection === session && consumer === audio) return true
+            if (connection === session && consumer === audio && running?.ownsCurrentHandoff() == true) return true
+            // A new owner invalidates callbacks and destruction from the previous handoff.
+            handoffId++
             connection = session
             consumer = audio
             audioGeneration = generation
-            claimed = false
             return runCatching {
                 context.startForegroundService(
-                    Intent(context, AudioContinuityService::class.java).setAction(ACTION_HOST)
+                    Intent(context, AudioContinuityService::class.java)
+                        .setAction(ACTION_HOST)
+                        .putExtra(EXTRA_HANDOFF_ID, handoffId)
                 )
                 true
             }.getOrElse {
                 Log.w("AudioContinuityService", "Background audio handoff denied", it)
+                handoffId++
                 connection = null
                 consumer = null
                 audioGeneration = null
@@ -133,7 +148,7 @@ class AudioContinuityService : Service() {
         fun claim(): Pair<SessionConnection, OboeAudioConsumer>? {
             val session = connection ?: return null
             val audio = consumer ?: return null
-            claimed = true
+            handoffId++
             running?.ownsHandoff = false
             running?.stopSelf()
             connection = null
