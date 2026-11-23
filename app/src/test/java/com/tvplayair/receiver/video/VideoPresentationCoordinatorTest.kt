@@ -357,12 +357,16 @@ class VideoPresentationCoordinatorTest {
         assertTrue(coordinator.onMirrorRecovering())
         assertEquals(PresentationState.MIRROR_RECOVERING, coordinator.state)
         assertEquals("surface.coverMirror", events.last())
+        assertTrue(coordinator.onMirrorWaitingForKeyFrame())
+        assertEquals(PresentationState.MIRROR_WAITING_KEYFRAME, coordinator.state)
+        assertFalse("mirror.stopAndRelease" in events)
         assertTrue(coordinator.onMirrorFrameRendered())
         assertEquals(PresentationState.MIRROR_ACTIVE, coordinator.state)
 
         assertTrue(coordinator.switchToDirectVideo(DirectPlaybackStart("https://example.com/video", 0.0, playbackId = 1)))
         assertFalse(coordinator.onMirrorFrameRendered())
         assertFalse(coordinator.onMirrorRecovering())
+        assertFalse(coordinator.onMirrorWaitingForKeyFrame())
         assertEquals(PresentationState.SWITCHING_TO_DIRECT, coordinator.state)
     }
 

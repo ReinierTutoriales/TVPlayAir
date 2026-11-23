@@ -33,11 +33,25 @@ class MirrorFrameGateTest {
     }
 
     @Test
-    fun recoveryCallbackSurvivesWorkerExitButRejectsStaleOrCancelledRequests() {
-        assertTrue(shouldDeliverRecoveryTimeout(true, true, true))
-        assertFalse(shouldDeliverRecoveryTimeout(false, true, true))
-        assertFalse(shouldDeliverRecoveryTimeout(true, false, true))
-        assertFalse(shouldDeliverRecoveryTimeout(true, true, false))
+    fun timedOutDecoderCanResumeOnALaterKeyFrameWithABoundedRetry() {
+        var now = 0L
+        val watchdog = MirrorOutputWatchdog { now }
+        watchdog.beginRecovery()
+        now = 5_000
+        assertTrue(watchdog.recoveryExpired())
+        watchdog.parkUntilKeyFrame()
+        assertTrue(watchdog.waitingForKeyFrame)
+        assertFalse(watchdog.recoveryExpired())
+        assertFalse(watchdog.resumeAtKeyFrame())
+
+        now = 41_000
+        assertFalse(watchdog.recoveryExpired())
+        assertTrue(watchdog.resumeAtKeyFrame())
+        assertFalse(watchdog.waitingForKeyFrame)
+        now += 5_000
+        assertTrue(watchdog.recoveryExpired())
+        watchdog.onFrameRendered()
+        assertFalse(watchdog.recoveryExpired())
     }
 
     @Test

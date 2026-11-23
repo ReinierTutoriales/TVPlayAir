@@ -207,3 +207,17 @@ arranque y la recuperacion conservan la confirmacion por callback y sus
 plazos. El log disponible no establece si Realtek dejo de producir imagen
 o si faltaron avisos. Repetir la prueba en el mismo televisor.
 [MediaCodec.OnFrameRenderedListener](https://developer.android.com/reference/android/media/MediaCodec.OnFrameRenderedListener)
+
+Cuando vence el plazo de recuperacion, el receptor libera MediaCodec y
+mantiene la lectura de la memoria compartida de la generacion vigente.
+El mismo flujo puede volver a presentar imagen al recibir un fotograma
+clave despues de cinco segundos de espera. Cada nuevo intento tiene cinco
+segundos para confirmar imagen. Mientras espera, la interfaz vuelve a
+audio o espera y el decodificador queda libre. Un cambio de ruta o la
+perdida de superficie detiene la lectura del espejo.
+[Android MediaCodec: Stream Boundary and Key Frames](https://developer.android.com/reference/android/media/MediaCodec)
+
+El log 45251354159 muestra paquetes de la generacion 5 despues de
+recovery_timeout y VIDEO_WRITE_RING_FULL. Se debe repetir ese escenario
+en el televisor y correlacionar recovery_timeout, retry_on_keyframe y
+first_frame de una sola generacion.

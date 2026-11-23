@@ -37,7 +37,8 @@ data class TvOverlayState(
 
     val showStandby: Boolean
         get() = presentationState == PresentationState.IDLE ||
-            presentationState == PresentationState.RECOVERING
+            presentationState == PresentationState.RECOVERING ||
+            presentationState == PresentationState.MIRROR_WAITING_KEYFRAME
 
     val audioProjectionActive: Boolean
         get() = audioGeneration != null
@@ -65,7 +66,8 @@ data class TvOverlayState(
         )
 
     fun withPresentation(state: PresentationState): TvOverlayState {
-        val showAudio = state == PresentationState.IDLE || state == PresentationState.RECOVERING
+        val showAudio = state == PresentationState.IDLE || state == PresentationState.RECOVERING ||
+            state == PresentationState.MIRROR_WAITING_KEYFRAME
         val enteringVideo = state != presentationState &&
             (state == PresentationState.SWITCHING_TO_DIRECT ||
                 state == PresentationState.SWITCHING_TO_MIRROR ||
