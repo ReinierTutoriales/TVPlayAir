@@ -257,6 +257,15 @@ class RaopAudioDecoder {
             RaopAudioCodec.AAC_LC, RaopAudioCodec.AAC_ELD -> {
                 val decoder = mediaCodec ?: return
                 if (aacGeneration != generationId) {
+                    // Clear pending output from the previous generation before accepting new audio.
+                    if (aacGeneration != null) {
+                        val flushed = runCatching { decoder.flush() }.isSuccess
+                        if (!flushed) {
+                            decodeFailures++
+                            release()
+                            return
+                        }
+                    }
                     aacGeneration = generationId
                     aacTimestamps.clear()
                     aacNextPtsUs = 0L
