@@ -9,6 +9,20 @@ import org.junit.Test
 class VideoPresentationCoordinatorTest {
 
     @Test
+    fun losingMirrorSurfaceClearsPresentationAndStopsDecoder() {
+        val events = mutableListOf<String>()
+        val coordinator = VideoPresentationCoordinator(
+            FakeMirrorEngine(events), FakeDirectEngine(events),
+            FakeAudioController(events), FakeSurfaceController(events)
+        )
+        assertTrue(coordinator.startMirror())
+        events.clear()
+        coordinator.onSurfaceDestroyed(isDirectSurface = false)
+        assertEquals(PresentationState.IDLE, coordinator.state)
+        assertEquals(listOf("mirror.stopAndRelease", "surface.hideAll"), events)
+    }
+
+    @Test
     fun senderStopDefersAudioAndTheNextVideoCancelsTheResumeBeforePreparing() {
         val events = mutableListOf<String>()
         val coordinator = VideoPresentationCoordinator(

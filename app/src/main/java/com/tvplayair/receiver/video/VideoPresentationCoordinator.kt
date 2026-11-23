@@ -212,6 +212,7 @@ class VideoPresentationCoordinator(
                 state == PresentationState.SWITCHING_TO_MIRROR)
         ) {
             mirrorEngine.stopAndRelease()
+            surfaceController.hideAllSurfaces()
             state = PresentationState.IDLE
         }
     }
