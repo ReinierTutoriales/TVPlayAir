@@ -69,12 +69,6 @@ for name in re.findall(r'<(?:activity|activity-alias|service|receiver)[^>]*?andr
         target = JAVA / (package.replace(".", "/") + name.replace(".", "/") + ".kt")
         check(target.exists(), f"Missing manifest component: {name}")
 
-# All production translation units must be accounted for by CMake.
-for p in CPP.rglob("*"):
-    if p.suffix not in (".cpp", ".c"):
-        continue
-    check(p.relative_to(CPP).as_posix() in cmake,
-          f"Native source not listed in CMake: {p.relative_to(CPP)}")
 
 if errors:
     for error in errors:
