@@ -242,6 +242,7 @@ class WebVideoPlayer(context: Context) : DirectVideoEngine {
 
         override fun onPlayerError(error: PlaybackException) {
             pendingStartFraction = null
+            pendingSeekPositionMs = null
             Log.e(TAG, "ExoPlayer error (${error.errorCodeName})")
             val detail = generateSequence<Throwable>(error) { it.cause }.take(6).toList()
             val http = detail.filterIsInstance<InvalidResponseCodeException>().firstOrNull()
@@ -397,6 +398,8 @@ class WebVideoPlayer(context: Context) : DirectVideoEngine {
         firstFrameLogged = false
         diagnostics.start(video.playbackId)
         exo.setVideoSurfaceView(surface)
+        // A pending seek belongs to the previous media item, never the new playback ID.
+        pendingSeekPositionMs = null
         pendingStartFraction = video.startFraction
         if (!video.playWhenReady) exo.playWhenReady = false
         exo.setMediaItem(
