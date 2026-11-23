@@ -147,7 +147,11 @@ internal class RaopRtspServer(
             val output = socket.getOutputStream()
             var pendingHeader = firstHeader
             while (running.get()) {
-                val headerText = pendingHeader ?: readUntilHeaderEnd(input)?.toString(StandardCharsets.UTF_8)
+                val headerText = pendingHeader ?: readRtspControlHeader(input, MAX_HEADER_BYTES) {
+                    val keepControl = running.get() && mirrorReceiver?.hasRecentVideo(source) == true
+                    if (keepControl) Log.i(TAG, "RTSP control idle while its mirror transport is producing video")
+                    keepControl
+                }?.toString(StandardCharsets.UTF_8)
                 if (headerText == null) {
                     endReason = "rtsp_peer_eof"
                     nowPlaying.withOwner(source) { Log.i(TAG, "Active RTSP audio control reached EOF") }
@@ -219,10 +223,7 @@ internal class RaopRtspServer(
             Log.i(TAG, "RTSP connection ended for $peer (${error.javaClass.simpleName})")
         } finally {
             mirrorReceiver?.closeStreamForOwner(source, endReason)
-            nowPlaying.withOwner(source) {
-                nowPlaying.clear(source)
-                stopAudioStream()
-            }
+            stopAudioForOwner(source)
         }
     }
 
@@ -390,9 +391,15 @@ internal class RaopRtspServer(
                 output.write(RtspMessageParser.formatResponse(200, "OK", cseq))
             }
             "TEARDOWN" -> {
+                val scope = airPlayTeardownScope(request.body)
                 output.write(RtspMessageParser.formatResponse(200, "OK", cseq))
                 output.flush()
-                return false
+                when (scope) {
+                    AirPlayTeardownScope.AUDIO -> stopAudioForOwner(source)
+                    AirPlayTeardownScope.MIRROR -> mirrorReceiver?.closeStreamForOwner(source, "rtsp_mirror_teardown")
+                    AirPlayTeardownScope.SESSION -> Unit
+                }
+                return scope != AirPlayTeardownScope.SESSION
             }
             else -> {
                 output.write(RtspMessageParser.formatResponse(200, "OK", cseq))
@@ -400,6 +407,13 @@ internal class RaopRtspServer(
         }
         output.flush()
         return true
+    }
+
+    private fun stopAudioForOwner(source: AirPlayConnectionCrypto) {
+        nowPlaying.withOwner(source) {
+            nowPlaying.clear(source)
+            stopAudioStream()
+        }
     }
 
     private fun stopAudioStream() {
@@ -586,27 +600,6 @@ internal class RaopRtspServer(
         audioReceiver.configureSession(codec = codec, sampleRate = rate)
     }
 
-    private fun readUntilHeaderEnd(input: BufferedInputStream): ByteArray? {
-        val out = ByteArrayOutputStream()
-        var matched = 0
-        while (out.size() < MAX_HEADER_BYTES) {
-            val b = input.read()
-            if (b == -1) {
-                if (out.size() != 0) throw EOFException("Incomplete RTSP header")
-                return null
-            }
-            out.write(b)
-            matched = when {
-                (matched == 0 || matched == 2) && b == '\r'.code -> matched + 1
-                (matched == 1 || matched == 3) && b == '\n'.code -> matched + 1
-                b == '\r'.code -> 1
-                else -> 0
-            }
-            if (matched == 4) return out.toByteArray()
-        }
-        throw IOException("RTSP header exceeds size limit")
-    }
-
     private fun readExact(input: BufferedInputStream, length: Int): ByteArray {
         val buf = ByteArray(length)
         var offset = 0
@@ -635,3 +628,47 @@ internal fun airPlaySetupStreams(plist: Map<*, *>?): List<Map<*, *>> =
         .filterIsInstance<Map<*, *>>()
         .filter { it["type"] == 96L || it["type"] == 110L }
         .distinctBy { it["type"] }
+
+
+internal enum class AirPlayTeardownScope { AUDIO, MIRROR, SESSION }
+
+internal fun airPlayTeardownScope(body: ByteArray): AirPlayTeardownScope {
+    val plist = BinaryPlistParser.parse(body) as? Map<*, *> ?: return AirPlayTeardownScope.SESSION
+    val streams = plist["streams"] as? List<*> ?: return AirPlayTeardownScope.SESSION
+    val types = streams.map { (it as? Map<*, *>)?.get("type") }.toSet()
+    return when (types) {
+        setOf(96L) -> AirPlayTeardownScope.AUDIO
+        setOf(110L) -> AirPlayTeardownScope.MIRROR
+        else -> AirPlayTeardownScope.SESSION
+    }
+}
+
+internal fun readRtspControlHeader(
+    input: BufferedInputStream,
+    maxBytes: Int,
+    keepIdleControl: () -> Boolean
+): ByteArray? {
+    val out = ByteArrayOutputStream()
+    var matched = 0
+    while (out.size() < maxBytes) {
+        val b = try {
+            input.read()
+        } catch (error: SocketTimeoutException) {
+            if (out.size() == 0 && keepIdleControl()) continue
+            throw error
+        }
+        if (b == -1) {
+            if (out.size() != 0) throw EOFException("Incomplete RTSP header")
+            return null
+        }
+        out.write(b)
+        matched = when {
+            (matched == 0 || matched == 2) && b == '\r'.code -> matched + 1
+            (matched == 1 || matched == 3) && b == '\n'.code -> matched + 1
+            b == '\r'.code -> 1
+            else -> 0
+        }
+        if (matched == 4) return out.toByteArray()
+    }
+    throw IOException("RTSP header exceeds size limit")
+}

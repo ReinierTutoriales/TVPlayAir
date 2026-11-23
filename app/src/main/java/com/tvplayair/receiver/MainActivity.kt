@@ -174,7 +174,9 @@ class MainActivity : ComponentActivity(), SurfaceLayerController {
                 if (::presentationCoordinator.isInitialized &&
                     presentationCoordinator.state == PresentationState.DIRECT_ACTIVE &&
                     overlayState.showingVideoControls) {
+                    val intentChanged = overlayState.videoControls?.playWhenReady != telemetry.playWhenReady
                     overlayState = overlayState.copy(videoControls = telemetry)
+                    if (intentChanged) refreshVideoControlsTimeout()
                 }
                 if (::presentationCoordinator.isInitialized &&
                     canReportDirectPlayback() &&
@@ -525,7 +527,9 @@ class MainActivity : ComponentActivity(), SurfaceLayerController {
     private fun refreshVideoControlsTimeout() {
         if (!overlayState.showingVideoControls) return
         mainHandler.removeCallbacks(hideVideoControls)
-        mainHandler.postDelayed(hideVideoControls, 5_000L)
+        if (overlayState.videoControls?.playWhenReady == true) {
+            mainHandler.postDelayed(hideVideoControls, 5_000L)
+        }
     }
 
     private fun toggleVideoFromControls() {

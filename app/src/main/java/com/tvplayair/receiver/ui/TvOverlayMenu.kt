@@ -29,6 +29,7 @@ import androidx.compose.ui.input.key.KeyEventType
 import androidx.compose.ui.input.key.onPreviewKeyEvent
 import androidx.compose.ui.input.key.type
 import androidx.compose.ui.res.stringResource
+import androidx.compose.ui.semantics.clearAndSetSemantics
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
@@ -178,23 +179,26 @@ private fun TvVideoControls(
                     Box(Modifier.fillMaxWidth(progress).height(4.dp).background(FocusColor))
                 }
             }
-            Row(
-                modifier = Modifier.align(Alignment.CenterHorizontally),
-                horizontalArrangement = Arrangement.spacedBy(10.dp),
-                verticalAlignment = Alignment.CenterVertically
-            ) {
+            TvMediaControlGroup(Modifier.align(Alignment.CenterHorizontally)) {
                 if (telemetry.canSeek) {
-                    TvControl(onClick = { onSeek(-10.0) }) {
-                        Text(stringResource(R.string.video_seek_back))
-                    }
+                    TvMediaControl(
+                        label = stringResource(R.string.video_seek_back),
+                        onClick = { onSeek(-10.0) }
+                    ) { Text("−10", Modifier.clearAndSetSemantics {}) }
                 }
-                TvControl(onClick = onToggle, modifier = Modifier.focusRequester(playFocus)) {
-                    Text(stringResource(if (telemetry.playWhenReady) R.string.video_pause else R.string.video_play))
+                TvMediaControl(
+                    label = stringResource(if (telemetry.playWhenReady) R.string.video_pause else R.string.video_play),
+                    onClick = onToggle,
+                    modifier = Modifier.focusRequester(playFocus),
+                    primary = true
+                ) {
+                    MediaControlGlyph(if (telemetry.playWhenReady) MediaGlyph.Pause else MediaGlyph.Play)
                 }
                 if (telemetry.canSeek) {
-                    TvControl(onClick = { onSeek(10.0) }) {
-                        Text(stringResource(R.string.video_seek_forward))
-                    }
+                    TvMediaControl(
+                        label = stringResource(R.string.video_seek_forward),
+                        onClick = { onSeek(10.0) }
+                    ) { Text("+10", Modifier.clearAndSetSemantics {}) }
                 }
             }
             if (telemetry.isBuffering) {

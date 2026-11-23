@@ -123,11 +123,13 @@ class AirPlayMirrorStreamReceiver(
     private val streamLock = Any()
     private var activeClient: Socket? = null
     private var activeCloseReason: String? = null
+    private var activeTrace: ConnectionTrace? = null
 
     private class ConnectionTrace {
         val startedMs = SystemClock.elapsedRealtime()
         var generation = 0
         var packets = 0L
+        @Volatile var lastVideoAtMs = -1L
         var reason = "loop_ended"
     }
     private var activeSetup: CipherSetup? = null
@@ -187,6 +189,12 @@ class AirPlayMirrorStreamReceiver(
         }
         pendingSetup = setup
         closeActiveStream("new_setup")
+    }
+
+    internal fun hasRecentVideo(owner: AirPlayConnectionCrypto): Boolean = synchronized(streamLock) {
+        val lastVideoAtMs = activeTrace?.lastVideoAtMs ?: -1L
+        activeSetup?.owner === owner && activeClient?.isClosed == false && lastVideoAtMs >= 0L &&
+            SystemClock.elapsedRealtime() - lastVideoAtMs < CLIENT_TIMEOUT_MS
     }
 
     internal fun closeStreamForOwner(owner: AirPlayConnectionCrypto, reason: String) {
@@ -252,6 +260,7 @@ class AirPlayMirrorStreamReceiver(
     private fun acceptLoop(socket: ServerSocket) {
         while (!socket.isClosed) {
             val client = runCatching { socket.accept() }.getOrNull() ?: break
+            val trace = ConnectionTrace()
             val setup = synchronized(streamLock) {
                 if (socket.isClosed) {
                     runCatching { client.close() }
@@ -259,12 +268,12 @@ class AirPlayMirrorStreamReceiver(
                 }
                 activeClient = client
                 activeCloseReason = null
+                activeTrace = trace
                 pendingSetup.also {
                     activeSetup = it
                     pendingSetup = null
                 }
             }
-            val trace = ConnectionTrace()
             try {
                 handleMirrorClient(client, setup?.state ?: CipherState(null, emptyList()), trace)
             } catch (_: SocketTimeoutException) {
@@ -278,6 +287,7 @@ class AirPlayMirrorStreamReceiver(
                     activeClient = null
                     activeSetup = null
                     activeCloseReason = null
+                    activeTrace = null
                     reason
                 }
                 Log.i(PLAYBACK_DIAGNOSTICS_TAG,
@@ -346,6 +356,7 @@ class AirPlayMirrorStreamReceiver(
                 }
                 val isHevc = streamIsHevc ?: continue
                 if (!isVideo) continue
+                trace.lastVideoAtMs = SystemClock.elapsedRealtime()
                 val packetCount = ++trace.packets
                 if (packetCount == 1L || packetCount % 120L == 0L) {
                     Log.i(TAG, "Mirror TCP rx: packets=$packetCount size=${header.payloadSize} gen=${trace.generation}")

@@ -6,13 +6,55 @@ import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
+import org.junit.Assert.assertThrows
 import org.junit.Test
+import java.io.BufferedInputStream
+import java.io.InputStream
+import java.net.SocketTimeoutException
 import java.nio.ByteBuffer
 import javax.crypto.Cipher
 import javax.crypto.spec.IvParameterSpec
 import javax.crypto.spec.SecretKeySpec
 
 class RtspAndRtpParserTest {
+
+    @Test
+    fun distinguishesAudioOnlyMirrorOnlyAndFullTeardown() {
+        fun body(vararg types: Long) = BinaryPlistWriter.encode(
+            mapOf("streams" to types.map { mapOf("type" to it) })
+        )
+        assertEquals(AirPlayTeardownScope.AUDIO, airPlayTeardownScope(body(96L)))
+        assertEquals(AirPlayTeardownScope.MIRROR, airPlayTeardownScope(body(110L)))
+        assertEquals(AirPlayTeardownScope.SESSION, airPlayTeardownScope(body(96L, 110L)))
+        assertEquals(AirPlayTeardownScope.SESSION, airPlayTeardownScope(byteArrayOf()))
+    }
+
+    @Test
+    fun idleControlCanResumeButAPartialHeaderTimeoutStillTerminates() {
+        val header = "OPTIONS * RTSP/1.0\r\nCSeq: 2\r\n\r\n".toByteArray()
+        fun inputWithTimeout(at: Int): BufferedInputStream {
+            val input = object : InputStream() {
+                private var offset = 0
+                private var timedOut = false
+                override fun read(): Int {
+                    if (offset == at && !timedOut) {
+                        timedOut = true
+                        throw SocketTimeoutException()
+                    }
+                    return if (offset < header.size) header[offset++].toInt() else -1
+                }
+            }
+            return BufferedInputStream(input, 1)
+        }
+        assertArrayEquals(header, readRtspControlHeader(inputWithTimeout(0), 1024) { true })
+        assertThrows(SocketTimeoutException::class.java) {
+            readRtspControlHeader(inputWithTimeout(0), 1024) { false }
+        }
+        assertThrows(SocketTimeoutException::class.java) {
+            readRtspControlHeader(inputWithTimeout(1), 1024) { error("Partial header is not idle") }
+        }
+    }
+
 
     @Test
     fun mirroringRetiresPriorAudioButPreservesAudioNegotiatedOnTheSameConnection() {

@@ -135,13 +135,7 @@ internal fun TvNowPlayingScreen(
                     }
                 }
                 if (controlsAvailable) {
-                    Row(
-                        modifier = Modifier
-                            .background(Color.Black.copy(alpha = 0.42f), CircleShape)
-                            .padding(horizontal = 8.dp, vertical = 6.dp),
-                        horizontalArrangement = Arrangement.spacedBy(8.dp),
-                        verticalAlignment = Alignment.CenterVertically
-                    ) {
+                    TvMediaControlGroup {
                         AudioControl(AudioAction.Previous, onAudioCommand)
                         AudioControl(AudioAction.PlayPause, onAudioCommand, Modifier.focusRequester(playFocus))
                         AudioControl(AudioAction.Next, onAudioCommand)
@@ -234,10 +228,40 @@ private fun AudioControl(
     onAudioCommand: (DacpCommand) -> Unit,
     modifier: Modifier = Modifier
 ) {
-    val label = stringResource(action.label)
-    val primary = action == AudioAction.PlayPause
-    IconButton(
+    TvMediaControl(
+        label = stringResource(action.label),
+        primary = action == AudioAction.PlayPause,
         onClick = { onAudioCommand(action.command) },
+        modifier = modifier
+    ) {
+        MediaControlGlyph(when (action) {
+            AudioAction.Previous -> MediaGlyph.Previous
+            AudioAction.PlayPause -> MediaGlyph.PlayPause
+            AudioAction.Next -> MediaGlyph.Next
+        })
+    }
+}
+
+@Composable
+internal fun TvMediaControlGroup(modifier: Modifier = Modifier, content: @Composable () -> Unit) {
+    Row(
+        modifier = modifier.background(Color.Black.copy(alpha = 0.42f), CircleShape)
+            .padding(horizontal = 8.dp, vertical = 6.dp),
+        horizontalArrangement = Arrangement.spacedBy(8.dp),
+        verticalAlignment = Alignment.CenterVertically
+    ) { content() }
+}
+
+@Composable
+internal fun TvMediaControl(
+    label: String,
+    onClick: () -> Unit,
+    modifier: Modifier = Modifier,
+    primary: Boolean = false,
+    content: @Composable () -> Unit
+) {
+    IconButton(
+        onClick = onClick,
         modifier = modifier.size(if (primary) 64.dp else 52.dp)
             .semantics { contentDescription = label },
         shape = IconButtonDefaults.shape(shape = CircleShape),
@@ -250,36 +274,46 @@ private fun AudioControl(
             pressedContainerColor = Color(0xFFB5CAEA),
             pressedContentColor = Color.Black
         )
-    ) {
-        val color = LocalContentColor.current
-        Canvas(Modifier.size(24.dp)) {
-            val unit = size.width / 24
-            fun triangle(left: Float, right: Float) {
-                val path = Path().apply {
-                    moveTo(left * unit, 5 * unit)
-                    lineTo(left * unit, 19 * unit)
-                    lineTo(right * unit, 12 * unit)
-                    close()
-                }
-                drawPath(path, color)
+    ) { content() }
+}
+
+internal enum class MediaGlyph { Previous, PlayPause, Next, Play, Pause }
+
+@Composable
+internal fun MediaControlGlyph(glyph: MediaGlyph) {
+    val color = LocalContentColor.current
+    Canvas(Modifier.size(24.dp)) {
+        val unit = size.width / 24
+        fun triangle(left: Float, right: Float) {
+            val path = Path().apply {
+                moveTo(left * unit, 5 * unit)
+                lineTo(left * unit, 19 * unit)
+                lineTo(right * unit, 12 * unit)
+                close()
             }
-            fun bar(x: Float, width: Float = 2f) {
-                drawRect(color, Offset(x * unit, 5 * unit), Size(width * unit, 14 * unit))
+            drawPath(path, color)
+        }
+        fun bar(x: Float, width: Float = 2f) {
+            drawRect(color, Offset(x * unit, 5 * unit), Size(width * unit, 14 * unit))
+        }
+        when (glyph) {
+            MediaGlyph.Previous -> {
+                triangle(19f, 7f)
+                bar(4f)
             }
-            when (action) {
-                AudioAction.Previous -> {
-                    triangle(19f, 7f)
-                    bar(4f)
-                }
-                AudioAction.PlayPause -> {
-                    triangle(4f, 14f)
-                    bar(16f)
-                    bar(20f)
-                }
-                AudioAction.Next -> {
-                    triangle(5f, 17f)
-                    bar(18f)
-                }
+            MediaGlyph.PlayPause -> {
+                triangle(4f, 14f)
+                bar(16f)
+                bar(20f)
+            }
+            MediaGlyph.Next -> {
+                triangle(5f, 17f)
+                bar(18f)
+            }
+            MediaGlyph.Play -> triangle(8f, 20f)
+            MediaGlyph.Pause -> {
+                bar(6f, 4f)
+                bar(14f, 4f)
             }
         }
     }
