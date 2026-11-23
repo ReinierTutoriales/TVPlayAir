@@ -47,6 +47,9 @@ object DacpRequestBuilder {
         return "iTunes_Ctrl_$normalized"
     }
 
+    fun hasValidClientCredentials(dacpId: String, activeRemote: String): Boolean =
+        expectedServiceName(dacpId) != null && activeRemote.isNotBlank()
+
     fun buildRequest(
         host: String,
         port: Int,
@@ -105,7 +108,7 @@ class DacpController(
     @Synchronized
     fun onClientConnected(dacpId: String, activeRemote: String) {
         val expectedName = DacpRequestBuilder.expectedServiceName(dacpId)
-        if (expectedName == null || activeRemote.isBlank()) {
+        if (!DacpRequestBuilder.hasValidClientCredentials(dacpId, activeRemote)) {
             // A replacement client without DACP credentials must invalidate the previous
             // client's endpoint and token rather than leaving its controls active.
             onClientDisconnected()
