@@ -9,9 +9,6 @@ import androidx.media3.session.MediaSessionService
 import com.tvplayair.receiver.session.SessionConnection
 import com.tvplayair.receiver.session.SessionEventListener
 
-internal fun validDirectSeekPosition(positionSec: Double): Boolean =
-    positionSec.isFinite() && positionSec >= 0.0
-
 /** Owns active direct playback when the TV UI is gone. All handoffs run on the main thread. */
 @OptIn(UnstableApi::class)
 class DirectPlaybackService : MediaSessionService() {
