@@ -239,9 +239,10 @@ class RaopAudioDecoder {
                     length,
                     srcSamples
                 )
-                if (frameCount > 0) {
+                if (frameCount in 1..MAX_PCM_FRAMES) {
                     publishResampled(frameCount, generationId, senderTimeUs)
                 } else {
+                    // JNI must not be allowed to advance beyond the preallocated PCM buffers.
                     decodeFailures++
                 }
             }
