@@ -9,6 +9,8 @@ import androidx.media3.session.MediaSessionService
 import com.tvplayair.receiver.session.SessionConnection
 import com.tvplayair.receiver.session.SessionEventListener
 
+internal fun isCurrentRetainedHandoff(current: Any?, expected: Any): Boolean = current === expected
+
 /** Owns active direct playback when the TV UI is gone. All handoffs run on the main thread. */
 @OptIn(UnstableApi::class)
 class DirectPlaybackService : MediaSessionService() {
@@ -20,7 +22,8 @@ class DirectPlaybackService : MediaSessionService() {
     private var hostedSession: MediaSession? = null
     private var retained: RetainedPlayback? = null
 
-    private fun owns(handoff: RetainedPlayback): Boolean = retained === handoff
+    private fun owns(handoff: RetainedPlayback): Boolean =
+        isCurrentRetainedHandoff(retained, handoff)
 
     override fun onCreate() {
         super.onCreate()
@@ -104,7 +107,7 @@ class DirectPlaybackService : MediaSessionService() {
         notifySender: Boolean = true
     ) {
         val handoff = retained ?: return
-        if (expected != null && handoff !== expected) return
+        if (expected != null && !isCurrentRetainedHandoff(handoff, expected)) return
         retained = null
         if (notifySender) {
             handoff.player.playbackId?.let(handoff.connection::finishDirectPlayback)
