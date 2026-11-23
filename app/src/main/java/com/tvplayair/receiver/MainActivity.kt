@@ -27,6 +27,7 @@ import androidx.core.view.WindowInsetsCompat
 import androidx.core.view.WindowInsetsControllerCompat
 import androidx.tv.material3.MaterialTheme
 import com.tvplayair.receiver.diagnostics.PLAYBACK_DIAGNOSTICS_TAG
+import com.tvplayair.receiver.audio.AudioContinuityService
 import com.tvplayair.receiver.audio.OboeAudioConsumer
 import com.tvplayair.receiver.control.DacpCommand
 import com.tvplayair.receiver.control.TvRemoteHidBridge
@@ -98,7 +99,8 @@ class MainActivity : ComponentActivity(), SurfaceLayerController {
             hide(WindowInsetsCompat.Type.systemBars())
         }
         onBackPressedDispatcher.addCallback(this, closeOverlayOnBack)
-        audioConsumer = OboeAudioConsumer(applicationContext)
+        val retainedAudio = AudioContinuityService.claim()
+        audioConsumer = retainedAudio?.second ?: OboeAudioConsumer(applicationContext)
         identityStore = ReceiverIdentityStore(this)
         val initialIdentity = identityStore.loadOrCreate()
         overlayState = overlayState.copy(
@@ -362,7 +364,7 @@ class MainActivity : ComponentActivity(), SurfaceLayerController {
                 updateScreenWake()
             }
         }
-        sessionConnection = retainedPlayback?.connection ?: SessionConnection(this)
+        sessionConnection = retainedPlayback?.connection ?: retainedAudio?.first ?: SessionConnection(this)
         sessionConnection.replaceListener(sessionListener, replay = retainedPlayback != null)
         sessionConnection.connect()
         sessionConnection.setAutoOpenVisual(overlayState.autoOpenVisual)
@@ -817,13 +819,17 @@ class MainActivity : ComponentActivity(), SurfaceLayerController {
         val retainedByService = !isChangingConfigurations &&
             DirectPlaybackService.retain(DirectPlaybackService.RetainedPlayback(webVideoPlayer, sessionConnection))
         if (retainedByService) directVideoModel.relinquishPlayer()
+        val audioRetained = !retainedByService && overlayState.audioProjectionActive &&
+            AudioContinuityService.retain(this, sessionConnection, audioConsumer, overlayState.audioGeneration)
         if (retainedByService || isChangingConfigurations) {
             mirrorDecoder.stopAndRelease()
             audioConsumer.stop()
-        } else {
+        } else if (!audioRetained) {
             presentationCoordinator.onSessionDied()
+        } else {
+            mirrorDecoder.stopAndRelease()
         }
-        if (!retainedByService) sessionConnection.close()
+        if (!retainedByService && !audioRetained) sessionConnection.close()
         super.onDestroy()
     }
 }
