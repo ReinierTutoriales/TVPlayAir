@@ -140,7 +140,7 @@ Java_com_tvplayair_receiver_session_NativeSharedMemory_nativeDecodeAlacToPcm(
     if (!alacPacket || !outPcmShorts || offset < 0 || length <= 0) return 0;
     const jsize packetLen = env->GetArrayLength(alacPacket);
     const jsize outCapShorts = env->GetArrayLength(outPcmShorts);
-    if (offset + length > packetLen || outCapShorts < 2) return 0;
+    if (offset > packetLen || length > packetLen - offset || outCapShorts < 2) return 0;
 
     std::lock_guard<std::mutex> lock(gAlacMutex);
     if (!gAlacDecoder) return 0;
