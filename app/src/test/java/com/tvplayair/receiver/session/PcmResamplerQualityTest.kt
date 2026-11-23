@@ -19,7 +19,7 @@ class PcmResamplerQualityTest {
         val outFrames = resampler.resampleStereoI16(src, 4, 44_100, dst)
         assertEquals(4, outFrames)
         for (i in 0 until outFrames * 2) {
-            assertTrue(dst[i] in Short.MIN_VALUE..Short.MAX_VALUE)
+            assertTrue(dst[i].toInt() in Short.MIN_VALUE.toInt()..Short.MAX_VALUE.toInt())
         }
     }
 
