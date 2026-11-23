@@ -116,6 +116,7 @@ class AirPlayMirrorStreamReceiver(
         private const val TAG = "AirPlayMirrorReceiver"
         const val DEFAULT_MIRROR_PORT = 7100
         private const val CLIENT_TIMEOUT_MS = 10_000
+        private const val MIRROR_SOCKET_TIMEOUT_MS = 60_000
     }
 
     private val running = AtomicBoolean(false)
@@ -309,7 +310,7 @@ class AirPlayMirrorStreamReceiver(
         var streamHeight = 0
         var streamConfig: ByteArray? = null
         client.use { sock ->
-            sock.soTimeout = CLIENT_TIMEOUT_MS
+            sock.soTimeout = MIRROR_SOCKET_TIMEOUT_MS
             sock.tcpNoDelay = true
             Log.i(TAG, "Mirror TCP client connected from ${sock.inetAddress?.hostAddress}")
             val input = BufferedInputStream(sock.getInputStream())

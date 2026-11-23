@@ -15,6 +15,7 @@ import java.net.Socket
 import java.net.SocketTimeoutException
 import java.nio.charset.StandardCharsets
 import java.util.Locale
+import java.util.concurrent.Executors
 import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicInteger
 
@@ -64,6 +65,9 @@ internal class RaopRtspServer(
     private val running = AtomicBoolean(false)
     private val generationId = sharedGenerationId
     private val nowPlaying = RaopNowPlayingSession(listener::onNowPlaying)
+    private val artworkExecutor = Executors.newSingleThreadExecutor { runnable ->
+        Thread(runnable, "TVPlayAir-ArtworkPrep").apply { isDaemon = true }
+    }
     private val audioReceiver = RaopAudioRtpReceiver { generationId.get() }
     private val timingAndEventServers = AirPlayTimingAndEventServers()
 
@@ -392,10 +396,17 @@ internal class RaopRtspServer(
                     "application/x-dmap-tagged" -> RaopMetadataParser.track(request.body)?.let {
                         nowPlaying.track(source, timestamp, it, remoteFor(request))
                     }
-                    "image/jpeg", "image/png" -> artworkThumbnail(request.body)?.let {
-                        nowPlaying.artwork(source, timestamp, it)
+                    "image/jpeg", "image/png" -> {
+                        val rawArtwork = request.body.copyOf()
+                        artworkExecutor.execute {
+                            artworkThumbnail(rawArtwork)?.let { thumb ->
+                                nowPlaying.artwork(source, timestamp, thumb)
+                            }
+                        }
                     }
-                    "image/none" -> nowPlaying.artwork(source, timestamp, null)
+                    "image/none" -> artworkExecutor.execute {
+                        nowPlaying.artwork(source, timestamp, null)
+                    }
                     "text/parameters", null -> nowPlaying.withOwner(source) { updateVolume(request.body) }
                 }
                 output.write(RtspMessageParser.formatResponse(200, "OK", cseq))
