@@ -88,7 +88,7 @@ class MediaContinuityBaselineTest {
 
     private class Receiver {
         val musicSource = Any()
-        private val mirrorSource = Any()
+        private val mirrorSource = AirPlayConnectionCrypto { ByteArray(32) }
         var overlay = TvOverlayState()
             private set
         val metadata = RaopNowPlayingSession { overlay = overlay.withNowPlaying(it) }

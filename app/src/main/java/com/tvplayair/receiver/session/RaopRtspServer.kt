@@ -3,6 +3,7 @@ package com.tvplayair.receiver.session
 import android.graphics.Bitmap
 import android.graphics.BitmapFactory
 import android.util.Log
+import com.tvplayair.receiver.diagnostics.PLAYBACK_DIAGNOSTICS_TAG
 import java.io.BufferedInputStream
 import java.io.ByteArrayOutputStream
 import java.io.EOFException
@@ -257,9 +258,7 @@ internal class RaopRtspServer(
                 }
             }
             "ANNOUNCE" -> {
-                synchronized(nowPlaying) {
-                    configureFromSdp(String(request.body, StandardCharsets.UTF_8))
-                }
+                source.announcedAudioSdp = String(request.body, StandardCharsets.UTF_8)
                 output.write(RtspMessageParser.formatResponse(200, "OK", cseq))
             }
             "POST" -> {
@@ -323,10 +322,24 @@ internal class RaopRtspServer(
                     handleBinaryPlistSetup(request, output, source)
                 } else {
                     val transport = RtspMessageParser.parseTransport(request.header("transport"))
-                    synchronized(nowPlaying) {
-                        if (audioReceiver.start(RaopAudioRtpReceiver.DEFAULT_AUDIO_PORT)) {
-                            activateAudioSource(source, request)
+                    val accepted = synchronized(nowPlaying) {
+                        if (mirrorReceiver?.allowsAudio(source) == false) {
+                            rejectConcurrentAudio(output, cseq)
+                            false
+                        } else {
+                            source.announcedAudioSdp?.let(::configureFromSdp)
+                            if (audioReceiver.start(RaopAudioRtpReceiver.DEFAULT_AUDIO_PORT)) {
+                                activateAudioSource(source, request)
+                                true
+                            } else {
+                                output.write(RtspMessageParser.formatResponse(503, "Service Unavailable", cseq))
+                                false
+                            }
                         }
+                    }
+                    if (!accepted) {
+                        output.flush()
+                        return true
                     }
                     val responseTransport = buildString {
                         append("RTP/AVP/UDP;unicast;mode=record")
@@ -379,7 +392,7 @@ internal class RaopRtspServer(
                         nowPlaying.artwork(source, timestamp, it)
                     }
                     "image/none" -> nowPlaying.artwork(source, timestamp, null)
-                    "text/parameters", null -> updateVolume(request.body)
+                    "text/parameters", null -> nowPlaying.withOwner(source) { updateVolume(request.body) }
                 }
                 output.write(RtspMessageParser.formatResponse(200, "OK", cseq))
             }
@@ -507,8 +520,15 @@ internal class RaopRtspServer(
                 "timingPort" to RaopAudioRtpReceiver.DEFAULT_TIMING_PORT.toLong()
             )
         } else synchronized(nowPlaying) {
-            val responses = streams.mapNotNull { configureStream(it, request, source) }
-            mapOf("streams" to responses)
+            // Apply mirror ownership before offering a companion audio port, even if audio is listed first.
+            val videoResponses = streams.filter { it["type"] == 110L }
+                .mapNotNull { configureStream(it, request, source) }
+            val audioStreams = streams.filter { it["type"] == 96L }
+            if (audioStreams.isNotEmpty() && mirrorReceiver?.allowsAudio(source) == false) {
+                rejectConcurrentAudio(output, cseq)
+                return
+            }
+            mapOf("streams" to (videoResponses + audioStreams.mapNotNull { configureStream(it, request, source) }))
         }
 
         val encoded = BinaryPlistWriter.encode(responseMap)
@@ -519,6 +539,11 @@ internal class RaopRtspServer(
                 encoded
             )
         )
+    }
+
+    private fun rejectConcurrentAudio(output: OutputStream, cseq: String) {
+        Log.i(PLAYBACK_DIAGNOSTICS_TAG, "route=raop event=setup_rejected reason=mirror_owns_audio")
+        output.write(RtspMessageParser.formatResponse(455, "Method Not Valid in This State", cseq))
     }
 
     private fun configureStream(

@@ -14,6 +14,7 @@ internal class AirPlayConnectionCrypto(identityKey: () -> ByteArray) : Closeable
     var sessionIv: ByteArray? = null
     @Volatile
     var mediaSessionId: String? = null
+    var announcedAudioSdp: String? = null
 
     override fun close() {
         if (fairPlayDelegate.isInitialized()) fairPlay.close()
@@ -23,3 +24,8 @@ internal class AirPlayConnectionCrypto(identityKey: () -> ByteArray) : Closeable
         sessionIv = null
     }
 }
+
+/** A separate RAOP socket can carry mirror audio when both negotiated the same session UUID. */
+internal fun canUseRaopDuringMirroring(mirrorOwner: AirPlayConnectionCrypto?, audioSource: Any): Boolean =
+    mirrorOwner == null || mirrorOwner === audioSource ||
+        mirrorOwner.mediaSessionId?.let { it == (audioSource as? AirPlayConnectionCrypto)?.mediaSessionId } == true

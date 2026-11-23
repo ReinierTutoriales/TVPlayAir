@@ -17,6 +17,22 @@ import javax.crypto.spec.IvParameterSpec
 import javax.crypto.spec.SecretKeySpec
 
 class RtspAndRtpParserTest {
+    @Test
+    fun mirrorAdmitsCompanionAudioButBlocksIndependentAudioTakeover() {
+        val mirror = AirPlayConnectionCrypto { ByteArray(32) }
+        val separate = AirPlayConnectionCrypto { ByteArray(32) }
+
+        assertTrue(canUseRaopDuringMirroring(null, separate))
+        assertTrue(canUseRaopDuringMirroring(mirror, mirror))
+        assertFalse(canUseRaopDuringMirroring(mirror, separate))
+
+        mirror.mediaSessionId = "projection"
+        separate.mediaSessionId = "music"
+        assertFalse(canUseRaopDuringMirroring(mirror, separate))
+        separate.mediaSessionId = "projection"
+        assertTrue(canUseRaopDuringMirroring(mirror, separate))
+    }
+
 
     @Test
     fun distinguishesAudioOnlyMirrorOnlyAndFullTeardown() {
@@ -61,7 +77,7 @@ class RtspAndRtpParserTest {
         val updates = mutableListOf<RaopNowPlaying?>()
         val playback = RaopNowPlayingSession { updates += it }
         val previous = Any()
-        val mirror = Any()
+        val mirror = AirPlayConnectionCrypto { ByteArray(32) }
         playback.activate(previous)
         playback.track(previous, 90L, RaopTrack("Previous audio", null, null))
         assertTrue(playback.retireAudioForMirror(mirror))

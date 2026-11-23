@@ -191,6 +191,11 @@ class AirPlayMirrorStreamReceiver(
         closeActiveStream("new_setup")
     }
 
+    internal fun allowsAudio(source: AirPlayConnectionCrypto): Boolean = synchronized(streamLock) {
+        val owner = pendingSetup?.owner ?: activeSetup?.owner?.takeIf { activeClient?.isClosed == false }
+        canUseRaopDuringMirroring(owner, source)
+    }
+
     internal fun hasRecentVideo(owner: AirPlayConnectionCrypto): Boolean = synchronized(streamLock) {
         val lastVideoAtMs = activeTrace?.lastVideoAtMs ?: -1L
         activeSetup?.owner === owner && activeClient?.isClosed == false && lastVideoAtMs >= 0L &&
