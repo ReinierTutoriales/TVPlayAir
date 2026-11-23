@@ -154,11 +154,12 @@ class SessionService : Service() {
             }
         }
 
-        override fun onMirrorStreamEnded() {
+        override fun onMirrorStreamEnded(generationId: Int) {
             synchronized(callbackLock) {
+                if (latestMirrorConfig?.generationId != generationId) return
                 latestMirrorConfig = null
                 mirrorProjectionActive = false
-                runCatching { callback?.onMirrorStreamEnded() }
+                runCatching { callback?.onMirrorStreamEnded(generationId) }
             }
         }
 

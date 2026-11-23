@@ -69,6 +69,8 @@ data class TvOverlayState(
         val enteringVideo = state != presentationState &&
             (state == PresentationState.SWITCHING_TO_DIRECT ||
                 state == PresentationState.SWITCHING_TO_MIRROR ||
+                state == PresentationState.MIRROR_PREPARING ||
+                state == PresentationState.MIRROR_RECOVERING ||
                 state == PresentationState.MIRROR_ACTIVE ||
                 state == PresentationState.DIRECT_ACTIVE && showStandby)
         return copy(

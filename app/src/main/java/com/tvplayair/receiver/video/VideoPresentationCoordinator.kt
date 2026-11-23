@@ -2,7 +2,9 @@ package com.tvplayair.receiver.video
 
 enum class PresentationState {
     IDLE,
+    MIRROR_PREPARING,
     MIRROR_ACTIVE,
+    MIRROR_RECOVERING,
     SWITCHING_TO_DIRECT,
     DIRECT_ACTIVE,
     DIRECT_WITHOUT_SURFACE,
@@ -63,6 +65,8 @@ internal fun initialDirectPositionMs(startPosition: Double, durationMs: Long): L
 
 interface SurfaceLayerController {
     fun hasMirrorSurface(): Boolean
+    fun coverMirrorSurface()
+    fun revealMirrorSurface()
     fun showMirrorSurface()
     fun showDirectSurface()
     fun revealDirectSurface()
@@ -110,7 +114,7 @@ class VideoPresentationCoordinator(
             onCachedMirrorAvailable()
             return false
         }
-        if (state == PresentationState.MIRROR_ACTIVE) {
+        if (isMirrorRequested()) {
             if (!reconfigured) return true
             state = PresentationState.SWITCHING_TO_MIRROR
             surfaceController.showMirrorSurface()
@@ -177,7 +181,7 @@ class VideoPresentationCoordinator(
         val started = mirrorEngine.start(discardMirrorFrames)
         discardMirrorFrames = false
         if (!started) surfaceController.hideAllSurfaces()
-        state = if (started) PresentationState.MIRROR_ACTIVE else PresentationState.RECOVERING
+        state = if (started) PresentationState.MIRROR_PREPARING else PresentationState.RECOVERING
         return started
     }
 
@@ -219,8 +223,25 @@ class VideoPresentationCoordinator(
         else if (!hasDirectPlayback) startMirror()
     }
 
-    private fun isMirrorRequested(): Boolean =
-        state == PresentationState.MIRROR_ACTIVE || state == PresentationState.SWITCHING_TO_MIRROR
+    fun onMirrorFrameRendered(): Boolean {
+        if (state != PresentationState.MIRROR_PREPARING && state != PresentationState.MIRROR_RECOVERING) return false
+        state = PresentationState.MIRROR_ACTIVE
+        surfaceController.revealMirrorSurface()
+        return true
+    }
+
+    fun onMirrorRecovering(): Boolean {
+        if (!isMirrorRequested() || state == PresentationState.SWITCHING_TO_MIRROR) return false
+        state = PresentationState.MIRROR_RECOVERING
+        surfaceController.coverMirrorSurface()
+        return true
+    }
+
+    private fun isMirrorRequested(): Boolean = when (state) {
+        PresentationState.SWITCHING_TO_MIRROR, PresentationState.MIRROR_PREPARING,
+        PresentationState.MIRROR_ACTIVE, PresentationState.MIRROR_RECOVERING -> true
+        else -> false
+    }
 
     fun onDirectSurfaceCreated(): Boolean {
         if (state != PresentationState.DIRECT_WITHOUT_SURFACE) return false
@@ -231,10 +252,7 @@ class VideoPresentationCoordinator(
     fun onSurfaceDestroyed(isDirectSurface: Boolean) {
         if (isDirectSurface && hasDirectPlayback) {
             state = PresentationState.DIRECT_WITHOUT_SURFACE
-        } else if (!isDirectSurface &&
-            (state == PresentationState.MIRROR_ACTIVE ||
-                state == PresentationState.SWITCHING_TO_MIRROR)
-        ) {
+        } else if (!isDirectSurface && isMirrorRequested()) {
             mirrorEngine.stopAndRelease()
             surfaceController.hideAllSurfaces()
             state = PresentationState.IDLE

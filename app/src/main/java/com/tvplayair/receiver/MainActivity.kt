@@ -70,6 +70,7 @@ class MainActivity : ComponentActivity(), SurfaceLayerController {
     private var destroyingView = false
     private var screenStarted = false
     private var mirrorRequested = false
+    private var mirrorGeneration: Int? = null
     private var directAspectRatio: Double? = null
     private var mirrorAspectRatio: Double? = null
     private var directPlaybackId = 0L
@@ -87,9 +88,7 @@ class MainActivity : ComponentActivity(), SurfaceLayerController {
                 overlayState.visible -> setOverlayVisible(false)
                 overlayState.showingVideoControls || overlayState.showingMirrorControls -> dismissPlaybackControls()
                 presentationCoordinator.state == PresentationState.MIRROR_ACTIVE -> {
-                    mirrorRequested = false
-                    presentationCoordinator.onMirrorDisconnected()
-                    syncPresentationState()
+                    finishMirrorPresentation()
                 }
             }
         }
@@ -181,14 +180,10 @@ class MainActivity : ComponentActivity(), SurfaceLayerController {
             audioClockOffsetNs = audioConsumer::senderClockOffsetNs,
             onVideoSizeChanged = ::updateMirrorSurfaceAspectRatio,
             onFirstFrameRendered = {
-                if (!destroyingView && presentationCoordinator.state == PresentationState.MIRROR_ACTIVE) {
-                    videoStartupCover.visibility = View.GONE
-                }
+                if (!destroyingView && presentationCoordinator.onMirrorFrameRendered()) syncPresentationState()
             },
             onRecovering = {
-                if (!destroyingView && presentationCoordinator.state == PresentationState.MIRROR_ACTIVE) {
-                    videoStartupCover.visibility = View.VISIBLE
-                }
+                if (!destroyingView && presentationCoordinator.onMirrorRecovering()) syncPresentationState()
             },
             onRecoveryTimeout = ::finishMirrorPresentation
         )
@@ -295,6 +290,7 @@ class MainActivity : ComponentActivity(), SurfaceLayerController {
                 val reconfigured = mirrorDecoder.updateConfig(
                     MirrorVideoConfig(mimeType, width, height), generationId, codecConfig
                 )
+                mirrorGeneration = generationId
                 mirrorRequested = true
                 if (opensProjection && awaitingDirectSnapshot) {
                     awaitingDirectSnapshot = false
@@ -338,7 +334,9 @@ class MainActivity : ComponentActivity(), SurfaceLayerController {
                 overlayState = overlayState.copy(connectedClient = clientName)
             }
 
-            override fun onMirrorStreamEnded() = finishMirrorPresentation()
+            override fun onMirrorStreamEnded(generationId: Int) {
+                if (mirrorGeneration == generationId) finishMirrorPresentation()
+            }
 
             override fun onAudioStreamStarted(generationId: Int) {
                 overlayState = overlayState.withAudioStreamStarted(generationId)
@@ -726,6 +724,7 @@ class MainActivity : ComponentActivity(), SurfaceLayerController {
     }
 
     private fun finishMirrorPresentation() {
+        mirrorGeneration = null
         mirrorRequested = false
         if (!overlayState.audioProjectionActive) {
             overlayState = overlayState.copy(connectedClient = null)
@@ -815,6 +814,14 @@ class MainActivity : ComponentActivity(), SurfaceLayerController {
     }
 
     override fun hasMirrorSurface(): Boolean = mirrorSurfaceView.holder.surface.isValid
+
+    override fun coverMirrorSurface() {
+        videoStartupCover.visibility = View.VISIBLE
+    }
+
+    override fun revealMirrorSurface() {
+        videoStartupCover.visibility = View.GONE
+    }
 
     override fun showMirrorSurface() {
         directSurfaceView.visibility = View.INVISIBLE

@@ -114,7 +114,7 @@ class AirPlayMirrorStreamReceiver(
     private val onCodecConfigReady: (
         socket: Socket, isHevc: Boolean, width: Int, height: Int, generationId: Int, codecConfig: ByteArray, opensProjection: Boolean
     ) -> Unit,
-    private val onStreamEnded: () -> Unit
+    private val onStreamEnded: (Int) -> Unit
 ) {
     companion object {
         private const val TAG = "AirPlayMirrorReceiver"
@@ -350,7 +350,7 @@ class AirPlayMirrorStreamReceiver(
                         "packets=${trace.packets} elapsedMs=${SystemClock.elapsedRealtime() - trace.startedMs}")
                 // client.use closes the socket before this finally block; socket.isClosed
                 // cannot distinguish EOF from an intentional shutdown.
-                if (unexpectedEnd) onStreamEnded()
+                if (unexpectedEnd) onStreamEnded(trace.generation)
             }
         }
     }

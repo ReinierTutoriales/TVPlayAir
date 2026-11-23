@@ -180,3 +180,10 @@ Queda pendiente repetir con iPhone y Realtek el caso 1320 × 2868, rotar la
 pantalla y probar el regreso de reproducción directa a mirroring. La
 confirmación del callback cubre la Surface y la comprobación visual en el
 panel requiere una prueba física.
+
+El coordinador mantiene el espejo en preparación hasta la confirmación de
+MediaCodec, vuelve a cubrirlo durante la recuperación y rechaza avisos de
+fotograma mientras Media3 presenta vídeo directo. El cierre del espejo lleva
+la generación del flujo desde el transporte hasta Binder y la Activity.
+Un cierre atrasado pertenece a su generación y no retira una proyección nueva.
+[MediaCodec.OnFrameRenderedListener](https://developer.android.com/reference/android/media/MediaCodec.OnFrameRenderedListener)
