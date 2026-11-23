@@ -97,9 +97,12 @@ class AudioContinuityService : Service() {
             consumer?.stop()
             connection?.close()
         }
+        if (!claimed) {
+            consumer = null
+            connection = null
+            audioGeneration = null
+        }
         claimed = false
-        consumer = null
-        connection = null
         super.onDestroy()
     }
 
@@ -113,6 +116,7 @@ class AudioContinuityService : Service() {
 
         fun retain(context: Context, session: SessionConnection, audio: OboeAudioConsumer, generation: Int?): Boolean {
             if (generation == null) return false
+            if (connection === session && consumer === audio) return true
             connection = session
             consumer = audio
             audioGeneration = generation
