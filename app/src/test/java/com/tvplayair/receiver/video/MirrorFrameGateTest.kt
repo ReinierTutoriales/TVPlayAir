@@ -9,6 +9,14 @@ import org.junit.Test
 class MirrorFrameGateTest {
 
     @Test
+    fun recoveryCallbackSurvivesWorkerExitButRejectsStaleOrCancelledRequests() {
+        assertTrue(shouldDeliverRecoveryTimeout(true, true, true))
+        assertFalse(shouldDeliverRecoveryTimeout(false, true, true))
+        assertFalse(shouldDeliverRecoveryTimeout(true, false, true))
+        assertFalse(shouldDeliverRecoveryTimeout(true, true, false))
+    }
+
+    @Test
     fun frameClockSchedulesOnlyPlausibleFutureFramesAndExpiresUnavailableAudio() {
         var now = 1_000_000_000L
         var offset = -3_000_000_000L

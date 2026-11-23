@@ -55,6 +55,8 @@ class MirrorDecoder(
     @Volatile
     private var codec: MediaCodec? = null
     private var workerThread: Thread? = null
+    @Volatile
+    private var recoveryCallbackPending = false
 
     @Synchronized
     fun updateConfig(newConfig: MirrorVideoConfig, generation: Int, codecConfig: ByteArray): Boolean {
@@ -88,6 +90,7 @@ class MirrorDecoder(
             return false
         }
 
+        recoveryCallbackPending = false
         frameGate.resetGate()
         val initialCsd = frameGate.getCachedCodecConfig()
         if (initialCsd != null) {
@@ -111,6 +114,7 @@ class MirrorDecoder(
 
     @Synchronized
     override fun stopAndRelease() {
+        recoveryCallbackPending = false
         running.set(false)
         workerThread?.let { thread ->
             thread.interrupt()
@@ -254,8 +258,16 @@ class MirrorDecoder(
             if (outputWatchdog.recoveryExpired()) {
                 Log.w(PLAYBACK_DIAGNOSTICS_TAG,
                     "route=mirror_decoder generation=$generation event=recovery_timeout")
+                recoveryCallbackPending = true
                 renderListenerHandler.post {
-                    if (running.get() && workerThread === worker && generationId.get() == generation) {
+                    // The worker's finally block has already set running=false by the time
+                    // this runs; use the pending recovery token, not running, to deliver it.
+                    if (shouldDeliverRecoveryTimeout(
+                            recoveryCallbackPending, workerThread === worker,
+                            generationId.get() == generation
+                        )
+                    ) {
+                        recoveryCallbackPending = false
                         onRecoveryTimeout()
                     }
                 }
@@ -511,3 +523,8 @@ internal class MirrorFrameClock(
         return targetNs.takeIf { it > now && it <= now + 150_000_000L }
     }
 }
+
+/** Recovery callbacks may run after the worker has exited and cleared running. */
+internal fun shouldDeliverRecoveryTimeout(
+    pending: Boolean, sameWorker: Boolean, sameGeneration: Boolean
+): Boolean = pending && sameWorker && sameGeneration
