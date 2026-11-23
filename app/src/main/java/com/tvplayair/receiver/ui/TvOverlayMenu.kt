@@ -84,7 +84,8 @@ fun TvOverlayMenu(
                     TvPlaybackControls(
                         telemetry = direct,
                         onToggle = onVideoToggle,
-                        onAudioCommand = remoteCommand
+                        // Direct playback must never expose DACP controls from a previous audio session.
+                        onAudioCommand = remoteCommand.takeIf { direct == null }
                     )
                 }
             }
