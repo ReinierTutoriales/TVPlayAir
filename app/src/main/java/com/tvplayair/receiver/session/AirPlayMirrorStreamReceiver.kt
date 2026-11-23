@@ -162,6 +162,10 @@ class AirPlayMirrorStreamReceiver(
     private var activeCloseReason: String? = null
     private var activeTrace: ConnectionTrace? = null
 
+    internal fun shouldNotifyStreamEnded(
+        generation: Int, isCurrentClient: Boolean, deliberateClose: Boolean, receiverRunning: Boolean
+    ): Boolean = generation != 0 && isCurrentClient && !deliberateClose && receiverRunning
+
     private class ConnectionTrace {
         val startedMs = SystemClock.elapsedRealtime()
         var generation = 0
@@ -342,7 +346,7 @@ class AirPlayMirrorStreamReceiver(
                         "packets=${trace.packets} elapsedMs=${SystemClock.elapsedRealtime() - trace.startedMs}")
                 // client.use closes the socket before this finally block; socket.isClosed
                 // cannot distinguish EOF from an intentional shutdown.
-                if (trace.generation != 0 && unexpectedEnd) onStreamEnded()
+                if (shouldNotifyStreamEnded(trace.generation, unexpectedEnd, false, true)) onStreamEnded()
             }
         }
     }
