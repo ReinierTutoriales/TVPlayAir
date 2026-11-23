@@ -710,8 +710,8 @@ class AirPlayDirectHttpServer(
                 val scrubBody = String.format(
                     Locale.US,
                     "duration: %.6f\r\nposition: %.6f\r\n",
-                    t.durationSec.coerceAtLeast(0.0),
-                    t.positionSec.coerceAtLeast(0.0)
+                    AirPlayPlaybackInfoFormatter.reportedDuration(t),
+                    AirPlayPlaybackInfoFormatter.reportedPosition(t)
                 )
                 writeResponse(output, 200, "OK", "text/parameters", scrubBody)
             }
@@ -722,7 +722,10 @@ class AirPlayDirectHttpServer(
                 }
                 val position = AirPlayHttpRequestParser.parseQueryDouble(fullPath, "position")
                 if (position != null) {
-                    playbackEvents.control(sessionKey) { id -> listener.onDirectVideoCommand("seek", position, id) }
+                    playbackEvents.control(sessionKey) { id ->
+                        val target = AirPlayPlaybackInfoFormatter.positionInWindow(latestTelemetry.get(), position)
+                        listener.onDirectVideoCommand("seek", target, id)
+                    }
                     writeResponse(output, 200, "OK")
                 } else {
                     writeResponse(output, 400, "Bad Request")

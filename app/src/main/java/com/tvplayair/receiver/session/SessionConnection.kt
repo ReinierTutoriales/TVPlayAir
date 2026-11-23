@@ -224,7 +224,7 @@ class SessionConnection(
             service?.updatePlaybackTelemetry(
                 source, playbackId, positionMs ?: NO_DIRECT_CHECKPOINT_MS,
                 telemetry.durationSec, telemetry.positionSec,
-                telemetry.rate, telemetry.isPlaying, telemetry.isBuffering, telemetry.isReady
+                telemetry.livePositionSec ?: -1.0, telemetry.rate, telemetry.isPlaying, telemetry.isBuffering, telemetry.isReady
             )
         }
     }

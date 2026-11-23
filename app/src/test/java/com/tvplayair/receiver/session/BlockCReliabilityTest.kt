@@ -7,6 +7,7 @@ import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertNull
 import org.junit.Test
+import java.nio.ByteBuffer
 import javax.crypto.Cipher
 import javax.crypto.spec.IvParameterSpec
 import javax.crypto.spec.SecretKeySpec
@@ -16,6 +17,23 @@ class BlockCReliabilityTest {
         val cipher = Cipher.getInstance("AES/CTR/NoPadding")
         cipher.init(Cipher.ENCRYPT_MODE, SecretKeySpec(key, "AES"), IvParameterSpec(iv))
         return cipher.doFinal(plain)
+    }
+
+    @Test
+    fun raopSyncMapsWrappingRtpTimestampsIntoTheSenderClock() {
+        val packet = ByteBuffer.allocate(20)
+            .put(0, 0x90.toByte())
+            .put(1, 0xd4.toByte())
+            .putInt(4, 0xfffffc18.toInt())
+            .putLong(8, (10L shl 32) or 0x80000000L)
+            .array()
+
+        val anchor = checkNotNull(RaopClockAnchor.parse(packet, packet.size))
+        assertEquals(10_500_000L, anchor.senderTimeUs)
+        assertEquals(10_525_000L, anchor.senderTimeUsAt(200, 48_000))
+        assertNull(RaopClockAnchor.parse(packet, 19))
+        packet[1] = 0xd6.toByte()
+        assertNull(RaopClockAnchor.parse(packet, packet.size))
     }
 
     @Test

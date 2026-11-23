@@ -92,6 +92,8 @@ class WebVideoPlayer(context: Context) : DirectVideoEngine {
     private var pendingStartFraction: Double? = null
     private var prepareStartedMs = 0L
     private val eventWindow = Timeline.Window()
+    private val liveWindow = Timeline.Window()
+    private val livePosition = LivePlaybackPosition()
     private val diagnostics = DirectPlaybackDiagnostics(SystemClock::elapsedRealtime) {
         Log.i(PLAYBACK_DIAGNOSTICS_TAG, it)
     }
@@ -387,6 +389,7 @@ class WebVideoPlayer(context: Context) : DirectVideoEngine {
         releaseSystemControls()
         finishedPlaybackId = null
         playbackId = video.playbackId
+        livePosition.reset()
         firstFrameLogged = false
         diagnostics.start(video.playbackId)
         exo.setVideoSurfaceView(surface)
@@ -463,6 +466,7 @@ class WebVideoPlayer(context: Context) : DirectVideoEngine {
     private fun resetPlaybackState() {
         diagnostics.finish("cleared")
         playbackId = null
+        livePosition.reset()
         finishedPlaybackId = null
         releaseSystemControls()
         pendingStartFraction = null
@@ -496,6 +500,13 @@ class WebVideoPlayer(context: Context) : DirectVideoEngine {
         }
         val positionSec = (exo.currentPosition.coerceAtLeast(0L)) / 1000.0
         val playing = exo.isPlaying
+        val timeline = exo.currentTimeline
+        val livePositionSec = if (hasCurrentItem && exo.isCurrentMediaItemLive &&
+            exo.currentMediaItemIndex in 0 until timeline.windowCount
+        ) {
+            timeline.getWindow(exo.currentMediaItemIndex, liveWindow)
+            livePosition.update(liveWindow.positionInFirstPeriodUs / 1000L, exo.currentPosition.coerceAtLeast(0L))
+        } else null
         return DirectPlaybackTelemetry(
             durationSec = durationSec,
             positionSec = positionSec,
@@ -510,7 +521,8 @@ class WebVideoPlayer(context: Context) : DirectVideoEngine {
             audioOnly = audioOnly,
             artist = metadata?.artist?.toString()?.takeIf { audioOnly && it.isNotBlank() },
             album = metadata?.albumTitle?.toString()?.takeIf { audioOnly && it.isNotBlank() },
-            artwork = metadata?.artworkData?.takeIf { audioOnly }
+            artwork = metadata?.artworkData?.takeIf { audioOnly },
+            livePositionSec = livePositionSec
         )
     }
 
@@ -519,5 +531,24 @@ class WebVideoPlayer(context: Context) : DirectVideoEngine {
         viewCallbacks = null
         resetPlaybackState()
         releasePlayerInstance()
+    }
+}
+
+
+/** Sender-facing position. Media3's position starts at the current HLS window. */
+internal class LivePlaybackPosition {
+    private var originMs: Long? = null
+    private var lastMs = 0L
+
+    fun update(windowOffsetMs: Long, windowPositionMs: Long): Double {
+        val absoluteMs = windowOffsetMs + windowPositionMs
+        val origin = originMs ?: absoluteMs.also { originMs = it }
+        lastMs = maxOf(lastMs, absoluteMs - origin)
+        return lastMs / 1000.0
+    }
+
+    fun reset() {
+        originMs = null
+        lastMs = 0L
     }
 }

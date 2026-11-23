@@ -241,6 +241,7 @@ class SessionService : Service() {
             resumePositionMs: Long,
             durationSec: Double,
             positionSec: Double,
+            livePositionSec: Double,
             rate: Float,
             isPlaying: Boolean,
             isBuffering: Boolean,
@@ -253,7 +254,10 @@ class SessionService : Service() {
             }
             protocolEngine.updatePlaybackTelemetry(
                 playbackId,
-                DirectPlaybackTelemetry(durationSec, positionSec, rate, isPlaying, isBuffering, isReady)
+                DirectPlaybackTelemetry(
+                    durationSec, positionSec, rate, isPlaying, isBuffering, isReady,
+                    livePositionSec = livePositionSec.takeIf { it.isFinite() && it >= 0.0 }
+                )
             )
         }
 

@@ -6,7 +6,30 @@ import java.net.DatagramPacket
 import java.net.DatagramSocket
 import java.net.InetAddress
 import java.net.InetSocketAddress
+import java.nio.ByteBuffer
 import java.util.concurrent.atomic.AtomicBoolean
+
+internal data class RaopClockAnchor(val rtpTimestamp: Long, val senderTimeUs: Long) {
+    fun senderTimeUsAt(timestamp: Long, sampleRate: Int): Long =
+        senderTimeUs + (timestamp - rtpTimestamp).toInt().toLong() * 1_000_000L / sampleRate
+
+    companion object {
+        fun parse(data: ByteArray, length: Int): RaopClockAnchor? {
+            if (length !in 20..data.size || (data[0].toInt() and 0xc0) != 0x80 ||
+                (data[1].toInt() and 0x7f) != 0x54
+            ) return null
+            val buffer = ByteBuffer.wrap(data, 0, length)
+            val rtp = buffer.getInt(4).toLong() and 0xffffffffL
+            val ntp = buffer.getLong(8)
+            if (ntp == 0L) return null
+            val fraction = ntp and 0xffffffffL
+            return RaopClockAnchor(
+                rtp,
+                (ntp ushr 32) * 1_000_000L + ((fraction * 1_000_000L) ushr 32)
+            )
+        }
+    }
+}
 
 data class RtpAudioPacket(
     val payloadType: Int,
@@ -207,6 +230,13 @@ class RaopAudioRtpReceiver(
     private var unencryptedPrefix0: Int = -1
     @Volatile
     private var unencryptedPrefix1: Int = -1
+    private data class SessionClockAnchor(val generation: Int, val anchor: RaopClockAnchor)
+
+    @Volatile
+    private var clockAnchor: SessionClockAnchor? = null
+    @Volatile
+    private var clockSampleRate = 0
+    private var timestampedPackets = 0L
     @Volatile
     private var rxPackets: Long = 0L
     @Volatile
@@ -249,6 +279,8 @@ class RaopAudioRtpReceiver(
             RaopAlacKeySelector(candidates, iv)
         } else null
         jitterBuffer.reset()
+        clockAnchor = null
+        clockSampleRate = sampleRate
         clientControlAddress = null
         clientControlPort = 0
         rxPackets = 0L
@@ -299,6 +331,7 @@ class RaopAudioRtpReceiver(
     fun stop() {
         running.set(false)
         jitterBuffer.reset()
+        clockAnchor = null
         clientControlAddress = null
         clientControlPort = 0
         runCatching { socket?.close() }
@@ -337,6 +370,14 @@ class RaopAudioRtpReceiver(
                 clientControlPort = packet.port
             }
             val payloadType = rxBuf[1].toInt() and 0x7F
+            if (payloadType == 0x54 && clientControlAddress == packet.address &&
+                clientControlPort == packet.port
+            ) {
+                val generation = generationProvider()
+                RaopClockAnchor.parse(rxBuf, packet.length)?.let {
+                    clockAnchor = SessionClockAnchor(generation, it)
+                }
+            }
             if (payloadType == 0x56 && packet.length > 4 + RtpAudioPacketParser.MIN_RTP_HEADER_BYTES) {
                 val parsed = RtpAudioPacketParser.parse(rxBuf, packet.length - 4, baseOffset = 4) ?: continue
                 if (parsed.payloadType == 96) {
@@ -373,9 +414,20 @@ class RaopAudioRtpReceiver(
                 clientControlAddress = packet.address
             }
             val parsed = RtpAudioPacketParser.parse(rxBuf, packet.length) ?: continue
-            // Only process RTP payloadType 96 (audio data); ignore RTCP/Sync (84) and retransmit headers (86).
+            // Audio data only; sync and retransmissions arrive on the control socket.
             if (parsed.payloadType != 96) continue
+            logSenderClockSample(parsed.timestamp)
             enqueueRtpPacket(parsed.sequenceNumber, rxBuf, parsed.payloadOffset, parsed.payloadLength)
+        }
+    }
+
+    private fun logSenderClockSample(rtpTimestamp: Long) {
+        val timing = clockAnchor ?: return
+        val sampleRate = clockSampleRate
+        if (sampleRate <= 0 || timing.generation != generationProvider()) return
+        if (timestampedPackets++ % 200L == 0L) {
+            val senderTimeUs = timing.anchor.senderTimeUsAt(rtpTimestamp, sampleRate)
+            Log.i(TAG, "RAOP clock sample gen=${timing.generation} rtp=$rtpTimestamp senderTimeUs=$senderTimeUs")
         }
     }
 
