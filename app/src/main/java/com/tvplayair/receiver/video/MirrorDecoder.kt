@@ -39,7 +39,7 @@ class MirrorDecoder(
         private const val IDLE_POLL_SLEEP_MS = 2L
     }
 
-    val frameGate = MirrorFrameGate()
+    private val frameGate = MirrorFrameGate()
 
     private val packetBuffer: ByteBuffer =
         ByteBuffer.allocateDirect(MAX_PACKET_BYTES).order(ByteOrder.LITTLE_ENDIAN)
@@ -56,7 +56,7 @@ class MirrorDecoder(
 
     fun updateConfig(newConfig: MirrorVideoConfig, generation: Int, codecConfig: ByteArray): Boolean {
         if (generationId.get() == generation && config == newConfig &&
-            frameGate.getCachedCodecConfig().contentEquals(codecConfig)
+            frameGate.matchesCodecConfig(codecConfig)
         ) return false
         stopAndRelease()
         config = newConfig
@@ -240,8 +240,7 @@ class MirrorDecoder(
                 val configBytes = ByteArray(payloadSize)
                 packetBuffer.position(MirrorFrameGate.PACKET_HEADER_BYTES)
                 packetBuffer.get(configBytes)
-                val previousCsd = frameGate.getCachedCodecConfig()
-                frameGate.onCodecConfig(configBytes)
+                val newCodecConfig = frameGate.onCodecConfig(configBytes)
                 if (activeCodec == null) {
                     val surface = surfaceProvider()
                     if (surface != null && surface.isValid && running.get()) {
@@ -257,7 +256,7 @@ class MirrorDecoder(
                     }
                     // csd-0 was already passed into MediaCodec.configure(); skip duplicate queueInputBuffer.
                     continue
-                } else if (previousCsd != null && previousCsd.contentEquals(configBytes)) {
+                } else if (!newCodecConfig) {
                     // Identical SPS/PPS already configured on activeCodec; skip duplicate re-config buffer.
                     continue
                 }

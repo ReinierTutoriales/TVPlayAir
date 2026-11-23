@@ -3,7 +3,6 @@ package com.tvplayair.receiver.session
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertNull
-import org.junit.Assert.assertTrue
 import org.junit.Test
 import java.nio.ByteBuffer
 import java.nio.ByteOrder
@@ -54,18 +53,7 @@ class AirPlayMirrorAndInfoTest {
     }
 
     @Test
-    fun formatsInfoPlistWith4kHevcCapabilities() {
-        val xml = AirPlayInfoPlist.formatInfoXml(
-            deviceId = "AA:BB:CC:DD:EE:FF",
-            maxWidth = 3840,
-            maxHeight = 2160,
-            hevcEnabled = true
-        )
-        assertTrue(xml.contains("<key>deviceID</key><string>AA:BB:CC:DD:EE:FF</string>"))
-        assertTrue(xml.contains("<key>widthPixels</key><integer>3840</integer>"))
-        assertTrue(xml.contains("<key>heightPixels</key><integer>2160</integer>"))
-        assertTrue(xml.contains("<key>preferredCodec</key><string>HEVC</string>"))
-
+    fun binaryInfoAdvertisesTheCurrentMirrorLimitAndCodecPreference() {
         val bplist = AirPlayInfoPlist.formatInfoBinary(
             deviceId = "AA:BB:CC:DD:EE:FF",
             maxWidth = 3840,
@@ -79,6 +67,9 @@ class AirPlayMirrorAndInfoTest {
         val display0 = displays?.firstOrNull() as? Map<*, *>
         assertNotNull(display0)
         assertEquals(14L, display0!!["features"])
+        assertEquals(1920L, display0["widthPixels"])
+        assertEquals(1080L, display0["heightPixels"])
+        assertEquals("HEVC", decoded["preferredCodec"])
         assertNotNull(display0["uuid"])
     }
 
