@@ -110,6 +110,7 @@ class VideoPresentationCoordinator(
         }
         if (state == PresentationState.MIRROR_ACTIVE) {
             if (!reconfigured || mirrorEngine.start()) return true
+            surfaceController.hideAllSurfaces()
             state = PresentationState.RECOVERING
             return false
         }
@@ -160,6 +161,7 @@ class VideoPresentationCoordinator(
         surfaceController.showMirrorSurface()
         val started = mirrorEngine.start(discardPendingFrames)
         audioController.setPausedForExternalPlayer(false)
+        if (!started) surfaceController.hideAllSurfaces()
         state = if (started) PresentationState.MIRROR_ACTIVE else PresentationState.RECOVERING
         return started
     }
