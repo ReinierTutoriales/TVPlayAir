@@ -11,7 +11,8 @@ class AirPlayMirrorAndInfoTest {
 
     @Test
     fun mirrorEndNotifiesOnlyForUnexpectedActiveStreamTermination() {
-        val shouldNotify = AirPlayMirrorStreamReceiver::shouldNotifyStreamEnded
+        val receiver = AirPlayMirrorStreamReceiver({ _, _, _, _, _, _, _ -> }, {})
+        val shouldNotify = receiver::shouldNotifyStreamEnded
         assertEquals(true, shouldNotify(7, true, false, true))
         assertEquals(false, shouldNotify(0, true, false, true))
         assertEquals(false, shouldNotify(7, false, false, true))
