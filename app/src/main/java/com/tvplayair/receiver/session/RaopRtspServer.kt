@@ -16,6 +16,10 @@ import java.net.SocketTimeoutException
 import java.nio.charset.StandardCharsets
 import java.util.Locale
 import java.util.concurrent.Executors
+import java.util.concurrent.RejectedExecutionException
+import java.util.concurrent.SynchronousQueue
+import java.util.concurrent.ThreadPoolExecutor
+import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicInteger
 
@@ -67,6 +71,15 @@ internal class RaopRtspServer(
     private val nowPlaying = RaopNowPlayingSession(listener::onNowPlaying)
     private val artworkExecutor = Executors.newSingleThreadExecutor { runnable ->
         Thread(runnable, "TVPlayAir-ArtworkPrep").apply { isDaemon = true }
+    }
+    private val clientExecutor = ThreadPoolExecutor(
+        4,
+        24,
+        30L,
+        TimeUnit.SECONDS,
+        SynchronousQueue()
+    ) { runnable ->
+        Thread(runnable, "TVPlayAir-RtspClient").apply { isDaemon = true }
     }
     private val audioReceiver = RaopAudioRtpReceiver { generationId.get() }
     private val timingAndEventServers = AirPlayTimingAndEventServers()
@@ -123,9 +136,11 @@ internal class RaopRtspServer(
     private fun acceptLoop(socket: ServerSocket) {
         while (running.get() && !socket.isClosed) {
             val client = runCatching { socket.accept() }.getOrNull() ?: break
-            Thread({ handleSession(client) }, "TVPlayAir-RtspClient").apply {
-                isDaemon = true
-                start()
+            try {
+                clientExecutor.execute { handleSession(client) }
+            } catch (_: RejectedExecutionException) {
+                Log.w(TAG, "Rejected RTSP client: connection pool saturated")
+                runCatching { client.close() }
             }
         }
     }
