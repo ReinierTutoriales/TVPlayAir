@@ -15,13 +15,17 @@ OboeConsumer::~OboeConsumer() {
     stop();
 }
 
-bool OboeConsumer::start(uint32_t generationId) {
+bool OboeConsumer::start(uint32_t generationId, bool discardInterruptedAudio) {
     std::lock_guard<std::mutex> lock(streamMutex_);
     pipeline_.setGenerationId(generationId);
     if (stream_ && running_.load(std::memory_order_acquire)) {
         return true;
     }
     pipeline_.reset();
+    if (discardInterruptedAudio) {
+        // The producer continued while ExoPlayer owned the output. Resume at live PCM.
+        ring_.discardPending();
+    }
     const uint32_t discarded = ring_.discardOlderGenerations(generationId);
     if (discarded > 0) {
         __android_log_print(ANDROID_LOG_INFO, kLogTag,
@@ -242,8 +246,8 @@ extern "C" {
 
 JNIEXPORT jboolean JNICALL
 Java_com_tvplayair_receiver_audio_OboeAudioConsumer_nativeStart(
-    JNIEnv*, jobject, jint generationId) {
-    return tvplayair::oboeConsumer().start(static_cast<uint32_t>(generationId))
+    JNIEnv*, jobject, jint generationId, jboolean discardInterruptedAudio) {
+    return tvplayair::oboeConsumer().start(static_cast<uint32_t>(generationId), discardInterruptedAudio == JNI_TRUE)
         ? JNI_TRUE
         : JNI_FALSE;
 }

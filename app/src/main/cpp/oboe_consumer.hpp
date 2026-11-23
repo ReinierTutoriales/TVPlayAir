@@ -23,7 +23,7 @@ public:
     OboeConsumer(const OboeConsumer&) = delete;
     OboeConsumer& operator=(const OboeConsumer&) = delete;
 
-    bool start(uint32_t generationId);
+    bool start(uint32_t generationId, bool discardInterruptedAudio);
     void stop();
 
     void setGenerationId(uint32_t generationId);

@@ -386,7 +386,17 @@ class AirPlayDirectHttpServer(
             rawBytes
         }
 
-        Log.i(TAG, "<- FCUP response id=$reqId len=${dataBytes?.size ?: 0}")
+        if (dataBytes == null || dataBytes.isEmpty()) {
+            val dataState = when (rawData) {
+                null -> "missing"
+                is String, is ByteArray -> "empty"
+                else -> "unsupported_type"
+            }
+            Log.w(PLAYBACK_DIAGNOSTICS_TAG,
+                "route=fcup event=sender_payload_unusable request=${reqId ?: "-"} data=$dataState")
+        } else {
+            Log.i(TAG, "<- FCUP response id=$reqId len=${dataBytes.size}")
+        }
 
         if (!fcupRequests.complete(reqId, respUrl, dataBytes)) {
             Log.i(TAG, "Ignoring unmatched FCUP response id=$reqId")
@@ -557,9 +567,9 @@ class AirPlayDirectHttpServer(
                     }
                     return
                 }
-                val text = runCatching { dataBytes.toString(StandardCharsets.UTF_8) }.getOrNull()
-                if (text != null && text.trimStart().startsWith("#EXTM3U")) {
-                    val rewritten = rewriteM3u8ForFcupProxy(text, targetUrl, playbackId)
+                if (hasFcupPlaylistHeader(dataBytes)) {
+                    val playlist = dataBytes.toString(StandardCharsets.UTF_8)
+                    val rewritten = rewriteM3u8ForFcupProxy(playlist, targetUrl, playbackId)
                     Log.i(TAG, "-> /__fcup 200 OK m3u8 (${rewritten.length}B) id=${pending.id}")
                     writeResponse(output, 200, "OK", "application/vnd.apple.mpegurl", rewritten)
                 } else {
@@ -802,4 +812,13 @@ internal fun isAirPlayReverseAck(statusLine: String): Boolean {
         "HTTP/1.1", "RTSP/1.0", "EVENT/1.0" -> true
         else -> false
     }
+}
+
+
+internal fun hasFcupPlaylistHeader(data: ByteArray): Boolean {
+    val start = data.indexOfFirst { it != 0x20.toByte() && it != 0x09.toByte() &&
+        it != 0x0D.toByte() && it != 0x0A.toByte() }
+    val header = "#EXTM3U"
+    return start >= 0 && data.size - start >= header.length &&
+        header.indices.all { data[start + it] == header[it].code.toByte() }
 }

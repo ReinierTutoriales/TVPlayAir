@@ -41,6 +41,18 @@ static void testHevcAndAvcClassification() {
     assert(tvplayair::classifyNalByte(0x41, false) == 0u);
 }
 
+static void testAnnexBPacketWithInBandParameterSets() {
+    const std::array<uint8_t, 12> spsAndSlice = {
+        0x00, 0x00, 0x00, 0x01, 0x67, 0x42,
+        0x00, 0x00, 0x00, 0x01, 0x65, 0xB8
+    };
+    assert(tvplayair::classifyAnnexB(spsAndSlice.data(), 6, false) == kVideoFlagCodecConfig);
+    assert(tvplayair::classifyAnnexB(spsAndSlice.data(), spsAndSlice.size(), false) == kVideoFlagKeyFrame);
+    auto nonIdr = spsAndSlice;
+    nonIdr[10] = 0x41;
+    assert(tvplayair::classifyAnnexB(nonIdr.data(), nonIdr.size(), false) == 0u);
+}
+
 static void testHvccLengthPrefixedToAnnexBRoundTrip() {
     constexpr uint32_t capacity = 8;
     constexpr uint32_t payload = 64 * 1024;
@@ -66,7 +78,7 @@ static void testHvccLengthPrefixedToAnnexBRoundTrip() {
     VideoFramePacketHeader hdr{};
     std::memcpy(&hdr, raw.data(), sizeof(hdr));
     assert(hdr.ptsUs == 12345678ULL);
-    assert(hdr.flags == (kVideoFlagCodecConfig | kVideoFlagKeyFrame));
+    assert(hdr.flags == kVideoFlagKeyFrame);
     assert(hdr.payloadSize == hvcc.size());
 
     // Verify Annex-B 4-byte start codes replaced the 4-byte HVCC lengths.
@@ -132,6 +144,7 @@ static void testAvccDecoderConfigToAnnexB() {
 
 int main() {
     testHevcAndAvcClassification();
+    testAnnexBPacketWithInBandParameterSets();
     testHvccLengthPrefixedToAnnexBRoundTrip();
     testAudioPcmProducerToConsumerEndToEnd();
     testAvccDecoderConfigToAnnexB();
