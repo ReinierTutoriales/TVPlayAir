@@ -258,7 +258,7 @@ private fun TvPlaybackControls(
         }
 
         if (telemetry?.canSeek == true && onSeekBy != null) {
-            TvMediaControl(label = "Retroceder 10 segundos", onClick = { onSeekBy(-10.0) }) {
+            TvMediaControl(label = stringResource(R.string.video_seek_back_10), onClick = { onSeekBy(-10.0) }) {
                 Text("−10", style = MaterialTheme.typography.labelLarge)
             }
         }
@@ -280,7 +280,7 @@ private fun TvPlaybackControls(
         ) { MediaControlGlyph(glyph) }
 
         if (telemetry?.canSeek == true && onSeekBy != null) {
-            TvMediaControl(label = "Avanzar 10 segundos", onClick = { onSeekBy(10.0) }) {
+            TvMediaControl(label = stringResource(R.string.video_seek_forward_10), onClick = { onSeekBy(10.0) }) {
                 Text("+10", style = MaterialTheme.typography.labelLarge)
             }
         }
