@@ -51,6 +51,13 @@ internal class FcupRequests {
     fun pending(id: Int): Request? = byId[id]
 
     @Synchronized
+    fun fail(id: Int, reason: String): Boolean {
+        val request = byId[id] ?: return false
+        remove(request)
+        return request.result.completeExceptionally(IOException(reason))
+    }
+
+    @Synchronized
     fun complete(id: Int?, url: String?, data: ByteArray?, senderStatus: Int? = null): Boolean {
         val request = (if (id != null) byId[id] else byUrl[url]) ?: return false
         if (url != null && request.url != url) return false

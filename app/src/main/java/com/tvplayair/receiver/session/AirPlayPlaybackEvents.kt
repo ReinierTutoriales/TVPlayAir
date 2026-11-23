@@ -6,7 +6,9 @@ import java.nio.charset.StandardCharsets
 import java.util.concurrent.ArrayBlockingQueue
 import java.util.concurrent.CompletableFuture
 
-internal class AirPlayPlaybackEvents {
+internal class AirPlayPlaybackEvents(
+    private val onEventEvicted: (Event) -> Unit = {}
+) {
     data class SessionKey(val peer: String, val appleSessionId: String?)
 
     enum class State(val value: String) {
@@ -59,9 +61,10 @@ internal class AirPlayPlaybackEvents {
     class Channel(val key: SessionKey, val socket: Socket) {
         val events = ArrayBlockingQueue<Event>(8)
 
-        fun offer(event: Event) {
+        fun offer(event: Event, onEvicted: (Event) -> Unit = {}) {
             if (!events.offer(event)) {
-                events.poll()
+                val evicted = events.poll()
+                if (evicted != null) onEvicted(evicted)
                 events.offer(event)
             }
         }
@@ -86,7 +89,7 @@ internal class AirPlayPlaybackEvents {
         if (activeSession == connection.key) {
             channel?.close()
             channel = connection
-            currentEvent?.let(connection::offer)
+            currentEvent?.let { connection.offer(it, onEventEvicted) }
         } else {
             standbyChannel?.close()
             standbyChannel = connection
@@ -202,7 +205,7 @@ internal class AirPlayPlaybackEvents {
         if (activeSession == null || currentEvent?.state == state) return
         val event = Event(state, playbackId)
         currentEvent = event
-        channel?.takeIf { it.key == activeSession }?.offer(event)
+        activeReverse()?.offer(event, onEventEvicted)
     }
 
     @Synchronized
@@ -262,7 +265,10 @@ internal class AirPlayPlaybackEvents {
             </dict>
             </plist>
         """.trimIndent()
-        activeChannel.offer(Event(State.LOADING, sid, customXmlBody = xml, fcupRequestId = requestId))
+        activeChannel.offer(
+            Event(State.LOADING, sid, customXmlBody = xml, fcupRequestId = requestId),
+            onEventEvicted
+        )
         return true
     }
 

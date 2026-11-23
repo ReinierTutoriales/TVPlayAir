@@ -253,6 +253,8 @@ class RaopAudioRtpReceiver(
             RaopAlacKeySelector(candidates, iv)
         } else null
         jitterBuffer.reset()
+        clientControlAddress = null
+        clientControlPort = 0
         rxPackets = 0L
         unmatchedAlacPackets = 0L
         unencryptedPrefix0 = -1
@@ -333,9 +335,9 @@ class RaopAudioRtpReceiver(
             if (ctrlUdp.isClosed || packet.length < 4) continue
             if (clientControlAddress == null && packet.address != null) {
                 clientControlAddress = packet.address
-                if (clientControlPort <= 0 && packet.port > 0) {
-                    clientControlPort = packet.port
-                }
+            }
+            if (clientControlPort <= 0 && packet.port > 0) {
+                clientControlPort = packet.port
             }
             val payloadType = rxBuf[1].toInt() and 0x7F
             if (payloadType == 0x56 && packet.length > 4 + RtpAudioPacketParser.MIN_RTP_HEADER_BYTES) {
@@ -456,11 +458,13 @@ class RaopAudioRtpReceiver(
                         break
                     }
                 }
-                Log.i(
-                    TAG,
-                    "Selected RAOP AES key idx=$matchedIdx (len=${plain.size} hdr=${plain[0].toInt() and 0xFF},${plain[1].toInt() and 0xFF})"
-                )
-                keyConfirmed = true
+                if (matchedIdx >= 0) {
+                    Log.i(
+                        TAG,
+                        "Selected RAOP AES key idx=$matchedIdx (len=${plain.size} hdr=${plain[0].toInt() and 0xFF},${plain[1].toInt() and 0xFF})"
+                    )
+                    keyConfirmed = true
+                }
             }
             decoder.decodeAndPublish(plain, 0, plain.size, generation)
         } else {

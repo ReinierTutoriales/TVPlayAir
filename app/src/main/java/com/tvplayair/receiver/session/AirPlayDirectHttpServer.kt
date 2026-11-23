@@ -48,10 +48,12 @@ class AirPlayDirectHttpServer(
 
     private val running = AtomicBoolean(false)
     private val generationId = AtomicInteger(1)
-    private val playbackEvents = AirPlayPlaybackEvents()
+    private val fcupRequests = FcupRequests()
+    private val playbackEvents = AirPlayPlaybackEvents { evicted ->
+        evicted.fcupRequestId?.let { fcupRequests.fail(it, "FCUP reverse queue overflow") }
+    }
     private val idleTelemetry = DirectPlaybackTelemetry(0.0, 0.0, 0f, isPlaying = false, isBuffering = false)
     private val latestTelemetry = AtomicReference(idleTelemetry)
-    private val fcupRequests = FcupRequests()
     private val clientExecutor = ThreadPoolExecutor(
         4,
         24,
@@ -67,6 +69,7 @@ class AirPlayDirectHttpServer(
     @Volatile
     private var activeConfig = AirPlayServerConfig()
     private var acceptThread: Thread? = null
+    private val activeSockets = java.util.Collections.newSetFromMap(java.util.concurrent.ConcurrentHashMap<Socket, Boolean>())
     private val fallbackPairingKey by lazy { ByteArray(32).also(SecureRandom()::nextBytes) }
 
     private fun newConnectionCrypto() = AirPlayConnectionCrypto {
@@ -145,11 +148,14 @@ class AirPlayDirectHttpServer(
         mirrorReceiver.stop()
         runCatching { serverSocket?.close() }
         serverSocket = null
+        activeSockets.forEach { runCatching { it.close() } }
+        activeSockets.clear()
         acceptThread?.let {
             it.interrupt()
             runCatching { it.join(500L) }
         }
         acceptThread = null
+        clientExecutor.shutdownNow()
     }
 
     override fun updatePlaybackTelemetry(playbackId: Long, telemetry: DirectPlaybackTelemetry) {
@@ -206,12 +212,17 @@ class AirPlayDirectHttpServer(
         val peer = sock.inetAddress?.hostAddress ?: "unknown"
         var pendingHeader = firstHeader
         var awaitingNextFcupRequest = false
-
-        while (running.get()) {
-            val headerText = pendingHeader
-                ?: readAirPlayHttpHeader(input, awaitingNextFcupRequest)?.toString(StandardCharsets.UTF_8)
-                ?: break
-            pendingHeader = null
+        activeSockets.add(sock)
+        try {
+            while (running.get()) {
+                val headerText = pendingHeader
+                    ?: readAirPlayHttpHeader(
+                        input = input,
+                        allowIdleTimeout = awaitingNextFcupRequest,
+                        keepIdleConnection = { running.get() && mirrorReceiver.hasRecentVideo(crypto) }
+                    )?.toString(StandardCharsets.UTF_8)
+                    ?: break
+                pendingHeader = null
 
             val firstLine = headerText.substringBefore("\r\n")
             if (RtspMessageParser.isRtspRequestLine(firstLine) &&
@@ -275,10 +286,20 @@ class AirPlayDirectHttpServer(
                 return
             }
             val keepAlive = !headers["connection"].equals("close", ignoreCase = true)
-            dispatchRequest(method, path, fullPath, body, output, sessionKey, crypto, isLoopback, peer)
+            try {
+                dispatchRequest(method, path, fullPath, body, output, sessionKey, crypto, isLoopback, peer)
+            } finally {
+                currentRequestProtocol.remove()
+                currentRequestCSeq.remove()
+            }
             if (!keepAlive) break
             awaitingNextFcupRequest = isLoopback &&
                 method == "GET" && path.startsWith("/__fcup/")
+            }
+        } finally {
+            currentRequestProtocol.remove()
+            currentRequestCSeq.remove()
+            activeSockets.remove(sock)
         }
     }
 
@@ -543,7 +564,11 @@ class AirPlayDirectHttpServer(
                     return
                 }
                 val playbackId = path.removePrefix("/__fcup/").substringBefore('/').toLongOrNull()
-                val encodedUrl = fullPath.substringAfter("url=", "").substringBefore('&')
+                val query = fullPath.substringAfter('?', "")
+                val encodedUrl = query.split('&')
+                    .firstOrNull { it.startsWith("url=") }
+                    ?.substringAfter("url=", "")
+                    .orEmpty()
                 val targetUrl = runCatching {
                     URLDecoder.decode(encodedUrl, StandardCharsets.UTF_8.name())
                 }.getOrDefault("")
@@ -855,7 +880,8 @@ class AirPlayDirectHttpServer(
 
 internal fun readAirPlayHttpHeader(
     input: BufferedInputStream,
-    allowIdleTimeout: Boolean = false
+    allowIdleTimeout: Boolean = false,
+    keepIdleConnection: () -> Boolean = { false }
 ): ByteArray? {
     val out = ByteArrayOutputStream()
     var matched = 0
@@ -863,7 +889,10 @@ internal fun readAirPlayHttpHeader(
         val b = try {
             input.read()
         } catch (error: SocketTimeoutException) {
-            if (allowIdleTimeout && out.size() == 0) return null
+            if (out.size() == 0) {
+                if (allowIdleTimeout) return null
+                if (keepIdleConnection()) continue
+            }
             throw error
         }
         if (b == -1) return null

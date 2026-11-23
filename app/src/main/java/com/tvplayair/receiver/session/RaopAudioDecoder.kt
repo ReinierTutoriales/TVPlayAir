@@ -246,6 +246,8 @@ class RaopAudioDecoder {
                         inBuf.clear()
                         inBuf.put(payload, offset, length)
                         decoder.queueInputBuffer(inIdx, 0, length, 0L, 0)
+                    } else {
+                        runCatching { decoder.queueInputBuffer(inIdx, 0, 0, 0L, 0) }
                     }
                 }
                 val info = MediaCodec.BufferInfo()

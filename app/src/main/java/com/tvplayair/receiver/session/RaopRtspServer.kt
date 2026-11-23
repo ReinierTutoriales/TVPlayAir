@@ -83,6 +83,7 @@ internal class RaopRtspServer(
     }
     private val audioReceiver = RaopAudioRtpReceiver { generationId.get() }
     private val timingAndEventServers = AirPlayTimingAndEventServers()
+    private val activeSockets = java.util.Collections.newSetFromMap(java.util.concurrent.ConcurrentHashMap<Socket, Boolean>())
 
     @Volatile
     private var serverSocket: ServerSocket? = null
@@ -126,11 +127,15 @@ internal class RaopRtspServer(
         timingAndEventServers.stop()
         runCatching { serverSocket?.close() }
         serverSocket = null
+        activeSockets.forEach { runCatching { it.close() } }
+        activeSockets.clear()
         acceptThread?.let {
             it.interrupt()
             runCatching { it.join(500L) }
         }
         acceptThread = null
+        clientExecutor.shutdownNow()
+        artworkExecutor.shutdownNow()
     }
 
     private fun acceptLoop(socket: ServerSocket) {
@@ -146,10 +151,15 @@ internal class RaopRtspServer(
     }
 
     private fun handleSession(client: Socket) {
-        client.use { socket ->
-            connectionCrypto().use { crypto ->
-                handleConnection(socket, BufferedInputStream(socket.getInputStream()), crypto)
+        activeSockets.add(client)
+        try {
+            client.use { socket ->
+                connectionCrypto().use { crypto ->
+                    handleConnection(socket, BufferedInputStream(socket.getInputStream()), crypto)
+                }
             }
+        } finally {
+            activeSockets.remove(client)
         }
     }
 
