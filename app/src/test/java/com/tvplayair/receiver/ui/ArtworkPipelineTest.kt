@@ -17,6 +17,15 @@ class ArtworkPipelineTest {
     }
 
     @Test
+    fun artworkKeyDistinguishesKnownJavaArrayHashCollision() {
+        // Arrays [0, 31] and [1, 0] have the same Java-style 31-based hash.
+        val first = byteArrayOf(0, 31)
+        val second = byteArrayOf(1, 0)
+        assertEquals(first.contentHashCode(), second.contentHashCode())
+        assertNotEquals(first.artworkKey(), second.artworkKey())
+    }
+
+    @Test
     fun centerCropRectNormalizesLandscapePortraitAndSquareUniformly() {
         assertArrayEquals(intArrayOf(420, 0, 1080), calculateCenterCropRect(1920, 1080))
         assertArrayEquals(intArrayOf(0, 420, 1080), calculateCenterCropRect(1080, 1920))
