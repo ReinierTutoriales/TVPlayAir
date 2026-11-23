@@ -44,7 +44,7 @@ class MediaContinuityBaselineTest {
                         receiver.fcup.reset()
                         assertTrue(receiver.coordinator.finishDirectPlayback(stopped, senderStop = true))
                     }
-                    assertEquals(PresentationState.MIRROR_ACTIVE, receiver.coordinator.state)
+                    assertEquals(PresentationState.MIRROR_PREPARING, receiver.coordinator.state)
                     receiver.engines.acceptFirstMirrorFrame()
                     val next = receiver.startVideo(nextSession)
                     assertTrue(staleLoad.result.isCancelled)
@@ -172,6 +172,8 @@ class MediaContinuityBaselineTest {
         override fun setPausedForExternalPlayer(paused: Boolean) { audioPaused = paused }
         override fun stop() = Unit
         override fun hasMirrorSurface(): Boolean = true
+        override fun coverMirrorSurface() = Unit
+        override fun revealMirrorSurface() = Unit
         override fun showMirrorSurface() { visibleVideo = null }
         override fun showDirectSurface() { visibleVideo = null }
         override fun revealDirectSurface() { visibleVideo = checkNotNull(preparedVideo) }

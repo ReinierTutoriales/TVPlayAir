@@ -75,6 +75,7 @@ class AirPlayDirectHttpServer(
     private fun newConnectionCrypto() = AirPlayConnectionCrypto {
         activeConfig.ed25519PrivateKey?.takeIf { it.size == 32 } ?: fallbackPairingKey
     }
+    private var activeMirrorGeneration: Int? = null
     private val mirrorReceiver = AirPlayMirrorStreamReceiver(
         onCodecConfigReady = { socket, isHevc, width, height, generation, codecConfig, opensProjection ->
             val config = activeConfig
@@ -93,11 +94,19 @@ class AirPlayDirectHttpServer(
                             latestTelemetry.set(idleTelemetry)
                         }
                     }
+                    activeMirrorGeneration = generation
                     listener.onVideoConfigChanged(mimeType, w, h, generation, codecConfig, opensProjection)
                 }
             }
         },
-        onStreamEnded = { playbackEvents.finishMirror(listener::onMirrorStreamEnded) }
+        onStreamEnded = { generation ->
+            synchronized(playbackEvents) {
+                if (activeMirrorGeneration == generation) {
+                    activeMirrorGeneration = null
+                    playbackEvents.finishMirror { listener.onMirrorStreamEnded(generation) }
+                }
+            }
+        }
     )
     private val raopRtspServer = RaopRtspServer(
         listener = listener,
@@ -375,7 +384,8 @@ class AirPlayDirectHttpServer(
         return playbackEvents.start(sessionKey, explicit, onMirrorRetired = {
             Log.i(TAG, "Closing active mirroring stream for direct video")
             mirrorReceiver.closeActiveStream("direct_handoff")
-            listener.onMirrorStreamEnded()
+            activeMirrorGeneration?.let(listener::onMirrorStreamEnded)
+            activeMirrorGeneration = null
         }) { playbackId ->
             fcupRequests.reset(playbackId)
             latestTelemetry.set(idleTelemetry.copy(isBuffering = true))

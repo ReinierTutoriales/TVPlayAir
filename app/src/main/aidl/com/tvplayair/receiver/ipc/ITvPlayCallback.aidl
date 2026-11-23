@@ -13,7 +13,7 @@ oneway interface ITvPlayCallback {
                           long resumePositionMs, boolean playWhenReady);
     void onDirectVideoCommand(String command, double value, long playbackId);
     void onClientConnected(String clientName, String dacpId, String activeRemote);
-    void onMirrorStreamEnded();
+    void onMirrorStreamEnded(int generationId);
     void onAudioStreamStarted(int generationId);
     void onNowPlaying(boolean available, String title, String artist, String album, in byte[] artwork);
     void onAudioControlsAvailable(boolean available);

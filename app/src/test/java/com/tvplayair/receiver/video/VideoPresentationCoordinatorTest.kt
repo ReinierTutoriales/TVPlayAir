@@ -172,7 +172,7 @@ class VideoPresentationCoordinatorTest {
         assertFalse(coordinator.switchToDirectVideo(DirectPlaybackStart("", 0.0, playbackId = 1)))
         assertFalse(coordinator.switchToDirectVideo(DirectPlaybackStart("https://example.com/movie", Double.NaN, playbackId = 1)))
         assertFalse(coordinator.switchToDirectVideo(DirectPlaybackStart("https://example.com/movie", Double.POSITIVE_INFINITY, playbackId = 1)))
-        assertEquals(PresentationState.MIRROR_ACTIVE, coordinator.state)
+        assertEquals(PresentationState.MIRROR_PREPARING, coordinator.state)
         assertTrue(events.isEmpty())
     }
 
@@ -196,7 +196,7 @@ class VideoPresentationCoordinatorTest {
         assertEquals(listOf("surface.revealDirect"), events)
 
         assertTrue(coordinator.finishDirectPlayback(1))
-        assertEquals(PresentationState.MIRROR_ACTIVE, coordinator.state)
+        assertEquals(PresentationState.MIRROR_PREPARING, coordinator.state)
     }
 
     @Test
@@ -217,7 +217,7 @@ class VideoPresentationCoordinatorTest {
         assertTrue(events.isEmpty())
 
         assertTrue(coordinator.startMirror(reconfigured = true, opensProjection = true))
-        assertEquals(PresentationState.MIRROR_ACTIVE, coordinator.state)
+        assertEquals(PresentationState.MIRROR_PREPARING, coordinator.state)
         assertEquals(
             listOf("direct.release", "surface.showMirror", "mirror.start", "audio.pausedForExternal(false)"),
             events
@@ -305,6 +305,13 @@ class VideoPresentationCoordinatorTest {
         var mirrorSurfaceAvailable = true
         override fun hasMirrorSurface(): Boolean = mirrorSurfaceAvailable
 
+        override fun coverMirrorSurface() {
+            events += "surface.coverMirror"
+        }
+
+        override fun revealMirrorSurface() {
+            events += "surface.revealMirror"
+        }
         override fun showMirrorSurface() {
             events += "surface.showMirror"
         }
@@ -323,6 +330,33 @@ class VideoPresentationCoordinatorTest {
     }
 
     @Test
+    fun mirrorIsActiveOnlyAfterRenderConfirmationAndIgnoresCallbacksDuringDirectPlayback() {
+        val events = mutableListOf<String>()
+        val coordinator = VideoPresentationCoordinator(
+            FakeMirrorEngine(events), FakeDirectEngine(events),
+            FakeAudioController(events), FakeSurfaceController(events)
+        )
+
+        assertTrue(coordinator.startMirror())
+        assertEquals(PresentationState.MIRROR_PREPARING, coordinator.state)
+        assertFalse("surface.revealMirror" in events)
+        assertTrue(coordinator.onMirrorFrameRendered())
+        assertEquals(PresentationState.MIRROR_ACTIVE, coordinator.state)
+        assertEquals("surface.revealMirror", events.last())
+
+        assertTrue(coordinator.onMirrorRecovering())
+        assertEquals(PresentationState.MIRROR_RECOVERING, coordinator.state)
+        assertEquals("surface.coverMirror", events.last())
+        assertTrue(coordinator.onMirrorFrameRendered())
+        assertEquals(PresentationState.MIRROR_ACTIVE, coordinator.state)
+
+        assertTrue(coordinator.switchToDirectVideo(DirectPlaybackStart("https://example.com/video", 0.0, playbackId = 1)))
+        assertFalse(coordinator.onMirrorFrameRendered())
+        assertFalse(coordinator.onMirrorRecovering())
+        assertEquals(PresentationState.SWITCHING_TO_DIRECT, coordinator.state)
+    }
+
+    @Test
     fun switchToDirectReleasesMirrorBeforePreparingExoPlayer() {
         val events = mutableListOf<String>()
         val coordinator = VideoPresentationCoordinator(
@@ -333,7 +367,7 @@ class VideoPresentationCoordinatorTest {
         )
 
         assertTrue(coordinator.startMirror())
-        assertEquals(PresentationState.MIRROR_ACTIVE, coordinator.state)
+        assertEquals(PresentationState.MIRROR_PREPARING, coordinator.state)
         events.clear()
 
         assertTrue(coordinator.switchToDirectVideo(DirectPlaybackStart("https://example.com/4k.m3u8", 12.5, playbackId = 1)))
@@ -363,7 +397,7 @@ class VideoPresentationCoordinatorTest {
 
         surfaces.mirrorSurfaceAvailable = true
         coordinator.onMirrorSurfaceCreated()
-        assertEquals(PresentationState.MIRROR_ACTIVE, coordinator.state)
+        assertEquals(PresentationState.MIRROR_PREPARING, coordinator.state)
         assertEquals(1, events.count { it == "mirror.start" })
     }
 
@@ -425,7 +459,7 @@ class VideoPresentationCoordinatorTest {
         events.clear()
 
         coordinator.stopDirectVideo()
-        assertEquals(PresentationState.MIRROR_ACTIVE, coordinator.state)
+        assertEquals(PresentationState.MIRROR_PREPARING, coordinator.state)
         assertEquals(
             listOf(
                 "direct.release",
@@ -501,7 +535,7 @@ class VideoPresentationCoordinatorTest {
         events.clear()
 
         assertTrue(coordinator.finishDirectPlayback(1, senderStop = true))
-        assertEquals(PresentationState.MIRROR_ACTIVE, coordinator.state)
+        assertEquals(PresentationState.MIRROR_PREPARING, coordinator.state)
         assertTrue(mirror.discardedPendingFrames)
         assertEquals(
             listOf("direct.release", "surface.showMirror", "mirror.start", "audio.pausedForExternal(false)"),
@@ -633,7 +667,7 @@ class VideoPresentationCoordinatorTest {
         coordinator.pauseDirect()
         assertTrue(events.contains("direct.pause"))
         assertTrue(coordinator.onDirectStartupTimeout(1))
-        assertEquals(PresentationState.MIRROR_ACTIVE, coordinator.state)
+        assertEquals(PresentationState.MIRROR_PREPARING, coordinator.state)
         assertFalse(coordinator.onDirectMediaReady(1))
         assertEquals(
             listOf("direct.release", "surface.showMirror", "mirror.start", "audio.pausedForExternal(false)"),
@@ -651,7 +685,7 @@ class VideoPresentationCoordinatorTest {
         assertTrue(coordinator.switchToDirectVideo(video, mirrorAvailable = true))
         assertFalse(events.contains("mirror.start"))
         assertTrue(coordinator.finishDirectPlayback(video.playbackId))
-        assertEquals(PresentationState.MIRROR_ACTIVE, coordinator.state)
+        assertEquals(PresentationState.MIRROR_PREPARING, coordinator.state)
         assertEquals(1, events.count { it == "mirror.start" })
     }
     @Test
@@ -670,7 +704,7 @@ class VideoPresentationCoordinatorTest {
         assertTrue(events.isEmpty())
 
         assertTrue(coordinator.finishDirectPlayback(-1))
-        assertEquals(PresentationState.MIRROR_ACTIVE, coordinator.state)
+        assertEquals(PresentationState.MIRROR_PREPARING, coordinator.state)
         assertEquals(1, events.count { it == "mirror.start" })
     }
 }
