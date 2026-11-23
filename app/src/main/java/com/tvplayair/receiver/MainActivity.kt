@@ -150,6 +150,7 @@ class MainActivity : ComponentActivity(), SurfaceLayerController {
                         onAdjustAudioOffset = ::adjustAudioOffset,
                         onAudioCommand = { command -> sendAudioCommand(command, audioGeneration) },
                         onVideoToggle = { toggleVideoFromControls(directPlaybackId) },
+                        onSeekBy = { delta -> seekVideoBy(delta) },
                         onPlaybackInteraction = ::refreshPlaybackControlsTimeout,
                         onDismiss = { setOverlayVisible(false) }
                     )
