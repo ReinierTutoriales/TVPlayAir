@@ -70,6 +70,10 @@ public:
         return underrunCount_.load(std::memory_order_relaxed);
     }
 
+    uint64_t underrunFrames() const {
+        return underrunFrames_.load(std::memory_order_relaxed);
+    }
+
     RenderAnchor render(SharedRingBuffer& ring, int16_t* out, int32_t numFrames) {
         if (!out || numFrames <= 0) return {};
         RenderAnchor timing;
@@ -111,7 +115,7 @@ public:
             }
         }
 
-        bool hadUnderrun = false;
+        size_t underrunFrames = 0;
         while (outFrame < numFrames) {
             if (packetFrameOffset_ < packetFrameCount_) {
                 const uint32_t avail = packetFrameCount_ - packetFrameOffset_;
@@ -142,12 +146,13 @@ public:
                 std::memset(out + static_cast<size_t>(outFrame) * kAudioChannels,
                             0,
                             remainingFrames * kAudioBytesPerFrame);
-                hadUnderrun = true;
+                underrunFrames = remainingFrames;
                 break;
             }
         }
 
-        if (hadUnderrun) {
+        if (underrunFrames != 0) {
+            underrunFrames_.fetch_add(underrunFrames, std::memory_order_relaxed);
             underrunCount_.fetch_add(1, std::memory_order_relaxed);
             return {};
         }
@@ -190,6 +195,7 @@ private:
     std::atomic<bool> muted_{false};
     std::atomic<bool> ducked_{false};
     std::atomic<uint64_t> underrunCount_{0};
+    std::atomic<uint64_t> underrunFrames_{0};
 };
 
 } // namespace tvplayair

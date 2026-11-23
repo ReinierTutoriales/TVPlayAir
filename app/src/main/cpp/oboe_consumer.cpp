@@ -62,6 +62,14 @@ void OboeConsumer::stop() {
     }
     std::lock_guard<std::mutex> lock(streamMutex_);
     if (!stream_ && !shouldRun_.load(std::memory_order_acquire)) {
+        if (localStream) {
+            __android_log_print(
+                ANDROID_LOG_INFO, kLogTag,
+                "PCM process totals closingGeneration=%u underrunCallbacks=%llu underrunFrames=%llu",
+                pipeline_.generationId(),
+                static_cast<unsigned long long>(pipeline_.underrunCount()),
+                static_cast<unsigned long long>(pipeline_.underrunFrames()));
+        }
         pipeline_.reset();
     }
 }

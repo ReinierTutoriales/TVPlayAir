@@ -77,6 +77,7 @@ static void testUnderrunOutputsSilence() {
         assert(s == 0);
     }
     assert(pipeline.underrunCount() == 1);
+    assert(pipeline.underrunFrames() == 192);
 }
 
 static void testStaleGenerationSkipped() {
