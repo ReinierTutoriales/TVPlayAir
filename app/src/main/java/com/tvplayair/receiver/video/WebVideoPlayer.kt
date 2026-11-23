@@ -204,7 +204,6 @@ class WebVideoPlayer(context: Context) : DirectVideoEngine {
 
         override fun onPlaybackStateChanged(playbackState: Int) {
             Log.i(TAG, "ExoPlayer state=$playbackState")
-            viewCallbacks?.onTelemetryChanged(currentTelemetry())
             mainHandler.removeCallbacks(telemetryTicker)
             if (playbackState == Player.STATE_READY || playbackState == Player.STATE_BUFFERING) {
                 mainHandler.postDelayed(telemetryTicker, TELEMETRY_INTERVAL_MS)
@@ -216,21 +215,23 @@ class WebVideoPlayer(context: Context) : DirectVideoEngine {
         }
 
         override fun onEvents(player: Player, events: Player.Events) {
-            if (!events.containsAny(Player.EVENT_TRACKS_CHANGED, Player.EVENT_PLAYBACK_STATE_CHANGED,
-                    Player.EVENT_MEDIA_METADATA_CHANGED)
-            ) return
-            viewCallbacks?.onTelemetryChanged(currentTelemetry())
-            reportAudioReady(player)
-        }
-
-        override fun onPlayWhenReadyChanged(playWhenReady: Boolean, reason: Int) {
-            viewCallbacks?.onTelemetryChanged(currentTelemetry())
+            val readinessChanged = events.containsAny(Player.EVENT_TRACKS_CHANGED, Player.EVENT_PLAYBACK_STATE_CHANGED)
+            if (readinessChanged || events.containsAny(
+                    Player.EVENT_MEDIA_METADATA_CHANGED,
+                    Player.EVENT_PLAY_WHEN_READY_CHANGED,
+                    Player.EVENT_IS_PLAYING_CHANGED,
+                    Player.EVENT_POSITION_DISCONTINUITY,
+                    Player.EVENT_TIMELINE_CHANGED,
+                    Player.EVENT_AVAILABLE_COMMANDS_CHANGED,
+                    Player.EVENT_PLAYER_ERROR
+                )
+            ) viewCallbacks?.onTelemetryChanged(currentTelemetry())
+            if (readinessChanged) reportAudioReady(player)
         }
 
         override fun onIsPlayingChanged(isPlaying: Boolean) {
             Log.i(TAG, "ExoPlayer isPlaying=$isPlaying")
             if (isPlaying) diagnostics.playing(player?.currentMediaItem?.mediaId?.toLongOrNull())
-            viewCallbacks?.onTelemetryChanged(currentTelemetry())
         }
 
         override fun onPlayerError(error: PlaybackException) {
@@ -240,7 +241,6 @@ class WebVideoPlayer(context: Context) : DirectVideoEngine {
             val http = detail.filterIsInstance<InvalidResponseCodeException>().firstOrNull()
             diagnostics.finish("player_error", " code=${error.errorCodeName} " +
                 "http=${http?.responseCode ?: "-"} cause=${detail.last().javaClass.simpleName}")
-            viewCallbacks?.onTelemetryChanged(currentTelemetry())
             notifyPlaybackFinished()
         }
     }

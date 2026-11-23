@@ -142,7 +142,6 @@ class MainActivity : ComponentActivity(), SurfaceLayerController {
                         onAdjustAudioOffset = ::adjustAudioOffset,
                         onAudioCommand = { command -> sendAudioCommand(command, audioGeneration) },
                         onVideoToggle = { toggleVideoFromControls(directPlaybackId) },
-                        onVideoSeek = { seekVideoFromControls(directPlaybackId, it) },
                         onVideoInteraction = ::refreshVideoControlsTimeout,
                         onDismiss = { setOverlayVisible(false) }
                     )
@@ -513,12 +512,6 @@ class MainActivity : ComponentActivity(), SurfaceLayerController {
     private fun toggleVideoFromControls(playbackId: Long) {
         if (directPlaybackId != playbackId || !overlayState.showingDirectControls) return
         setDirectPlaybackIntent("toggle")
-        refreshVideoControlsTimeout()
-    }
-
-    private fun seekVideoFromControls(playbackId: Long, deltaSec: Double) {
-        if (directPlaybackId != playbackId || !overlayState.showingDirectControls) return
-        seekVideoBy(deltaSec)
         refreshVideoControlsTimeout()
     }
 

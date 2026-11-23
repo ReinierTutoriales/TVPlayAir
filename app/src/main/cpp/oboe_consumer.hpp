@@ -33,11 +33,6 @@ public:
     void setDucked(bool ducked);
 
     bool isRunning() const;
-    uint64_t underrunCount() const;
-    uint64_t recoveryCount() const;
-    int32_t grantedSampleRate() const;
-    int32_t grantedFramesPerBurst() const;
-    bool isExclusiveMode() const;
 
     oboe::DataCallbackResult onAudioReady(
         oboe::AudioStream* audioStream,
@@ -59,10 +54,6 @@ private:
 
     std::atomic<bool> shouldRun_{false};
     std::atomic<bool> running_{false};
-    std::atomic<uint64_t> recoveryCount_{0};
-    std::atomic<int32_t> grantedSampleRate_{0};
-    std::atomic<int32_t> grantedFramesPerBurst_{0};
-    std::atomic<bool> exclusiveMode_{false};
     bool preferSharedMode_ = false;
 };
 
