@@ -57,6 +57,9 @@ class AirPlayTimingAndEventServers {
     }
 
     private val running = AtomicBoolean(false)
+    private val activeEventClients =
+        java.util.Collections.newSetFromMap(java.util.concurrent.ConcurrentHashMap<Socket, Boolean>())
+    private var eventExecutor: java.util.concurrent.ThreadPoolExecutor? = null
     @Volatile
     private var timingSocket: DatagramSocket? = null
     @Volatile
@@ -84,6 +87,15 @@ class AirPlayTimingAndEventServers {
         timingSocket = udp
         eventServerSocket = tcp
         running.set(true)
+        eventExecutor = java.util.concurrent.ThreadPoolExecutor(
+            2,
+            16,
+            30L,
+            java.util.concurrent.TimeUnit.SECONDS,
+            java.util.concurrent.SynchronousQueue()
+        ) { runnable ->
+            Thread(runnable, "TVPlayAir-EventClient").apply { isDaemon = true }
+        }
         timingThread = Thread({ runTimingLoop(udp) }, "TVPlayAir-TimingUdp").apply {
             isDaemon = true
             start()
@@ -102,10 +114,20 @@ class AirPlayTimingAndEventServers {
         timingSocket = null
         runCatching { eventServerSocket?.close() }
         eventServerSocket = null
-        timingThread?.interrupt()
+        activeEventClients.forEach { runCatching { it.close() } }
+        activeEventClients.clear()
+        timingThread?.let {
+            it.interrupt()
+            runCatching { it.join(500L) }
+        }
         timingThread = null
-        eventThread?.interrupt()
+        eventThread?.let {
+            it.interrupt()
+            runCatching { it.join(500L) }
+        }
         eventThread = null
+        eventExecutor?.shutdownNow()
+        eventExecutor = null
     }
 
     private fun runTimingLoop(udp: DatagramSocket) {
@@ -129,20 +151,28 @@ class AirPlayTimingAndEventServers {
     private fun runEventAcceptLoop(server: ServerSocket) {
         while (running.get() && !server.isClosed) {
             val client = runCatching { server.accept() }.getOrNull() ?: break
-            Thread({ handleEventClient(client, server) }, "TVPlayAir-EventClient").apply {
-                isDaemon = true
-                start()
+            val executor = eventExecutor
+            if (executor == null || executor.isShutdown) {
+                runCatching { client.close() }
+                break
+            }
+            try {
+                executor.execute { handleEventClient(client, server) }
+            } catch (_: java.util.concurrent.RejectedExecutionException) {
+                runCatching { client.close() }
             }
         }
     }
 
     private fun handleEventClient(client: Socket, server: ServerSocket) {
-        client.use { sock ->
-            try {
-                sock.soTimeout = EVENT_SO_TIMEOUT_MS
-                val input = BufferedInputStream(sock.getInputStream())
-                val output = sock.getOutputStream()
-                while (running.get() && !server.isClosed) {
+        activeEventClients.add(client)
+        try {
+            client.use { sock ->
+                try {
+                    sock.soTimeout = EVENT_SO_TIMEOUT_MS
+                    val input = BufferedInputStream(sock.getInputStream())
+                    val output = sock.getOutputStream()
+                    while (running.get() && !server.isClosed) {
                     val method = readAirPlayEventMethod(input) ?: break
                     if (method == "POST" || method == "GET") {
                         val ok = "HTTP/1.1 200 OK\r\nContent-Length: 0\r\n\r\n"
@@ -153,6 +183,9 @@ class AirPlayTimingAndEventServers {
             } catch (error: IOException) {
                 Log.i(TAG, "Event connection ended (${error.javaClass.simpleName})")
             }
+            }
+        } finally {
+            activeEventClients.remove(client)
         }
     }
 }

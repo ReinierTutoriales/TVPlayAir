@@ -1,6 +1,8 @@
 package com.tvplayair.receiver.network
 
 import android.content.Context
+import android.net.ConnectivityManager
+import android.net.Network
 import android.net.nsd.NsdManager
 import android.net.nsd.NsdServiceInfo
 import android.net.wifi.WifiManager
@@ -56,7 +58,7 @@ object MdnsTxtRecords {
         "pk" to config.publicKeyHex,
         "pw" to "false",
         "sf" to AIRPLAY_FLAGS,
-        "sr" to "48000",
+        "sr" to "44100",
         "ss" to "16",
         "sv" to "false",
         "tp" to "UDP",
@@ -78,11 +80,16 @@ class MdnsAdvertiser(context: Context) {
     private val appContext = context.applicationContext
     private val nsdManager: NsdManager? = appContext.getSystemService(NsdManager::class.java)
     private val wifiManager: WifiManager? = appContext.getSystemService(WifiManager::class.java)
+    private val connectivityManager: ConnectivityManager? =
+        appContext.getSystemService(ConnectivityManager::class.java)
 
     private var wifiLock: WifiManager.WifiLock? = null
     private var multicastLock: WifiManager.MulticastLock? = null
     private var airPlayListener: NsdManager.RegistrationListener? = null
     private var raopListener: NsdManager.RegistrationListener? = null
+    private var networkCallback: ConnectivityManager.NetworkCallback? = null
+    private var activeNetwork: Network? = null
+    private var sawNetworkLoss = false
     private var activeConfig: AirPlayAdvertiseConfig? = null
     private var started = false
 
@@ -95,6 +102,30 @@ class MdnsAdvertiser(context: Context) {
         if (started) stop()
         activeConfig = config
         acquireLocks()
+        registerAdvertisements(config)
+        registerNetworkCallback()
+        started = true
+    }
+
+    @Synchronized
+    fun stop() {
+        started = false
+        activeConfig = null
+        unregisterNetworkCallback()
+        unregisterAdvertisements()
+        releaseLocks()
+    }
+
+    @Synchronized
+    private fun reregisterOnNetworkChange() {
+        val config = activeConfig ?: return
+        if (!started) return
+        Log.i(TAG, "Network changed; re-registering AirPlay and RAOP mDNS advertisements")
+        unregisterAdvertisements()
+        registerAdvertisements(config)
+    }
+
+    private fun registerAdvertisements(config: AirPlayAdvertiseConfig) {
         registerService(
             serviceName = config.serviceName,
             serviceType = MdnsTxtRecords.AIRPLAY_SERVICE_TYPE,
@@ -108,19 +139,57 @@ class MdnsAdvertiser(context: Context) {
             port = config.raopPort,
             txt = MdnsTxtRecords.buildRaopTxt(config)
         )?.also { raopListener = it }
-
-        started = true
     }
 
-    @Synchronized
-    fun stop() {
-        started = false
-        activeConfig = null
+    private fun unregisterAdvertisements() {
         unregisterSafe(airPlayListener)
         airPlayListener = null
         unregisterSafe(raopListener)
         raopListener = null
-        releaseLocks()
+    }
+
+    private fun registerNetworkCallback() {
+        val cm = connectivityManager ?: return
+        if (networkCallback != null) return
+        activeNetwork = null
+        sawNetworkLoss = false
+        val callback = object : ConnectivityManager.NetworkCallback() {
+            override fun onAvailable(network: Network) {
+                val shouldReregister = synchronized(this@MdnsAdvertiser) {
+                    val prev = activeNetwork
+                    activeNetwork = network
+                    val changed = (prev != null && prev != network) || sawNetworkLoss
+                    sawNetworkLoss = false
+                    changed && started
+                }
+                if (shouldReregister) {
+                    reregisterOnNetworkChange()
+                }
+            }
+
+            override fun onLost(network: Network) {
+                synchronized(this@MdnsAdvertiser) {
+                    if (activeNetwork == network) {
+                        sawNetworkLoss = true
+                    }
+                }
+            }
+        }
+        runCatching {
+            cm.registerDefaultNetworkCallback(callback)
+            networkCallback = callback
+        }.onFailure {
+            Log.w(TAG, "Could not register network callback for mDNS recovery", it)
+        }
+    }
+
+    private fun unregisterNetworkCallback() {
+        val cm = connectivityManager ?: return
+        val callback = networkCallback ?: return
+        networkCallback = null
+        activeNetwork = null
+        sawNetworkLoss = false
+        runCatching { cm.unregisterNetworkCallback(callback) }
     }
 
     private fun isSameMdnsAdvertisement(

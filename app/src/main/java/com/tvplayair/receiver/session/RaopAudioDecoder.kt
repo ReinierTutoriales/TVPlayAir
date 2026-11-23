@@ -77,8 +77,9 @@ internal class PcmResampler {
 }
 
 /**
- * Decodes incoming RAOP audio payloads (AAC-LC / AAC-ELD via MediaCodec or L16 PCM)
- * inside :session and writes normalized 16-bit / 48 kHz stereo PCM into gProducerAudio.
+ * Decodes incoming RAOP audio payloads (ALAC via native Apple decoder, AAC-LC / AAC-ELD via
+ * MediaCodec, or L16 PCM) inside :session and writes normalized 16-bit / 48 kHz stereo PCM
+ * into gProducerAudio.
  */
 class RaopAudioDecoder {
     companion object {
@@ -246,6 +247,8 @@ class RaopAudioDecoder {
                         inBuf.clear()
                         inBuf.put(payload, offset, length)
                         decoder.queueInputBuffer(inIdx, 0, length, 0L, 0)
+                    } else {
+                        runCatching { decoder.queueInputBuffer(inIdx, 0, 0, 0L, 0) }
                     }
                 }
                 val info = MediaCodec.BufferInfo()

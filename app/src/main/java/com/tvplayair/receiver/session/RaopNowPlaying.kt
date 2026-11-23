@@ -57,13 +57,24 @@ internal class RaopNowPlayingSession(private val publish: (RaopNowPlaying?) -> U
     private var owner: Any? = null
     private var timestamp: Long? = null
     private var trackTimestampUnconfirmed = false
+    private var itemGeneration = 0L
     private var current = RaopNowPlaying()
+
+    @Synchronized
+    fun itemGenerationFor(source: Any): Long? = itemGeneration.takeIf { owner === source }
+
+    @Synchronized
+    fun onFlush(source: Any) {
+        if (owner !== source) return
+        itemGeneration++
+    }
 
     @Synchronized
     fun activate(source: Any, remote: RaopRemote? = null, onActivated: () -> Unit = {}) {
         owner = source
         timestamp = null
         trackTimestampUnconfirmed = false
+        itemGeneration++
         current = RaopNowPlaying(remote = remote)
         onActivated()
         publish(current)
@@ -85,10 +96,17 @@ internal class RaopNowPlayingSession(private val publish: (RaopNowPlaying?) -> U
     }
 
     @Synchronized
-    fun artwork(source: Any, at: Long?, artwork: ByteArray?) {
+    fun artwork(
+        source: Any,
+        at: Long?,
+        artwork: ByteArray?,
+        expectedItemGeneration: Long? = null
+    ) {
         val before = current
-        if (owner !== source || (artwork != null && timestamp != null && at == null) ||
-            (at != null && trackTimestampUnconfirmed && at == timestamp) || !advance(at)
+        if (owner !== source ||
+            (expectedItemGeneration != null && expectedItemGeneration != itemGeneration) ||
+            (at != null && trackTimestampUnconfirmed && at == timestamp) ||
+            !advance(at)
         ) return
         if (current === before && current.artwork.contentEquals(artwork)) return
         current = current.copy(artwork = artwork)
@@ -132,6 +150,7 @@ internal class RaopNowPlayingSession(private val publish: (RaopNowPlaying?) -> U
         if (at != last) {
             timestamp = at
             trackTimestampUnconfirmed = false
+            itemGeneration++
             current = RaopNowPlaying(remote = current.remote)
         }
         return true

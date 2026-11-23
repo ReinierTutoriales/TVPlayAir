@@ -33,7 +33,7 @@ class MdnsTxtRecordsTest {
         assertEquals("AABBCCDDEEFF@TVPlayAir", MdnsTxtRecords.buildRaopServiceName(config))
 
         val raop = MdnsTxtRecords.buildRaopTxt(config)
-        assertEquals("48000", raop["sr"])
+        assertEquals("44100", raop["sr"])
         assertEquals("16", raop["ss"])
         assertEquals("2", raop["ch"])
         assertEquals("AppleTV3,2", raop["am"])

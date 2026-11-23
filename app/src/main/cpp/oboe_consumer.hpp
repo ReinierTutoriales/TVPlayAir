@@ -59,7 +59,6 @@ private:
 
     std::atomic<bool> shouldRun_{false};
     std::atomic<bool> running_{false};
-    std::atomic<uint64_t> errorCount_{0};
     std::atomic<uint64_t> recoveryCount_{0};
     std::atomic<int32_t> grantedSampleRate_{0};
     std::atomic<int32_t> grantedFramesPerBurst_{0};

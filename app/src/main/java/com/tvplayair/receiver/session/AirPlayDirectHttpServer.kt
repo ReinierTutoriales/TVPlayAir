@@ -20,6 +20,9 @@ import java.net.URLEncoder
 import java.nio.charset.StandardCharsets
 import java.security.SecureRandom
 import java.util.Locale
+import java.util.concurrent.RejectedExecutionException
+import java.util.concurrent.SynchronousQueue
+import java.util.concurrent.ThreadPoolExecutor
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicInteger
@@ -45,16 +48,28 @@ class AirPlayDirectHttpServer(
 
     private val running = AtomicBoolean(false)
     private val generationId = AtomicInteger(1)
-    private val playbackEvents = AirPlayPlaybackEvents()
+    private val fcupRequests = FcupRequests()
+    private val playbackEvents = AirPlayPlaybackEvents { evicted ->
+        evicted.fcupRequestId?.let { fcupRequests.fail(it, "FCUP reverse queue overflow") }
+    }
     private val idleTelemetry = DirectPlaybackTelemetry(0.0, 0.0, 0f, isPlaying = false, isBuffering = false)
     private val latestTelemetry = AtomicReference(idleTelemetry)
-    private val fcupRequests = FcupRequests()
+    private val clientExecutor = ThreadPoolExecutor(
+        4,
+        24,
+        30L,
+        TimeUnit.SECONDS,
+        SynchronousQueue()
+    ) { runnable ->
+        Thread(runnable, "TVPlayAir-AirPlayClient").apply { isDaemon = true }
+    }
 
     @Volatile
     private var serverSocket: ServerSocket? = null
     @Volatile
     private var activeConfig = AirPlayServerConfig()
     private var acceptThread: Thread? = null
+    private val activeSockets = java.util.Collections.newSetFromMap(java.util.concurrent.ConcurrentHashMap<Socket, Boolean>())
     private val fallbackPairingKey by lazy { ByteArray(32).also(SecureRandom()::nextBytes) }
 
     private fun newConnectionCrypto() = AirPlayConnectionCrypto {
@@ -133,11 +148,14 @@ class AirPlayDirectHttpServer(
         mirrorReceiver.stop()
         runCatching { serverSocket?.close() }
         serverSocket = null
+        activeSockets.forEach { runCatching { it.close() } }
+        activeSockets.clear()
         acceptThread?.let {
             it.interrupt()
             runCatching { it.join(500L) }
         }
         acceptThread = null
+        clientExecutor.shutdownNow()
     }
 
     override fun updatePlaybackTelemetry(playbackId: Long, telemetry: DirectPlaybackTelemetry) {
@@ -156,15 +174,17 @@ class AirPlayDirectHttpServer(
     private fun acceptLoop(socket: ServerSocket) {
         while (running.get() && !socket.isClosed) {
             val client = runCatching { socket.accept() }.getOrNull() ?: break
-            Thread({
-                try {
-                    handleClient(client)
-                } catch (error: IOException) {
-                    Log.i(TAG, "AirPlay connection ended (${error.javaClass.simpleName})")
+            try {
+                clientExecutor.execute {
+                    try {
+                        handleClient(client)
+                    } catch (error: IOException) {
+                        Log.i(TAG, "AirPlay connection ended (${error.javaClass.simpleName})")
+                    }
                 }
-            }, "TVPlayAir-AirPlayClient").apply {
-                isDaemon = true
-                start()
+            } catch (_: RejectedExecutionException) {
+                Log.w(TAG, "Rejected AirPlay HTTP client: connection pool saturated")
+                runCatching { client.close() }
             }
         }
     }
@@ -192,12 +212,17 @@ class AirPlayDirectHttpServer(
         val peer = sock.inetAddress?.hostAddress ?: "unknown"
         var pendingHeader = firstHeader
         var awaitingNextFcupRequest = false
-
-        while (running.get()) {
-            val headerText = pendingHeader
-                ?: readAirPlayHttpHeader(input, awaitingNextFcupRequest)?.toString(StandardCharsets.UTF_8)
-                ?: break
-            pendingHeader = null
+        activeSockets.add(sock)
+        try {
+            while (running.get()) {
+                val headerText = pendingHeader
+                    ?: readAirPlayHttpHeader(
+                        input = input,
+                        allowIdleTimeout = awaitingNextFcupRequest,
+                        keepIdleConnection = { running.get() && mirrorReceiver.hasRecentVideo(crypto) }
+                    )?.toString(StandardCharsets.UTF_8)
+                    ?: break
+                pendingHeader = null
 
             val firstLine = headerText.substringBefore("\r\n")
             if (RtspMessageParser.isRtspRequestLine(firstLine) &&
@@ -249,16 +274,32 @@ class AirPlayDirectHttpServer(
             val sessionId = headers["x-apple-session-id"]?.takeIf { value ->
                 value.length in 1..128 && value.all { it in '!'..'~' }
             }
+            val isLoopback = sock.inetAddress?.isLoopbackAddress == true
             val sessionKey = AirPlayPlaybackEvents.SessionKey(peer, sessionId)
             if (method == "POST" && path == "/reverse") {
+                if (!crypto.pairing.isVerified && !isLoopback) {
+                    Log.w(TAG, "Rejected unverified POST /reverse from $peer")
+                    writeResponse(output, 403, "Forbidden")
+                    return
+                }
                 handleReverseChannel(sock, input, output, sessionKey)
                 return
             }
             val keepAlive = !headers["connection"].equals("close", ignoreCase = true)
-            dispatchRequest(method, path, fullPath, body, output, sessionKey, crypto)
+            try {
+                dispatchRequest(method, path, fullPath, body, output, sessionKey, crypto, isLoopback, peer)
+            } finally {
+                currentRequestProtocol.remove()
+                currentRequestCSeq.remove()
+            }
             if (!keepAlive) break
-            awaitingNextFcupRequest = sock.inetAddress?.isLoopbackAddress == true &&
+            awaitingNextFcupRequest = isLoopback &&
                 method == "GET" && path.startsWith("/__fcup/")
+            }
+        } finally {
+            currentRequestProtocol.remove()
+            currentRequestCSeq.remove()
+            activeSockets.remove(sock)
         }
     }
 
@@ -467,6 +508,17 @@ class AirPlayDirectHttpServer(
         }
     }
 
+    private fun rewriteM3u8EntryUrl(baseUrl: String, rawUri: String, playbackId: Long): String {
+        val resolved = resolveRelativeFcupUri(baseUrl, rawUri)
+        return if (resolved.startsWith("http://", ignoreCase = true) ||
+            resolved.startsWith("https://", ignoreCase = true)
+        ) {
+            resolved
+        } else {
+            buildLocalFcupProxyUrl(resolved, playbackId)
+        }
+    }
+
     private fun rewriteM3u8ForFcupProxy(m3u8Text: String, baseUrl: String, playbackId: Long): String {
         val expandedText = expandYtCondensedM3u8(m3u8Text)
         val uriAttrRegex = Regex("""URI="([^"]+)"""")
@@ -479,26 +531,11 @@ class AirPlayDirectHttpServer(
                 }
                 if (line.startsWith("#")) {
                     val rewrittenTag = uriAttrRegex.replace(rawLine) { match ->
-                        val rawUri = match.groupValues[1]
-                        val resolved = resolveRelativeFcupUri(baseUrl, rawUri)
-                        if (resolved.startsWith("http://", ignoreCase = true) ||
-                            resolved.startsWith("https://", ignoreCase = true)
-                        ) {
-                            """URI="$resolved""""
-                        } else {
-                            """URI="${buildLocalFcupProxyUrl(resolved, playbackId)}""""
-                        }
+                        """URI="${rewriteM3u8EntryUrl(baseUrl, match.groupValues[1], playbackId)}""""
                     }
                     append(rewrittenTag).append("\n")
                 } else {
-                    val resolved = resolveRelativeFcupUri(baseUrl, line)
-                    if (resolved.startsWith("http://", ignoreCase = true) ||
-                        resolved.startsWith("https://", ignoreCase = true)
-                    ) {
-                        append(resolved).append("\n")
-                    } else {
-                        append(buildLocalFcupProxyUrl(resolved, playbackId)).append("\n")
-                    }
+                    append(rewriteM3u8EntryUrl(baseUrl, line, playbackId)).append("\n")
                 }
             }
         }
@@ -511,16 +548,27 @@ class AirPlayDirectHttpServer(
         bodyBytes: ByteArray,
         output: OutputStream,
         sessionKey: AirPlayPlaybackEvents.SessionKey,
-        crypto: AirPlayConnectionCrypto
+        crypto: AirPlayConnectionCrypto,
+        isLoopback: Boolean,
+        peer: String
     ) {
         when {
             method == "GET" && path.startsWith("/__fcup/") -> {
+                if (!isLoopback) {
+                    Log.w(TAG, "Rejected non-loopback /__fcup/ request from $peer")
+                    writeResponse(output, 403, "Forbidden")
+                    return
+                }
                 val playbackId = path.removePrefix("/__fcup/").substringBefore('/').toLongOrNull()
-                val encodedUrl = fullPath.substringAfter("url=", "").substringBefore('&')
+                val query = fullPath.substringAfter('?', "")
+                val encodedUrl = query.split('&')
+                    .firstOrNull { it.startsWith("url=") }
+                    ?.substringAfter("url=", "")
+                    .orEmpty()
                 val targetUrl = runCatching {
                     URLDecoder.decode(encodedUrl, StandardCharsets.UTF_8.name())
                 }.getOrDefault("")
-                if (targetUrl.isBlank() || playbackId == null) {
+                if (targetUrl.isBlank() || playbackId == null || !isAllowedFcupTargetUrl(targetUrl)) {
                     writeResponse(output, 400, "Bad Request")
                     return
                 }
@@ -629,6 +677,11 @@ class AirPlayDirectHttpServer(
                 }
             }
             method == "POST" && path == "/play" -> {
+                if (!crypto.pairing.isVerified && !isLoopback) {
+                    Log.w(TAG, "Rejected unverified POST /play from $peer")
+                    writeResponse(output, 403, "Forbidden")
+                    return
+                }
                 val parsed = AirPlayHttpRequestParser.parsePlayBody(bodyBytes)
                 if (parsed != null) {
                     startDirectPlayback(sessionKey, parsed)
@@ -643,6 +696,11 @@ class AirPlayDirectHttpServer(
                 }
             }
             method == "POST" && path == "/action" -> {
+                if (!crypto.pairing.isVerified && !isLoopback) {
+                    Log.w(TAG, "Rejected unverified POST /action from $peer")
+                    writeResponse(output, 403, "Forbidden")
+                    return
+                }
                 if (handleFcupResponsePlist(bodyBytes)) {
                     writeResponse(output, 200, "OK")
                 } else {
@@ -666,6 +724,10 @@ class AirPlayDirectHttpServer(
                 writeResponse(output, 200, "OK", "text/parameters", scrubBody)
             }
             method == "POST" && path == "/scrub" -> {
+                if (!crypto.pairing.isVerified && !isLoopback) {
+                    writeResponse(output, 403, "Forbidden")
+                    return
+                }
                 val position = AirPlayHttpRequestParser.parseQueryDouble(fullPath, "position")
                 if (position != null) {
                     playbackEvents.control(sessionKey) { id -> listener.onDirectVideoCommand("seek", position, id) }
@@ -675,6 +737,10 @@ class AirPlayDirectHttpServer(
                 }
             }
             method == "POST" && path == "/rate" -> {
+                if (!crypto.pairing.isVerified && !isLoopback) {
+                    writeResponse(output, 403, "Forbidden")
+                    return
+                }
                 val rate = AirPlayHttpRequestParser.parseQueryDouble(fullPath, "value")
                 if (rate != null) {
                     Log.i(TAG, "AirPlay playback rate=$rate")
@@ -687,6 +753,10 @@ class AirPlayDirectHttpServer(
                 }
             }
             method == "POST" && path == "/stop" -> {
+                if (!crypto.pairing.isVerified && !isLoopback) {
+                    writeResponse(output, 403, "Forbidden")
+                    return
+                }
                 playbackEvents.control(sessionKey, stop = true) { id ->
                     Log.i(PLAYBACK_DIAGNOSTICS_TAG, "route=direct id=$id event=sender_stop")
                     fcupRequests.reset()
@@ -715,6 +785,10 @@ class AirPlayDirectHttpServer(
                 writeResponse(output, 200, "OK", "text/x-apple-plist+xml", plist)
             }
             method == "PUT" && path == "/setProperty" -> {
+                if (!crypto.pairing.isVerified && !isLoopback) {
+                    writeResponse(output, 403, "Forbidden")
+                    return
+                }
                 if (!handleFcupResponsePlist(bodyBytes)) {
                     val parsed = AirPlayHttpRequestParser.parsePlayBody(bodyBytes)
                     if (parsed != null && startDirectPlayback(sessionKey, parsed, explicit = false)) {
@@ -802,7 +876,8 @@ class AirPlayDirectHttpServer(
 
 internal fun readAirPlayHttpHeader(
     input: BufferedInputStream,
-    allowIdleTimeout: Boolean = false
+    allowIdleTimeout: Boolean = false,
+    keepIdleConnection: () -> Boolean = { false }
 ): ByteArray? {
     val out = ByteArrayOutputStream()
     var matched = 0
@@ -810,7 +885,10 @@ internal fun readAirPlayHttpHeader(
         val b = try {
             input.read()
         } catch (error: SocketTimeoutException) {
-            if (allowIdleTimeout && out.size() == 0) return null
+            if (out.size() == 0) {
+                if (allowIdleTimeout) return null
+                if (keepIdleConnection()) continue
+            }
             throw error
         }
         if (b == -1) return null
@@ -835,6 +913,12 @@ internal fun isAirPlayReverseAck(statusLine: String): Boolean {
     }
 }
 
+
+internal fun isAllowedFcupTargetUrl(url: String): Boolean {
+    val scheme = url.substringBefore("://", "").lowercase(Locale.US)
+    if (scheme.isEmpty()) return false
+    return scheme !in setOf("file", "content", "javascript", "data", "about")
+}
 
 internal fun hasFcupPlaylistHeader(data: ByteArray): Boolean {
     val start = data.indexOfFirst { it != 0x20.toByte() && it != 0x09.toByte() &&

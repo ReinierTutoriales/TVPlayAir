@@ -20,6 +20,7 @@ import androidx.media3.common.util.UnstableApi
 import androidx.media3.datasource.DefaultHttpDataSource
 import androidx.media3.datasource.HttpDataSource.InvalidResponseCodeException
 import androidx.media3.exoplayer.DecoderReuseEvaluation
+import androidx.media3.exoplayer.DefaultLoadControl
 import androidx.media3.exoplayer.ExoPlayer
 import androidx.media3.exoplayer.analytics.AnalyticsListener
 import androidx.media3.exoplayer.source.DefaultMediaSourceFactory
@@ -281,7 +282,13 @@ class WebVideoPlayer(context: Context) : DirectVideoEngine {
 
         val httpDataSourceFactory = DefaultHttpDataSource.Factory()
             .setUserAgent(SAFARI_IOS_USER_AGENT)
+            .setConnectTimeoutMs(10_000)
+            .setReadTimeoutMs(15_000)
             .setAllowCrossProtocolRedirects(true)
+
+        val loadControl = DefaultLoadControl.Builder()
+            .setBufferDurationsMs(15_000, 30_000, 1_500, 3_000)
+            .build()
 
         val mediaSourceFactory = DefaultMediaSourceFactory(appContext)
             .setDataSourceFactory(httpDataSourceFactory)
@@ -294,6 +301,7 @@ class WebVideoPlayer(context: Context) : DirectVideoEngine {
 
         return ExoPlayer.Builder(appContext)
             .setMediaSourceFactory(mediaSourceFactory)
+            .setLoadControl(loadControl)
             .setAudioAttributes(audioAttributes, true)
             .build()
             .also { created ->
@@ -396,7 +404,17 @@ class WebVideoPlayer(context: Context) : DirectVideoEngine {
 
     fun onOutputSurfaceRecreated() {
         prepareStartedMs = SystemClock.elapsedRealtime()
-        player?.let(::reportAudioReady)
+        player?.let { exo ->
+            reportAudioReady(exo)
+            val id = playbackId
+            if (id != null &&
+                exo.currentMediaItem?.mediaId == id.toString() &&
+                exo.playbackState == Player.STATE_READY &&
+                !exo.playWhenReady
+            ) {
+                viewCallbacks?.onMediaReady(id)
+            }
+        }
     }
 
     fun checkpointPositionMs(): Long? {

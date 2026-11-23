@@ -68,6 +68,7 @@ class MainActivity : ComponentActivity(), SurfaceLayerController {
     private var screenStarted = false
     private var mirrorRequested = false
     private var directAspectRatio: Double? = null
+    private var mirrorAspectRatio: Double? = null
     private var directPlaybackId = 0L
     private var directStartupTimeout: Runnable? = null
     private var directRequestedAtMs = 0L
@@ -101,8 +102,8 @@ class MainActivity : ComponentActivity(), SurfaceLayerController {
         val initialIdentity = identityStore.loadOrCreate()
         overlayState = overlayState.copy(
             receiverName = initialIdentity.serviceName,
-            projectionHome = intent.hasCategory(Intent.CATEGORY_HOME) ||
-                intent.component?.className == "${packageName}.ProjectionHome"
+            audioOffsetMs = audioConsumer.getAudioOffsetMs(),
+            projectionHome = isProjectionHomeIntent(intent)
         )
         updateScreenWake()
 
@@ -132,7 +133,6 @@ class MainActivity : ComponentActivity(), SurfaceLayerController {
             setContent {
                 MaterialTheme {
                     val audioGeneration = overlayState.audioGeneration
-                    val playbackId = directPlaybackId
                     TvOverlayMenu(
                         state = overlayState,
                         onOpenMenu = { setOverlayVisible(true) },
@@ -141,8 +141,8 @@ class MainActivity : ComponentActivity(), SurfaceLayerController {
                         onToggleHevc = ::toggleHevcSetting,
                         onAdjustAudioOffset = ::adjustAudioOffset,
                         onAudioCommand = { command -> sendAudioCommand(command, audioGeneration) },
-                        onVideoToggle = { toggleVideoFromControls(playbackId) },
-                        onVideoSeek = { seekVideoFromControls(playbackId, it) },
+                        onVideoToggle = { toggleVideoFromControls(directPlaybackId) },
+                        onVideoSeek = { seekVideoFromControls(directPlaybackId, it) },
                         onVideoInteraction = ::refreshVideoControlsTimeout,
                         onDismiss = { setOverlayVisible(false) }
                     )
@@ -160,6 +160,7 @@ class MainActivity : ComponentActivity(), SurfaceLayerController {
         root.addOnLayoutChangeListener { _, left, top, right, bottom, oldLeft, oldTop, oldRight, oldBottom ->
             if (right - left != oldRight - oldLeft || bottom - top != oldBottom - oldTop) {
                 updateDirectSurfaceAspectRatio()
+                fitSurface(mirrorSurfaceView, mirrorAspectRatio)
             }
         }
         setContentView(root)
@@ -275,6 +276,9 @@ class MainActivity : ComponentActivity(), SurfaceLayerController {
                     MirrorVideoConfig(mimeType, width, height), generationId, codecConfig
                 )
                 mirrorRequested = true
+                if (opensProjection && awaitingDirectSnapshot) {
+                    awaitingDirectSnapshot = false
+                }
                 if (sharedMemoryReady && !awaitingDirectSnapshot) {
                     presentationCoordinator.startMirror(reconfigured, opensProjection)
                     if (!presentationCoordinator.hasDirectPlayback && directPlaybackId != 0L) {
@@ -334,7 +338,13 @@ class MainActivity : ComponentActivity(), SurfaceLayerController {
 
             override fun onAudioStreamStopped() {
                 audioConsumer.stop()
-                overlayState = overlayState.withAudioStreamStopped()
+                overlayState = overlayState.withAudioStreamStopped().let { state ->
+                    if (!mirrorRequested && !presentationCoordinator.hasDirectPlayback) {
+                        state.copy(connectedClient = null)
+                    } else {
+                        state
+                    }
+                }
                 updateScreenWake()
             }
 
@@ -436,6 +446,7 @@ class MainActivity : ComponentActivity(), SurfaceLayerController {
             KeyEvent.KEYCODE_MEDIA_FAST_FORWARD -> {
                 if (inDirectMode) {
                     seekVideoBy(10.0)
+                    if (overlayState.showingDirectControls) refreshVideoControlsTimeout()
                 } else {
                     sendAudioCommand(DacpCommand.BEGIN_FF, overlayState.audioGeneration)
                 }
@@ -444,6 +455,7 @@ class MainActivity : ComponentActivity(), SurfaceLayerController {
             KeyEvent.KEYCODE_MEDIA_REWIND -> {
                 if (inDirectMode) {
                     seekVideoBy(-10.0)
+                    if (overlayState.showingDirectControls) refreshVideoControlsTimeout()
                 } else {
                     sendAudioCommand(DacpCommand.BEGIN_REW, overlayState.audioGeneration)
                 }
@@ -540,12 +552,26 @@ class MainActivity : ComponentActivity(), SurfaceLayerController {
         }
         if (event?.isTracking == true && (isSettingsKey(keyCode) || isSelectKey(keyCode))) {
             if (!event.isCanceled) {
-                setOverlayVisible(!isSettingsKey(keyCode) || !overlayState.visible)
+                val canOpenWithSelect = presentationCoordinator.state == PresentationState.MIRROR_ACTIVE ||
+                    (overlayState.projectionHome && overlayState.showStandby && !overlayState.showingAudio)
+                if (isSettingsKey(keyCode) || canOpenWithSelect) {
+                    setOverlayVisible(!isSettingsKey(keyCode) || !overlayState.visible)
+                }
             }
             return true
         }
         return super.onKeyUp(keyCode, event)
     }
+
+    override fun onNewIntent(intent: Intent) {
+        super.onNewIntent(intent)
+        setIntent(intent)
+        overlayState = overlayState.copy(projectionHome = isProjectionHomeIntent(intent))
+    }
+
+    private fun isProjectionHomeIntent(intent: Intent): Boolean =
+        intent.hasCategory(Intent.CATEGORY_HOME) ||
+            intent.component?.className == "${packageName}.ProjectionHome"
 
     private fun isSettingsKey(keyCode: Int): Boolean =
         keyCode == KeyEvent.KEYCODE_MENU || keyCode == KeyEvent.KEYCODE_SETTINGS ||
@@ -568,33 +594,27 @@ class MainActivity : ComponentActivity(), SurfaceLayerController {
         )
         val saved = identityStore.saveServiceName(nextName)
         overlayState = overlayState.copy(receiverName = saved)
-        sessionConnection.configureAdvertising(
-            overlayState.resolutionPreset.width,
-            overlayState.resolutionPreset.height,
-            overlayState.hevcEnabled,
-            saved
-        )
+        pushAdvertisingConfig(overlayState)
     }
 
     private fun toggleResolutionPreset() {
         val next = overlayState.toggleResolution()
         overlayState = next
-        sessionConnection.configureAdvertising(
-            next.resolutionPreset.width,
-            next.resolutionPreset.height,
-            next.hevcEnabled,
-            next.receiverName
-        )
+        pushAdvertisingConfig(next)
     }
 
     private fun toggleHevcSetting() {
         val next = overlayState.toggleHevc()
         overlayState = next
+        pushAdvertisingConfig(next)
+    }
+
+    private fun pushAdvertisingConfig(state: TvOverlayState) {
         sessionConnection.configureAdvertising(
-            next.resolutionPreset.width,
-            next.resolutionPreset.height,
-            next.hevcEnabled,
-            next.receiverName
+            state.resolutionPreset.width,
+            state.resolutionPreset.height,
+            state.hevcEnabled,
+            state.receiverName
         )
     }
 
@@ -703,7 +723,8 @@ class MainActivity : ComponentActivity(), SurfaceLayerController {
 
     private fun updateMirrorSurfaceAspectRatio(videoWidth: Int, videoHeight: Int) {
         if (videoWidth > 0 && videoHeight > 0) {
-            fitSurface(mirrorSurfaceView, videoWidth.toDouble() / videoHeight)
+            mirrorAspectRatio = videoWidth.toDouble() / videoHeight
+            fitSurface(mirrorSurfaceView, mirrorAspectRatio)
         }
     }
 

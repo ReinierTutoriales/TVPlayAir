@@ -104,7 +104,7 @@ object AirPlayMirrorHeaderParser {
 /**
  * Receives AirPlay Mirroring TCP video stream packets (default port 7100) inside :session
  * and feeds length-prefixed H.265/H.264 NAL units into the native SPSC video SharedRingBuffer
- * using a single reusable DirectByteBuffer (zero per-frame heap allocations).
+ * using a reusable DirectByteBuffer.
  */
 class AirPlayMirrorStreamReceiver(
     private val onCodecConfigReady: (
@@ -116,6 +116,43 @@ class AirPlayMirrorStreamReceiver(
         private const val TAG = "AirPlayMirrorReceiver"
         const val DEFAULT_MIRROR_PORT = 7100
         private const val CLIENT_TIMEOUT_MS = 10_000
+        private const val MIRROR_SOCKET_TIMEOUT_MS = 60_000
+
+        internal fun createCtrCipher(key16: ByteArray, iv16: ByteArray): Cipher =
+            Cipher.getInstance("AES/CTR/NoPadding").apply {
+                init(Cipher.DECRYPT_MODE, SecretKeySpec(key16, "AES"), IvParameterSpec(iv16))
+            }
+
+        internal fun selectCtrCandidate(
+            encryptedPacket: ByteArray,
+            length: Int,
+            candidates: List<CipherCandidate>
+        ): Triple<String, Cipher, ByteArray>? {
+            for (candidate in candidates) {
+                val probeCipher = createCtrCipher(candidate.key16, candidate.iv16)
+                val plain = probeCipher.update(encryptedPacket, 0, length) ?: continue
+                if (isValidLengthPrefixedNals(plain, plain.size)) {
+                    return Triple(candidate.name, probeCipher, plain)
+                }
+            }
+            return null
+        }
+
+        internal fun isValidLengthPrefixedNals(data: ByteArray, size: Int): Boolean {
+            if (size < 5) return false
+            var pos = 0
+            while (pos + 4 <= size) {
+                val nalLen = ((data[pos].toInt() and 0xFF) shl 24) or
+                    ((data[pos + 1].toInt() and 0xFF) shl 16) or
+                    ((data[pos + 2].toInt() and 0xFF) shl 8) or
+                    (data[pos + 3].toInt() and 0xFF)
+                pos += 4
+                if (nalLen <= 0 || nalLen > size - pos) return false
+                if ((data[pos].toInt() and 0x80) != 0) return false // forbidden_zero_bit must be 0
+                pos += nalLen
+            }
+            return pos == size
+        }
     }
 
     private val running = AtomicBoolean(false)
@@ -137,7 +174,9 @@ class AirPlayMirrorStreamReceiver(
 
     private data class CipherSetup(val owner: AirPlayConnectionCrypto, val connectionId: Long, val state: CipherState)
 
-    private class CipherState(var selected: Cipher?, var candidates: List<Pair<String, Cipher>>)
+    internal data class CipherCandidate(val name: String, val key16: ByteArray, val iv16: ByteArray)
+
+    private class CipherState(var selected: Cipher?, var candidates: List<CipherCandidate>)
     private val directPayload: ByteBuffer = ByteBuffer.allocateDirect(
         AirPlayMirrorHeaderParser.MAX_MIRROR_PAYLOAD_BYTES
     )
@@ -167,14 +206,16 @@ class AirPlayMirrorStreamReceiver(
         val streamThenEcdhIv = AirPlayPairingSession.sha512Trunc16(rawIv, ecdhSecret32)
 
         val candidates = listOf(
-            "fp_then_ecdh" to createCtrCipher(
+            CipherCandidate(
+                "fp_then_ecdh",
                 AirPlayPairingSession.deriveMirrorStreamKey(eaFpThenEcdh, connId),
                 AirPlayPairingSession.deriveMirrorStreamIv(eaFpThenEcdh, connId)
             ),
-            "stream_then_ecdh" to createCtrCipher(streamThenEcdhKey, rawIv),
-            "stream_and_iv_then_ecdh" to createCtrCipher(streamThenEcdhKey, streamThenEcdhIv),
-            "raw_fp" to createCtrCipher(rawKey, rawIv),
-            "ecdh_then_fp" to createCtrCipher(
+            CipherCandidate("stream_then_ecdh", streamThenEcdhKey, rawIv),
+            CipherCandidate("stream_and_iv_then_ecdh", streamThenEcdhKey, streamThenEcdhIv),
+            CipherCandidate("raw_fp", rawKey, rawIv),
+            CipherCandidate(
+                "ecdh_then_fp",
                 AirPlayPairingSession.deriveMirrorStreamKey(eaEcdhThenFp, connId),
                 AirPlayPairingSession.deriveMirrorStreamIv(eaEcdhThenFp, connId)
             )
@@ -211,11 +252,6 @@ class AirPlayMirrorStreamReceiver(
             }
         }
     }
-
-    private fun createCtrCipher(key16: ByteArray, iv16: ByteArray): Cipher =
-        Cipher.getInstance("AES/CTR/NoPadding").apply {
-            init(Cipher.DECRYPT_MODE, SecretKeySpec(key16, "AES"), IvParameterSpec(iv16))
-        }
 
     fun start(port: Int = DEFAULT_MIRROR_PORT): Boolean {
         if (running.get()) return true
@@ -309,7 +345,7 @@ class AirPlayMirrorStreamReceiver(
         var streamHeight = 0
         var streamConfig: ByteArray? = null
         client.use { sock ->
-            sock.soTimeout = CLIENT_TIMEOUT_MS
+            sock.soTimeout = MIRROR_SOCKET_TIMEOUT_MS
             sock.tcpNoDelay = true
             Log.i(TAG, "Mirror TCP client connected from ${sock.inetAddress?.hostAddress}")
             val input = BufferedInputStream(sock.getInputStream())
@@ -328,6 +364,9 @@ class AirPlayMirrorStreamReceiver(
                         "Invalid mirror header: size=${hdrBuf.getInt(0)} type=${hdrBuf.getShort(4).toInt() and 0xFFFF}"
                     )
                     break
+                }
+                if (header.payloadType == AirPlayMirrorHeaderParser.PAYLOAD_TYPE_HEARTBEAT) {
+                    trace.lastVideoAtMs = SystemClock.elapsedRealtime()
                 }
                 if (header.payloadSize == 0) continue
                 val isVideo = header.payloadType == AirPlayMirrorHeaderParser.PAYLOAD_TYPE_VIDEO
@@ -407,19 +446,9 @@ class AirPlayMirrorStreamReceiver(
         if (candidates.isNotEmpty()) {
             val encryptedPacket = ByteArray(length)
             if (!readExact(input, encryptedPacket, length)) throw EOFException("Missing mirror payload")
-            var selectedName: String? = null
-            var selectedCipher: Cipher? = null
-            var selectedPlain: ByteArray? = null
-            for ((name, cipher) in candidates) {
-                val plain = cipher.update(encryptedPacket, 0, length) ?: continue
-                if (isValidLengthPrefixedNals(plain, plain.size)) {
-                    selectedName = name
-                    selectedCipher = cipher
-                    selectedPlain = plain
-                    break
-                }
-            }
-            if (selectedPlain != null && cipherState != null) {
+            val match = selectCtrCandidate(encryptedPacket, length, candidates)
+            if (match != null && cipherState != null) {
+                val (selectedName, selectedCipher, selectedPlain) = match
                 cipherState.selected = selectedCipher
                 cipherState.candidates = emptyList()
                 Log.i(TAG, "Selected mirror AES-CTR candidate: $selectedName (len=$length)")
@@ -450,21 +479,5 @@ class AirPlayMirrorStreamReceiver(
         }
         directPayload.flip()
         return true
-    }
-
-    private fun isValidLengthPrefixedNals(data: ByteArray, size: Int): Boolean {
-        if (size < 5) return false
-        var pos = 0
-        while (pos + 4 <= size) {
-            val nalLen = ((data[pos].toInt() and 0xFF) shl 24) or
-                ((data[pos + 1].toInt() and 0xFF) shl 16) or
-                ((data[pos + 2].toInt() and 0xFF) shl 8) or
-                (data[pos + 3].toInt() and 0xFF)
-            pos += 4
-            if (nalLen <= 0 || nalLen > size - pos) return false
-            if ((data[pos].toInt() and 0x80) != 0) return false // forbidden_zero_bit must be 0
-            pos += nalLen
-        }
-        return pos == size
     }
 }

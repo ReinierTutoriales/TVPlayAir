@@ -21,6 +21,12 @@ bool OboeConsumer::start(uint32_t generationId, bool discardInterruptedAudio) {
     if (stream_ && running_.load(std::memory_order_acquire)) {
         return true;
     }
+    if (stream_) {
+        auto staleStream = std::move(stream_);
+        running_.store(false, std::memory_order_release);
+        staleStream->requestStop();
+        staleStream->close();
+    }
     pipeline_.reset();
     if (discardInterruptedAudio) {
         // The producer continued while ExoPlayer owned the output. Resume at live PCM.
@@ -54,7 +60,9 @@ void OboeConsumer::stop() {
         localStream->close();
     }
     std::lock_guard<std::mutex> lock(streamMutex_);
-    pipeline_.reset();
+    if (!stream_ && !shouldRun_.load(std::memory_order_acquire)) {
+        pipeline_.reset();
+    }
 }
 
 void OboeConsumer::setGenerationId(uint32_t generationId) {
@@ -204,7 +212,6 @@ oboe::DataCallbackResult OboeConsumer::onAudioReady(
 }
 
 void OboeConsumer::onErrorBeforeClose(oboe::AudioStream* /* oboeStream */, oboe::Result error) {
-    errorCount_.fetch_add(1, std::memory_order_relaxed);
     running_.store(false, std::memory_order_release);
     __android_log_print(
         ANDROID_LOG_WARN,
@@ -213,7 +220,7 @@ void OboeConsumer::onErrorBeforeClose(oboe::AudioStream* /* oboeStream */, oboe:
         oboe::convertToText(error));
 }
 
-void OboeConsumer::onErrorAfterClose(oboe::AudioStream* /* oboeStream */, oboe::Result error) {
+void OboeConsumer::onErrorAfterClose(oboe::AudioStream* oboeStream, oboe::Result error) {
     __android_log_print(
         ANDROID_LOG_WARN,
         kLogTag,
@@ -221,6 +228,9 @@ void OboeConsumer::onErrorAfterClose(oboe::AudioStream* /* oboeStream */, oboe::
         oboe::convertToText(error));
 
     std::lock_guard<std::mutex> lock(streamMutex_);
+    if (stream_ && stream_.get() != oboeStream) {
+        return;
+    }
     stream_.reset();
     if (!shouldRun_.load(std::memory_order_acquire)) {
         running_.store(false, std::memory_order_release);

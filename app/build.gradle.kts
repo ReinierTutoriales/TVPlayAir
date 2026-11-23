@@ -57,6 +57,4 @@ dependencies {
     implementation(libs.bouncycastle.bcprov)
 
     testImplementation(libs.junit)
-
-    debugImplementation("androidx.compose.ui:ui-tooling")
 }

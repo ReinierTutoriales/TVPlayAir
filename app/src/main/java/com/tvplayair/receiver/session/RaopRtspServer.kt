@@ -15,6 +15,11 @@ import java.net.Socket
 import java.net.SocketTimeoutException
 import java.nio.charset.StandardCharsets
 import java.util.Locale
+import java.util.concurrent.Executors
+import java.util.concurrent.RejectedExecutionException
+import java.util.concurrent.SynchronousQueue
+import java.util.concurrent.ThreadPoolExecutor
+import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicInteger
 
@@ -64,16 +69,27 @@ internal class RaopRtspServer(
     private val running = AtomicBoolean(false)
     private val generationId = sharedGenerationId
     private val nowPlaying = RaopNowPlayingSession(listener::onNowPlaying)
+    private val artworkExecutor = Executors.newSingleThreadExecutor { runnable ->
+        Thread(runnable, "TVPlayAir-ArtworkPrep").apply { isDaemon = true }
+    }
+    private val clientExecutor = ThreadPoolExecutor(
+        4,
+        24,
+        30L,
+        TimeUnit.SECONDS,
+        SynchronousQueue()
+    ) { runnable ->
+        Thread(runnable, "TVPlayAir-RtspClient").apply { isDaemon = true }
+    }
     private val audioReceiver = RaopAudioRtpReceiver { generationId.get() }
     private val timingAndEventServers = AirPlayTimingAndEventServers()
+    private val activeSockets = java.util.Collections.newSetFromMap(java.util.concurrent.ConcurrentHashMap<Socket, Boolean>())
 
     @Volatile
     private var serverSocket: ServerSocket? = null
     @Volatile
     private var currentVolumeDb: Float = 0.0f
     private var acceptThread: Thread? = null
-
-    fun currentGenerationId(): Int = generationId.get()
 
     fun start(port: Int = DEFAULT_RAOP_PORT): Boolean {
         if (running.get()) return true
@@ -109,28 +125,39 @@ internal class RaopRtspServer(
         timingAndEventServers.stop()
         runCatching { serverSocket?.close() }
         serverSocket = null
+        activeSockets.forEach { runCatching { it.close() } }
+        activeSockets.clear()
         acceptThread?.let {
             it.interrupt()
             runCatching { it.join(500L) }
         }
         acceptThread = null
+        clientExecutor.shutdownNow()
+        artworkExecutor.shutdownNow()
     }
 
     private fun acceptLoop(socket: ServerSocket) {
         while (running.get() && !socket.isClosed) {
             val client = runCatching { socket.accept() }.getOrNull() ?: break
-            Thread({ handleSession(client) }, "TVPlayAir-RtspClient").apply {
-                isDaemon = true
-                start()
+            try {
+                clientExecutor.execute { handleSession(client) }
+            } catch (_: RejectedExecutionException) {
+                Log.w(TAG, "Rejected RTSP client: connection pool saturated")
+                runCatching { client.close() }
             }
         }
     }
 
     private fun handleSession(client: Socket) {
-        client.use { socket ->
-            connectionCrypto().use { crypto ->
-                handleConnection(socket, BufferedInputStream(socket.getInputStream()), crypto)
+        activeSockets.add(client)
+        try {
+            client.use { socket ->
+                connectionCrypto().use { crypto ->
+                    handleConnection(socket, BufferedInputStream(socket.getInputStream()), crypto)
+                }
             }
+        } finally {
+            activeSockets.remove(client)
         }
     }
 
@@ -392,15 +419,31 @@ internal class RaopRtspServer(
                     "application/x-dmap-tagged" -> RaopMetadataParser.track(request.body)?.let {
                         nowPlaying.track(source, timestamp, it, remoteFor(request))
                     }
-                    "image/jpeg", "image/png" -> artworkThumbnail(request.body)?.let {
-                        nowPlaying.artwork(source, timestamp, it)
+                    "image/jpeg", "image/png" -> {
+                        val rawArtwork = request.body.copyOf()
+                        val itemGen = nowPlaying.itemGenerationFor(source)
+                        if (itemGen != null) {
+                            artworkExecutor.execute {
+                                artworkThumbnail(rawArtwork)?.let { thumb ->
+                                    nowPlaying.artwork(source, timestamp, thumb, itemGen)
+                                }
+                            }
+                        }
                     }
-                    "image/none" -> nowPlaying.artwork(source, timestamp, null)
+                    "image/none" -> {
+                        val itemGen = nowPlaying.itemGenerationFor(source)
+                        if (itemGen != null) {
+                            artworkExecutor.execute {
+                                nowPlaying.artwork(source, timestamp, null, itemGen)
+                            }
+                        }
+                    }
                     "text/parameters", null -> nowPlaying.withOwner(source) { updateVolume(request.body) }
                 }
                 output.write(RtspMessageParser.formatResponse(200, "OK", cseq))
             }
             "FLUSH" -> {
+                nowPlaying.onFlush(source)
                 nowPlaying.withOwner(source) {
                     listener.onAudioStreamStarted(generationId.incrementAndGet())
                 }

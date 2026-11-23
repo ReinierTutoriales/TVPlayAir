@@ -147,7 +147,7 @@ class ReceiverIdentityStore(context: Context) {
         }
         val pubHex = ReceiverIdentityHelper.deriveEd25519PublicKeyHex(priv)
 
-        if (existingMac == null || existingUuid == null || existingName == null || existingPriv == null) {
+        if (existingMac == null || existingUuid == null || name != existingName || existingPriv == null) {
             prefs.edit()
                 .putString(KEY_DEVICE_ID, mac)
                 .putString(KEY_PI_UUID, uuid)

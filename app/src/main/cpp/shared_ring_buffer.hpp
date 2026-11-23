@@ -42,7 +42,7 @@ struct PacketHeader {
     uint32_t generationId;
 };
 
-// POSIX-only mapping and SPSC data plane. Android FD creation is kept outside.
+// POSIX mmap + SPSC data plane; ASharedMemory FD creation is kept outside.
 class SharedRingBuffer final {
 public:
     SharedRingBuffer() = default;
