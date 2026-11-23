@@ -29,7 +29,8 @@ data class MirrorVideoConfig(
  */
 class MirrorDecoder(
     private val surfaceProvider: () -> Surface?,
-    private val onVideoSizeChanged: ((Int, Int) -> Unit)? = null
+    private val onVideoSizeChanged: ((Int, Int) -> Unit)? = null,
+    private val onRecoveryTimeout: () -> Unit
 ) : MirrorVideoEngine {
 
     companion object {
@@ -188,6 +189,8 @@ class MirrorDecoder(
     private fun decodeLoop() {
         val bufferInfo = MediaCodec.BufferInfo()
         val outputWatchdog = MirrorOutputWatchdog(SystemClock::elapsedRealtime)
+        val worker = Thread.currentThread()
+        val generation = generationId.get()
         var activeCodec = codec
 
         fun recover(codecToRelease: MediaCodec, operation: String, error: IllegalStateException? = null) {
@@ -198,11 +201,21 @@ class MirrorDecoder(
                 "route=mirror_decoder generation=${generationId.get()} event=await_keyframe reason=$operation")
             releaseCodec(codecToRelease, reclaimed)
             activeCodec = null
-            outputWatchdog.clearQueuedFrames()
+            outputWatchdog.beginRecovery()
             frameGate.resetGate()
         }
 
         while (running.get()) {
+            if (outputWatchdog.recoveryExpired()) {
+                Log.w(PLAYBACK_DIAGNOSTICS_TAG,
+                    "route=mirror_decoder generation=$generation event=recovery_timeout")
+                renderListenerHandler.post {
+                    if (running.get() && workerThread === worker && generationId.get() == generation) {
+                        onRecoveryTimeout()
+                    }
+                }
+                return
+            }
             activeCodec?.let { current ->
                 try {
                     drainOutputBuffers(current, bufferInfo, outputWatchdog)
@@ -379,11 +392,12 @@ internal class MirrorOutputWatchdog(private val elapsedMs: () -> Long) {
     private companion object {
         const val PENDING_FRAME_THRESHOLD = 4
         const val STALL_TIMEOUT_MS = 2_000L
+        const val RECOVERY_TIMEOUT_MS = 5_000L
     }
 
     private var queuedFrames = 0
     private var waitingSinceMs = 0L
-    private var recoveryAttempted = false
+    private var recoveryStartedMs: Long? = null
 
     fun onFrameQueued() {
         if (queuedFrames == 0) waitingSinceMs = elapsedMs()
@@ -393,19 +407,26 @@ internal class MirrorOutputWatchdog(private val elapsedMs: () -> Long) {
     fun onOutputReleased() {
         if (queuedFrames > 0) queuedFrames--
         waitingSinceMs = elapsedMs()
-        recoveryAttempted = false
+        recoveryStartedMs = null
     }
 
     fun clearQueuedFrames() {
         queuedFrames = 0
     }
 
+    fun beginRecovery() {
+        if (recoveryStartedMs == null) recoveryStartedMs = elapsedMs()
+        clearQueuedFrames()
+    }
+
+    fun recoveryExpired(): Boolean =
+        recoveryStartedMs?.let { elapsedMs() - it >= RECOVERY_TIMEOUT_MS } == true
+
     fun takeRecovery(): Boolean {
-        if (recoveryAttempted || queuedFrames < PENDING_FRAME_THRESHOLD ||
+        if (recoveryStartedMs != null || queuedFrames < PENDING_FRAME_THRESHOLD ||
             elapsedMs() - waitingSinceMs < STALL_TIMEOUT_MS
         ) return false
-        recoveryAttempted = true
-        clearQueuedFrames()
+        beginRecovery()
         return true
     }
 }

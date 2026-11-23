@@ -169,7 +169,8 @@ class MainActivity : ComponentActivity(), SurfaceLayerController {
         audioConsumer = OboeAudioConsumer(this)
         mirrorDecoder = MirrorDecoder(
             surfaceProvider = { mirrorSurfaceView.holder.surface },
-            onVideoSizeChanged = ::updateMirrorSurfaceAspectRatio
+            onVideoSizeChanged = ::updateMirrorSurfaceAspectRatio,
+            onRecoveryTimeout = ::finishMirrorPresentation
         )
         webVideoPlayer.attachView(directSurfaceView, object : WebVideoPlayer.ViewCallbacks {
             override fun onTelemetryChanged(telemetry: DirectPlaybackTelemetry) {
@@ -317,14 +318,7 @@ class MainActivity : ComponentActivity(), SurfaceLayerController {
                 overlayState = overlayState.copy(connectedClient = clientName)
             }
 
-            override fun onMirrorStreamEnded() {
-                mirrorRequested = false
-                if (!overlayState.audioProjectionActive) {
-                    overlayState = overlayState.copy(connectedClient = null)
-                }
-                presentationCoordinator.onMirrorDisconnected()
-                syncPresentationState()
-            }
+            override fun onMirrorStreamEnded() = finishMirrorPresentation()
 
             override fun onAudioStreamStarted(generationId: Int) {
                 overlayState = overlayState.withAudioStreamStarted(generationId)
@@ -683,6 +677,15 @@ class MainActivity : ComponentActivity(), SurfaceLayerController {
         sessionConnection.updatePlaybackTelemetry(
             directPlaybackId, presentationCoordinator.directTelemetry(), webVideoPlayer.checkpointPositionMs()
         )
+    }
+
+    private fun finishMirrorPresentation() {
+        mirrorRequested = false
+        if (!overlayState.audioProjectionActive) {
+            overlayState = overlayState.copy(connectedClient = null)
+        }
+        presentationCoordinator.onMirrorDisconnected()
+        syncPresentationState()
     }
 
     private fun finishDirectSession(playbackId: Long) {

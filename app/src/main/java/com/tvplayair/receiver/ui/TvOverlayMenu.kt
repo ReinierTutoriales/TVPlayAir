@@ -135,7 +135,7 @@ fun TvOverlayMenu(
                 color = PrimaryText
             )
             SettingRow("Receptor", state.receiverName, onCycleReceiverName, Modifier.focusRequester(initialFocus))
-            SettingRow("Resolución anunciada", state.resolutionPreset.label, onToggleResolution)
+            SettingRow("Límite de resolución", state.resolutionPreset.label, onToggleResolution)
             SettingRow("Códec anunciado", if (state.hevcEnabled) "HEVC" else "H.264", onToggleHevc)
 
             Row(

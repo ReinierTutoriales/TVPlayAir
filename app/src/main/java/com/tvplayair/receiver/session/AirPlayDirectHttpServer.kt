@@ -758,11 +758,13 @@ class AirPlayDirectHttpServer(
                 writeResponse(output, 200, "OK")
             }
             method == "GET" && path == "/info" -> {
+                val cfg = activeConfig
                 val info = AirPlayInfoPlist.formatInfoBinary(
-                    deviceId = activeConfig.deviceId,
-                    maxWidth = activeConfig.maxWidth,
-                    maxHeight = activeConfig.maxHeight,
-                    hevcEnabled = activeConfig.hevcEnabled
+                    deviceId = cfg.deviceId,
+                    maxWidth = cfg.maxWidth,
+                    maxHeight = cfg.maxHeight,
+                    hevcEnabled = cfg.hevcEnabled,
+                    maxFps = cfg.maxFps
                 )
                 Log.i(TAG, "-> /info 200 OK bplist00 (${info.size}B)")
                 writeBinaryResponse(output, 200, "OK", "application/x-apple-binary-plist", info)

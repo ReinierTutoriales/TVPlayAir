@@ -279,7 +279,8 @@ internal class RaopRtspServer(
                         deviceId = cfg.deviceId,
                         maxWidth = cfg.maxWidth,
                         maxHeight = cfg.maxHeight,
-                        hevcEnabled = cfg.hevcEnabled
+                        hevcEnabled = cfg.hevcEnabled,
+                        maxFps = cfg.maxFps
                     )
                     Log.i(TAG, "-> GET /info 200 OK bplist00 (${bin.size}B)")
                     output.write(

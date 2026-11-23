@@ -21,6 +21,24 @@ class MirrorFrameGateTest {
     }
 
     @Test
+    fun recoveryDeadlineDoesNotSlideAndClearsWhenOutputReturns() {
+        var nowMs = 100L
+        val watchdog = MirrorOutputWatchdog { nowMs }
+        nowMs += 30_000
+        assertFalse(watchdog.recoveryExpired())
+
+        watchdog.beginRecovery()
+        nowMs += 4_999
+        watchdog.beginRecovery()
+        assertFalse(watchdog.recoveryExpired())
+        nowMs++
+        assertTrue(watchdog.recoveryExpired())
+
+        watchdog.onOutputReleased()
+        assertFalse(watchdog.recoveryExpired())
+    }
+
+    @Test
     fun outputRecoveryRequiresQueuedWorkAndRearmsOnlyAfterOutputReturns() {
         var nowMs = 0L
         val watchdog = MirrorOutputWatchdog { nowMs }

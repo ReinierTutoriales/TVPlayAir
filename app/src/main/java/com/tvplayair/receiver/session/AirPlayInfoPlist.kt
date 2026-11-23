@@ -17,10 +17,11 @@ object AirPlayInfoPlist {
         deviceId: String,
         maxWidth: Int,
         maxHeight: Int,
-        hevcEnabled: Boolean
+        hevcEnabled: Boolean,
+        maxFps: Int
     ): Map<String, Any> {
-        val width = maxWidth.coerceIn(1280, 1920).toLong()
-        val height = maxHeight.coerceIn(720, 1080).toLong()
+        val width = maxWidth.toLong()
+        val height = maxHeight.toLong()
         return linkedMapOf(
             "deviceID" to deviceId,
             "macAddress" to deviceId,
@@ -41,10 +42,10 @@ object AirPlayInfoPlist {
                     "height" to height,
                     "widthPhysical" to 0L,
                     "heightPhysical" to 0L,
-                    "maxFPS" to 60L,
+                    "maxFPS" to maxFps.toLong(),
                     "features" to 14L,
                     "overscanned" to false,
-                    "refreshRate" to 60.0,
+                    "refreshRate" to maxFps.toDouble(),
                     "rotation" to true
                 )
             ),
@@ -67,8 +68,9 @@ object AirPlayInfoPlist {
         deviceId: String,
         maxWidth: Int,
         maxHeight: Int,
-        hevcEnabled: Boolean
-    ): ByteArray = BinaryPlistWriter.encode(buildInfoMap(deviceId, maxWidth, maxHeight, hevcEnabled))
+        hevcEnabled: Boolean,
+        maxFps: Int
+    ): ByteArray = BinaryPlistWriter.encode(buildInfoMap(deviceId, maxWidth, maxHeight, hevcEnabled, maxFps))
 
     fun formatServerInfoXml(deviceId: String): String = buildString {
         append("<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n")
