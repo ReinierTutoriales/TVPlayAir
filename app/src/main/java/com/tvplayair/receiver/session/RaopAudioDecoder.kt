@@ -218,7 +218,7 @@ class RaopAudioDecoder {
     fun decodeAndPublish(
         payload: ByteArray, offset: Int, length: Int, generationId: Int, senderTimeUs: Long
     ) {
-        if (length <= 0) return
+        if (length <= 0 || offset < 0 || offset > payload.size || length > payload.size - offset) return
 
         when (codecType) {
             RaopAudioCodec.PCM_L16_48K, RaopAudioCodec.PCM_L16_44K1 -> {
