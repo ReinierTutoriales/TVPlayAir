@@ -20,6 +20,8 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v7.0.1
+      - name: Audit resources, manifest entry points and native source inventory
+        run: python3 scripts/check_repository_hygiene.py
       - name: Compile Linux host stress test
         run: |
           g++ -std=c++17 -O2 -Wall -Wextra -Werror -pthread \
