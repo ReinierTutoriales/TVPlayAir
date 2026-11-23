@@ -339,14 +339,14 @@ class AirPlayMirrorStreamReceiver(
                         activeCloseReason = null
                         activeTrace = null
                     }
-                    reason to (isCurrent && !deliberateClose && running.get())
+                    reason to shouldNotifyStreamEnded(trace.generation, isCurrent, deliberateClose, running.get())
                 }
                 Log.i(PLAYBACK_DIAGNOSTICS_TAG,
                     "route=mirror_transport generation=${trace.generation} event=closed reason=$reason " +
                         "packets=${trace.packets} elapsedMs=${SystemClock.elapsedRealtime() - trace.startedMs}")
                 // client.use closes the socket before this finally block; socket.isClosed
                 // cannot distinguish EOF from an intentional shutdown.
-                if (unexpectedEnd && shouldNotifyStreamEnded(trace.generation, true, false, true)) onStreamEnded()
+                if (unexpectedEnd) onStreamEnded()
             }
         }
     }
