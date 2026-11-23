@@ -104,7 +104,9 @@ class MainActivity : ComponentActivity(), SurfaceLayerController {
         overlayState = overlayState.copy(
             receiverName = initialIdentity.serviceName,
             audioOffsetMs = audioConsumer.getAudioOffsetMs(),
-            projectionHome = isProjectionHomeIntent(intent)
+            projectionHome = isProjectionHomeIntent(intent),
+            autoOpenVisual = getSharedPreferences("receiver_presentation", MODE_PRIVATE)
+                .getBoolean("auto_open_visual", false)
         )
         updateScreenWake()
 
@@ -140,6 +142,7 @@ class MainActivity : ComponentActivity(), SurfaceLayerController {
                         onCycleReceiverName = ::cycleReceiverName,
                         onToggleResolution = ::toggleResolutionPreset,
                         onToggleHevc = ::toggleHevcSetting,
+                        onToggleAutoOpenVisual = ::toggleAutoOpenVisual,
                         onAdjustAudioOffset = ::adjustAudioOffset,
                         onAudioCommand = { command -> sendAudioCommand(command, audioGeneration) },
                         onVideoToggle = { toggleVideoFromControls(directPlaybackId) },
@@ -362,6 +365,7 @@ class MainActivity : ComponentActivity(), SurfaceLayerController {
         sessionConnection = retainedPlayback?.connection ?: SessionConnection(this)
         sessionConnection.replaceListener(sessionListener, replay = retainedPlayback != null)
         sessionConnection.connect()
+        sessionConnection.setAutoOpenVisual(overlayState.autoOpenVisual)
     }
 
     override fun onStart() {
@@ -595,6 +599,14 @@ class MainActivity : ComponentActivity(), SurfaceLayerController {
         val saved = identityStore.saveServiceName(nextName)
         overlayState = overlayState.copy(receiverName = saved)
         pushAdvertisingConfig(overlayState)
+    }
+
+    private fun toggleAutoOpenVisual() {
+        val enabled = !overlayState.autoOpenVisual
+        overlayState = overlayState.copy(autoOpenVisual = enabled)
+        getSharedPreferences("receiver_presentation", MODE_PRIVATE)
+            .edit().putBoolean("auto_open_visual", enabled).apply()
+        sessionConnection.setAutoOpenVisual(enabled)
     }
 
     private fun toggleResolutionPreset() {
