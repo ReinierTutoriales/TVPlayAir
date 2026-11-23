@@ -162,6 +162,10 @@ class AirPlayMirrorStreamReceiver(
     private var activeCloseReason: String? = null
     private var activeTrace: ConnectionTrace? = null
 
+    internal fun shouldNotifyStreamEnded(
+        generation: Int, isCurrentClient: Boolean, deliberateClose: Boolean, receiverRunning: Boolean
+    ): Boolean = generation != 0 && isCurrentClient && !deliberateClose && receiverRunning
+
     private class ConnectionTrace {
         val startedMs = SystemClock.elapsedRealtime()
         var generation = 0
@@ -325,19 +329,24 @@ class AirPlayMirrorStreamReceiver(
             } catch (error: IOException) {
                 trace.reason = error.javaClass.simpleName
             } finally {
-                val reason = synchronized(streamLock) {
-                    if (activeClient !== client) return@synchronized trace.reason
-                    val reason = activeCloseReason ?: trace.reason
-                    activeClient = null
-                    activeSetup = null
-                    activeCloseReason = null
-                    activeTrace = null
-                    reason
+                val (reason, unexpectedEnd) = synchronized(streamLock) {
+                    val isCurrent = activeClient === client
+                    val deliberateClose = activeCloseReason != null
+                    val reason = if (isCurrent) activeCloseReason ?: trace.reason else trace.reason
+                    if (isCurrent) {
+                        activeClient = null
+                        activeSetup = null
+                        activeCloseReason = null
+                        activeTrace = null
+                    }
+                    reason to shouldNotifyStreamEnded(trace.generation, isCurrent, deliberateClose, running.get())
                 }
                 Log.i(PLAYBACK_DIAGNOSTICS_TAG,
                     "route=mirror_transport generation=${trace.generation} event=closed reason=$reason " +
                         "packets=${trace.packets} elapsedMs=${SystemClock.elapsedRealtime() - trace.startedMs}")
-                if (trace.generation != 0 && !socket.isClosed) onStreamEnded()
+                // client.use closes the socket before this finally block; socket.isClosed
+                // cannot distinguish EOF from an intentional shutdown.
+                if (unexpectedEnd) onStreamEnded()
             }
         }
     }

@@ -10,6 +10,18 @@ import java.nio.ByteOrder
 class AirPlayMirrorAndInfoTest {
 
     @Test
+    fun mirrorEndNotifiesOnlyForUnexpectedActiveStreamTermination() {
+        val receiver = AirPlayMirrorStreamReceiver({ _, _, _, _, _, _, _ -> }, {})
+        val shouldNotify = receiver::shouldNotifyStreamEnded
+        assertEquals(true, shouldNotify(7, true, false, true))
+        assertEquals(false, shouldNotify(0, true, false, true))
+        assertEquals(false, shouldNotify(7, false, false, true))
+        assertEquals(false, shouldNotify(7, true, true, true))
+        assertEquals(false, shouldNotify(7, true, false, false))
+    }
+
+
+    @Test
     fun distinguishesCodecConfigurationBeforeStartingTheDecoder() {
         val avc = byteArrayOf(1, 100, 0, 40, 0xFF.toByte(), 0xE1.toByte(), 0)
         val hevc = ByteArray(23).apply { this[0] = 1 }
