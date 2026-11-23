@@ -5,10 +5,9 @@
     <string name="audio_previous">Pista anterior</string>
     <string name="audio_play_pause">Reproducir o pausar</string>
     <string name="audio_next">Pista siguiente</string>
+    <string name="video_timeline">Posición de reproducción</string>
     <string name="video_playback">Reproducción de vídeo</string>
     <string name="video_loading">Cargando…</string>
     <string name="video_pause">Pausar</string>
     <string name="video_play">Reproducir</string>
-    <string name="video_seek_back_10">Retroceder 10 segundos</string>
-    <string name="video_seek_forward_10">Avanzar 10 segundos</string>
 </resources>

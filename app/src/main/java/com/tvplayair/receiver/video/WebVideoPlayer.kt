@@ -336,8 +336,6 @@ class WebVideoPlayer(context: Context) : DirectVideoEngine {
                                     .add(Player.COMMAND_GET_METADATA)
                                     .add(Player.COMMAND_PLAY_PAUSE)
                                     .add(Player.COMMAND_SEEK_IN_CURRENT_MEDIA_ITEM)
-                                    .add(Player.COMMAND_SEEK_BACK)
-                                    .add(Player.COMMAND_SEEK_FORWARD)
                                     .add(Player.COMMAND_STOP)
                                     .build()
                             )
@@ -535,9 +533,9 @@ class WebVideoPlayer(context: Context) : DirectVideoEngine {
                 exo.isCommandAvailable(Player.COMMAND_SEEK_IN_CURRENT_MEDIA_ITEM),
             playWhenReady = hasCurrentItem && exo.playWhenReady,
             audioOnly = audioOnly,
-            artist = metadata?.artist?.toString()?.takeIf { audioOnly && it.isNotBlank() },
-            album = metadata?.albumTitle?.toString()?.takeIf { audioOnly && it.isNotBlank() },
-            artwork = metadata?.artworkData?.takeIf { audioOnly },
+            artist = metadata?.artist?.toString()?.takeIf { it.isNotBlank() },
+            album = metadata?.albumTitle?.toString()?.takeIf { it.isNotBlank() },
+            artwork = metadata?.artworkData,
             livePositionSec = livePositionSec
         )
     }

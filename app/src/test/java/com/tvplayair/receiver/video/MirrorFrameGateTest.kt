@@ -9,6 +9,30 @@ import org.junit.Test
 class MirrorFrameGateTest {
 
     @Test
+    fun legacyOutputProgressDoesNotConfirmStartupOrRecovery() {
+        var now = 0L
+        val watchdog = MirrorOutputWatchdog(allowLegacyOutputProgress = true) { now }
+        watchdog.awaitFirstFrame()
+        watchdog.onFrameQueued()
+        now += 2_000
+        watchdog.onOutputReleased()
+        assertTrue(watchdog.renderStalled())
+
+        watchdog.onFrameRendered()
+        repeat(4) { watchdog.onFrameQueued() }
+        now += 2_000
+        watchdog.onOutputReleased()
+        assertFalse(watchdog.renderStalled())
+        now += 2_000
+        assertTrue(watchdog.renderStalled())
+
+        watchdog.beginRecovery()
+        now += 5_000
+        watchdog.onOutputReleased()
+        assertTrue(watchdog.recoveryExpired())
+    }
+
+    @Test
     fun recoveryCallbackSurvivesWorkerExitButRejectsStaleOrCancelledRequests() {
         assertTrue(shouldDeliverRecoveryTimeout(true, true, true))
         assertFalse(shouldDeliverRecoveryTimeout(false, true, true))

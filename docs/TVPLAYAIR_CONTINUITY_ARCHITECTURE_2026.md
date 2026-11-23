@@ -187,3 +187,23 @@ fotograma mientras Media3 presenta vídeo directo. El cierre del espejo lleva
 la generación del flujo desde el transporte hasta Binder y la Activity.
 Un cierre atrasado pertenece a su generación y no retira una proyección nueva.
 [MediaCodec.OnFrameRenderedListener](https://developer.android.com/reference/android/media/MediaCodec.OnFrameRenderedListener)
+
+### Controles de TV y prueba de Realtek
+
+El audio y el video directos comparten la barra de posicion cuando Media3
+ofrece una ventana navegable. Con el foco en la barra, izquierda y derecha
+mueven la posicion un uno por ciento de la ventana. MediaSession expone
+busqueda absoluta. RAOP mantiene anterior, siguiente y reproduccion segun DACP.
+El HUD de video reutiliza la caratula cuadrada y muestra titulo, artista y
+album si Media3 los entrega.
+[Media3 en Android TV](https://developer.android.com/media/implement/surfaces/android-tv)
+
+En el log del run 45251354159, Realtek confirmo el primer fotograma y luego
+el watchdog inicio recuperacion. El plazo vencio antes de confirmar otro
+fotograma. Android documenta que antes de API 34 puede omitir avisos de
+renderizado. En esas versiones, tras un primer fotograma confirmado, la
+salida continua aplaza la recuperacion mientras siga habiendo salida. El
+arranque y la recuperacion conservan la confirmacion por callback y sus
+plazos. El log disponible no establece si Realtek dejo de producir imagen
+o si faltaron avisos. Repetir la prueba en el mismo televisor.
+[MediaCodec.OnFrameRenderedListener](https://developer.android.com/reference/android/media/MediaCodec.OnFrameRenderedListener)
