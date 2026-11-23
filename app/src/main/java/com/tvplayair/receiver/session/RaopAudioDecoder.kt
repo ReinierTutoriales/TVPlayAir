@@ -195,14 +195,17 @@ class RaopAudioDecoder {
             }
         }
 
-        mediaCodec = runCatching {
-            MediaCodec.createDecoderByType(MediaFormat.MIMETYPE_AUDIO_AAC).apply {
-                configure(format, null, null, 0)
-                start()
-            }
-        }.onFailure {
-            Log.e(TAG, "Failed to configure AAC decoder ($codec @ $inputSampleRate Hz)", it)
-        }.getOrNull()
+        var candidate: MediaCodec? = null
+        mediaCodec = try {
+            candidate = MediaCodec.createDecoderByType(MediaFormat.MIMETYPE_AUDIO_AAC)
+            candidate.configure(format, null, null, 0)
+            candidate.start()
+            candidate
+        } catch (error: Exception) {
+            Log.e(TAG, "Failed to configure AAC decoder ($codec @ $inputSampleRate Hz)", error)
+            candidate?.let { runCatching { it.release() } }
+            null
+        }
 
         Log.i(
             TAG,
