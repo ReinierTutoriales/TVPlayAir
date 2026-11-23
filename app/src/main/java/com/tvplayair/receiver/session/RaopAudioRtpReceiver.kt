@@ -93,8 +93,8 @@ object RtpAudioPacketParser {
 }
 
 internal class RaopRtpJitterBuffer(
-    private val maxReorderWindow: Int = 32,
-    private val maxHoldPackets: Int = 8
+    private val maxReorderWindow: Int = 48,
+    private val maxHoldPackets: Int = 12
 ) {
     data class Packet(val payload: ByteArray, val rtpTimestamp: Long)
 

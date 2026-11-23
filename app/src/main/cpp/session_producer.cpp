@@ -88,16 +88,10 @@ Java_com_tvplayair_receiver_session_NativeSharedMemory_nativeWriteAudioPcm(
         static_cast<uint32_t>(generationId), static_cast<int64_t>(senderTimeUs)));
 }
 
-JNIEXPORT jlong JNICALL
-Java_com_tvplayair_receiver_session_NativeSharedMemory_nativeGetVideoDroppedPackets(
+JNIEXPORT jint JNICALL
+Java_com_tvplayair_receiver_session_NativeSharedMemory_nativeGetAudioRingFillPercent(
     JNIEnv*, jobject) {
-    return static_cast<jlong>(tvplayair::producerVideoRing().droppedPackets());
-}
-
-JNIEXPORT jlong JNICALL
-Java_com_tvplayair_receiver_session_NativeSharedMemory_nativeGetAudioDroppedPackets(
-    JNIEnv*, jobject) {
-    return static_cast<jlong>(tvplayair::producerAudioRing().droppedPackets());
+    return static_cast<jint>(tvplayair::producerAudioRing().fillPercent());
 }
 
 JNIEXPORT jboolean JNICALL

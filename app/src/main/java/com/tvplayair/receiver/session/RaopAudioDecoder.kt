@@ -24,8 +24,18 @@ internal class PcmResampler {
         const val TARGET_SAMPLE_RATE = 48_000
         const val MIN_SOURCE_SAMPLE_RATE = 8_000
         const val CHANNELS = 2
+        const val MAX_DRIFT_PPM = 500
+        private const val DRIFT_STEP_PPM = 150
+
+        internal fun computeDriftPpm(fillPercent: Int): Int = when (fillPercent) {
+            in 0..3 -> DRIFT_STEP_PPM
+            in 40..100 -> -DRIFT_STEP_PPM
+            else -> 0
+        }
     }
 
+    private var prev2Left = 0
+    private var prev2Right = 0
     private var previousLeft = 0
     private var previousRight = 0
     // Position of the next output sample relative to the previous input frame.
@@ -34,25 +44,43 @@ internal class PcmResampler {
     private var hasPreviousFrame = false
 
     fun reset() {
+        prev2Left = 0
+        prev2Right = 0
+        previousLeft = 0
+        previousRight = 0
         phase = 0L
         hasPreviousFrame = false
     }
 
-    fun resampleStereoI16(src: ShortArray, srcFrames: Int, srcRate: Int, dst: ShortArray): Int {
+    fun resampleStereoI16(
+        src: ShortArray,
+        srcFrames: Int,
+        srcRate: Int,
+        dst: ShortArray,
+        driftPpm: Int = 0
+    ): Int {
         if (srcFrames <= 0 || srcRate < MIN_SOURCE_SAMPLE_RATE) return 0
-        if (srcRate == TARGET_SAMPLE_RATE) {
+        val clampedDrift = driftPpm.coerceIn(-MAX_DRIFT_PPM, MAX_DRIFT_PPM)
+        if (srcRate == TARGET_SAMPLE_RATE && clampedDrift == 0) {
             src.copyInto(dst, endIndex = srcFrames * CHANNELS)
             return srcFrames
         }
+        val effectiveRate = (srcRate.toLong() * (1_000_000L - clampedDrift) / 1_000_000L)
+            .toInt()
+            .coerceAtLeast(MIN_SOURCE_SAMPLE_RATE)
 
         var outSamples = 0
         var inputFrame = 0
         if (!hasPreviousFrame) {
-            previousLeft = src[0].toInt()
-            previousRight = src[1].toInt()
+            val l0 = src[0].toInt()
+            val r0 = src[1].toInt()
+            prev2Left = l0
+            prev2Right = r0
+            previousLeft = l0
+            previousRight = r0
             dst[outSamples++] = src[0]
             dst[outSamples++] = src[1]
-            phase = srcRate.toLong()
+            phase = effectiveRate.toLong()
             hasPreviousFrame = true
             inputFrame = 1
         }
@@ -60,11 +88,13 @@ internal class PcmResampler {
             val left = src[inputFrame * CHANNELS].toInt()
             val right = src[inputFrame * CHANNELS + 1].toInt()
             while (phase <= TARGET_SAMPLE_RATE) {
-                dst[outSamples++] = interpolate(previousLeft, left)
-                dst[outSamples++] = interpolate(previousRight, right)
-                phase += srcRate
+                dst[outSamples++] = cubicHermite(prev2Left, previousLeft, left)
+                dst[outSamples++] = cubicHermite(prev2Right, previousRight, right)
+                phase += effectiveRate
             }
             phase -= TARGET_SAMPLE_RATE
+            prev2Left = previousLeft
+            prev2Right = previousRight
             previousLeft = left
             previousRight = right
             inputFrame++
@@ -72,8 +102,19 @@ internal class PcmResampler {
         return outSamples / CHANNELS
     }
 
-    private fun interpolate(from: Int, to: Int): Short =
-        (from + (to - from) * phase / TARGET_SAMPLE_RATE).toShort()
+    private fun cubicHermite(y0: Int, y1: Int, y2: Int): Short {
+        val t = phase.toDouble() / TARGET_SAMPLE_RATE
+        val t2 = t * t
+        val t3 = t2 * t
+        val h00 = 2.0 * t3 - 3.0 * t2 + 1.0
+        val h10 = t3 - 2.0 * t2 + t
+        val h01 = -2.0 * t3 + 3.0 * t2
+        val h11 = t3 - t2
+        val m0 = 0.5 * (y2 - y0)
+        val m1 = (y2 - y1).toDouble()
+        val sample = (h00 * y1 + h10 * m0 + h01 * y2 + h11 * m1).toInt()
+        return sample.coerceIn(Short.MIN_VALUE.toInt(), Short.MAX_VALUE.toInt()).toShort()
+    }
 }
 
 /**
@@ -325,11 +366,13 @@ class RaopAudioDecoder {
             resampler.reset()
             resamplerGeneration = generationId
         }
+        val driftPpm = PcmResampler.computeDriftPpm(NativeSharedMemory.nativeGetAudioRingFillPercent())
         val outFrames = resampler.resampleStereoI16(
             src = srcSamples,
             srcFrames = srcFrames,
             srcRate = inputSampleRate,
-            dst = resampledSamples
+            dst = resampledSamples,
+            driftPpm = driftPpm
         )
         if (outFrames <= 0) return
         val byteCount = outFrames * 4
