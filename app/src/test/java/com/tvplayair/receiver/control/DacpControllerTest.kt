@@ -1,11 +1,20 @@
 package com.tvplayair.receiver.control
 
+import org.junit.Assert.assertFalse
+import org.junit.Assert.assertTrue
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertNull
 import org.junit.Test
 
 class DacpControllerTest {
+
+    @Test
+    fun replacementClientWithoutDacpCredentialsInvalidatesPreviousRemote() {
+        assertTrue(DacpRequestBuilder.hasValidClientCredentials("ABCD1234", "12345"))
+        assertFalse(DacpRequestBuilder.hasValidClientCredentials("", "12345"))
+        assertFalse(DacpRequestBuilder.hasValidClientCredentials("ABCD1234", " "))
+    }
 
     @Test
     fun buildsExpectedDacpServiceName() {
