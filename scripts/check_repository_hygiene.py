@@ -24,14 +24,14 @@ source_text = "\n".join(kotlin.values())
 # Only check resources referenced by generated R names; framework/manifest
 # resources are accounted for separately.
 for p in (RES / "drawable").glob("*.xml"):
-    check(bool(re.search(r"\\bR\\.drawable\\." + re.escape(p.stem) + r"\\b", source_text))
+    check(bool(re.search(r"\bR\.drawable\." + re.escape(p.stem) + r"\b", source_text))
           or ("@drawable/" + p.stem) in manifest
           or any(("@drawable/" + p.stem) in body for body in xml.values()),
           f"Orphan drawable: {p.relative_to(ROOT)}")
 
 strings = xml.get(RES / "values/strings.xml", "")
-for name in re.findall(r'<string\\s+name="([^"]+)"', strings):
-    check(bool(re.search(r"\\bR\\.string\\." + re.escape(name) + r"\\b", source_text))
+for name in re.findall(r'<string\s+name="([^"]+)"', strings):
+    check(bool(re.search(r"\bR\.string\." + re.escape(name) + r"\b", source_text))
           or ("@string/" + name) in manifest
           or any(("@string/" + name) in body for body in xml.values()),
           f"Orphan string: {name}")
