@@ -1,5 +1,6 @@
 package com.tvplayair.receiver.session
 
+import com.tvplayair.receiver.video.DirectPlaybackTelemetry
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertNull
