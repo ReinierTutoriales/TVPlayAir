@@ -104,8 +104,13 @@ class DacpController(
 
     @Synchronized
     fun onClientConnected(dacpId: String, activeRemote: String) {
-        val expectedName = DacpRequestBuilder.expectedServiceName(dacpId) ?: return
-        if (activeRemote.isBlank()) return
+        val expectedName = DacpRequestBuilder.expectedServiceName(dacpId)
+        if (expectedName == null || activeRemote.isBlank()) {
+            // A replacement client without DACP credentials must invalidate the previous
+            // client's endpoint and token rather than leaving its controls active.
+            onClientDisconnected()
+            return
+        }
         if (expectedName == targetServiceName && activeRemote == activeRemoteToken) return
 
         targetGeneration++
