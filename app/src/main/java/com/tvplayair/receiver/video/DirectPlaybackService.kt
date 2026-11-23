@@ -20,6 +20,8 @@ class DirectPlaybackService : MediaSessionService() {
     private var hostedSession: MediaSession? = null
     private var retained: RetainedPlayback? = null
 
+    private fun owns(handoff: RetainedPlayback): Boolean = retained === handoff
+
     override fun onCreate() {
         super.onCreate()
         running = this
@@ -47,35 +49,36 @@ class DirectPlaybackService : MediaSessionService() {
         val connection = handoff.connection
         val id = player.playbackId ?: return false
         if (player.systemSession !== hostedSession || hostedSession == null) return false
+        if (retained != null) return false
         retained = handoff
         connection.replaceListener(object : SessionEventListener {
-            override fun onSharedMemoryDetached() = finishRetained(notifySender = false)
+            override fun onSharedMemoryDetached() = finishRetained(handoff, notifySender = false)
 
             override fun onDirectVideoUrl(video: DirectPlaybackStart) {
-                if (video.playbackId != id) finishRetained(notifySender = false)
+                if (video.playbackId != id) finishRetained(handoff, notifySender = false)
             }
 
             override fun onVideoConfigChanged(
                 mimeType: String, width: Int, height: Int, generationId: Int, codecConfig: ByteArray, opensProjection: Boolean
             ) {
-                if (opensProjection) finishRetained()
+                if (opensProjection) finishRetained(handoff)
             }
 
             override fun onDirectVideoCommand(command: String, value: Double, playbackId: Long) {
                 val activeId = player.playbackId ?: return
-                if (playbackId != activeId || retained == null) return
+                if (playbackId != activeId || !owns(handoff)) return
                 when (command) {
                     "play" -> player.play()
                     "pause" -> player.pause()
                     "seek" -> if (validDirectSeekPosition(value)) player.seekTo(value)
-                    "stop" -> finishRetained()
+                    "stop" -> finishRetained(handoff)
                 }
             }
         })
         player.setDetachedCallbacks(object : WebVideoPlayer.ViewCallbacks {
             override fun onTelemetryChanged(telemetry: DirectPlaybackTelemetry) {
                 val activeId = player.playbackId ?: return
-                if (retained != null) {
+                if (owns(handoff)) {
                     connection.updatePlaybackTelemetry(activeId, telemetry, player.checkpointPositionMs())
                 }
             }
@@ -83,12 +86,12 @@ class DirectPlaybackService : MediaSessionService() {
             override fun onMediaReady(playbackId: Long) = Unit
 
             override fun onPlaybackFinished(playbackId: Long) {
-                if (playbackId == player.playbackId) finishRetained()
+                if (playbackId == player.playbackId) finishRetained(handoff)
             }
 
             override fun onSystemPlaybackIntent(playbackId: Long, playWhenReady: Boolean) {
                 val activeId = player.playbackId ?: return
-                if (playbackId == activeId && retained != null) {
+                if (playbackId == activeId && owns(handoff)) {
                     connection.setDirectPlaybackIntent(activeId, if (playWhenReady) "play" else "pause")
                 }
             }
@@ -96,8 +99,12 @@ class DirectPlaybackService : MediaSessionService() {
         return true
     }
 
-    private fun finishRetained(notifySender: Boolean = true) {
+    private fun finishRetained(
+        expected: RetainedPlayback? = null,
+        notifySender: Boolean = true
+    ) {
         val handoff = retained ?: return
+        if (expected != null && handoff !== expected) return
         retained = null
         if (notifySender) {
             handoff.player.playbackId?.let(handoff.connection::finishDirectPlayback)
