@@ -346,7 +346,7 @@ class AirPlayMirrorStreamReceiver(
                         "packets=${trace.packets} elapsedMs=${SystemClock.elapsedRealtime() - trace.startedMs}")
                 // client.use closes the socket before this finally block; socket.isClosed
                 // cannot distinguish EOF from an intentional shutdown.
-                if (shouldNotifyStreamEnded(trace.generation, unexpectedEnd, false, true)) onStreamEnded()
+                if (unexpectedEnd && shouldNotifyStreamEnded(trace.generation, true, false, true)) onStreamEnded()
             }
         }
     }
