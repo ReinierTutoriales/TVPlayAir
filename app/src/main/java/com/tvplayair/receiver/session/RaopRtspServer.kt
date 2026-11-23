@@ -11,6 +11,7 @@ import java.io.OutputStream
 import java.net.InetSocketAddress
 import java.net.ServerSocket
 import java.net.Socket
+import java.net.SocketTimeoutException
 import java.nio.charset.StandardCharsets
 import java.util.Locale
 import java.util.concurrent.atomic.AtomicBoolean
@@ -140,6 +141,7 @@ internal class RaopRtspServer(
     ) {
         val peer = socket.inetAddress?.hostAddress ?: "unknown"
         val source = crypto
+        var endReason = "rtsp_server_stopped"
         try {
             socket.soTimeout = CLIENT_SO_TIMEOUT_MS
             val output = socket.getOutputStream()
@@ -147,6 +149,7 @@ internal class RaopRtspServer(
             while (running.get()) {
                 val headerText = pendingHeader ?: readUntilHeaderEnd(input)?.toString(StandardCharsets.UTF_8)
                 if (headerText == null) {
+                    endReason = "rtsp_peer_eof"
                     nowPlaying.withOwner(source) { Log.i(TAG, "Active RTSP audio control reached EOF") }
                     break
                 }
@@ -158,19 +161,34 @@ internal class RaopRtspServer(
                     (!RtspMessageParser.isRtspRequestLine(firstLine) ||
                         isDirectVideoControlRequest(firstLine))
                 ) {
+                    endReason = "rtsp_http_handoff"
                     httpDelegate.invoke(socket, input, crypto, headerText)
                     return
                 }
 
-                val preliminary = RtspMessageParser.parseRequest(headerText) ?: break
+                val preliminary = RtspMessageParser.parseRequest(headerText) ?: run {
+                    endReason = "rtsp_invalid_request"
+                    return
+                }
                 val lengthHeader = preliminary.header("content-length")
                 val contentLength = if (lengthHeader == null) 0 else {
-                    lengthHeader.toIntOrNull()?.takeIf { it in 0..MAX_DRAIN_BODY_BYTES } ?: break
+                    lengthHeader.toIntOrNull()?.takeIf { it in 0..MAX_DRAIN_BODY_BYTES } ?: run {
+                        endReason = "rtsp_invalid_length"
+                        return
+                    }
                 }
                 val body = if (contentLength <= MAX_BUFFERED_BODY_BYTES) {
-                    readExact(input, contentLength).also { if (it.size != contentLength) return }
+                    readExact(input, contentLength).also {
+                        if (it.size != contentLength) {
+                            endReason = "rtsp_incomplete_body"
+                            return
+                        }
+                    }
                 } else {
-                    if (!drainExact(input, contentLength)) break
+                    if (!drainExact(input, contentLength)) {
+                        endReason = "rtsp_incomplete_body"
+                        break
+                    }
                     ByteArray(0)
                 }
                 val request = preliminary.copy(body = body)
@@ -187,12 +205,20 @@ internal class RaopRtspServer(
                     listener.onClientConnected(userAgent, dacpId, activeRemote)
                 }
 
-                if (!dispatchRtsp(request, output, source)) break
+                if (!dispatchRtsp(request, output, source)) {
+                    endReason = "rtsp_teardown"
+                    break
+                }
             }
         } catch (error: IOException) {
+            endReason = when (error) {
+                is SocketTimeoutException -> "rtsp_io_timeout"
+                is EOFException -> "rtsp_incomplete_header"
+                else -> "rtsp_io_error"
+            }
             Log.i(TAG, "RTSP connection ended for $peer (${error.javaClass.simpleName})")
         } finally {
-            mirrorReceiver?.closeStreamForOwner(source)
+            mirrorReceiver?.closeStreamForOwner(source, endReason)
             nowPlaying.withOwner(source) {
                 nowPlaying.clear(source)
                 stopAudioStream()

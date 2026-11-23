@@ -189,12 +189,12 @@ class AirPlayMirrorStreamReceiver(
         closeActiveStream("new_setup")
     }
 
-    internal fun closeStreamForOwner(owner: AirPlayConnectionCrypto) {
+    internal fun closeStreamForOwner(owner: AirPlayConnectionCrypto, reason: String) {
         synchronized(streamLock) {
             if (pendingSetup?.owner === owner) pendingSetup = null
             if (activeSetup?.owner === owner) {
                 Log.i(TAG, "Closing mirror TCP stream after its RTSP control ended")
-                closeActiveStream("rtsp_control_ended")
+                closeActiveStream(reason)
             }
         }
     }

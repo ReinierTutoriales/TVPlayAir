@@ -163,6 +163,8 @@ class MirrorDecoder(
                 }
             }, renderListenerHandler)
             decoder.start()
+            Log.i(PLAYBACK_DIAGNOSTICS_TAG,
+                "route=mirror_decoder generation=$generation event=codec_started codec=$codecName")
             decoder
         }.onFailure {
             logCodecFailure("configure", it)
