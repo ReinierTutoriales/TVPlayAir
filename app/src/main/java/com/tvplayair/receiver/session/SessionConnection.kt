@@ -186,6 +186,7 @@ class SessionConnection(
         if (closed || bound) return
         handler.removeCallbacks(reconnect)
         runCatching { SessionService.startInBackground(appContext) }
+            .onFailure { Log.w(PLAYBACK_DIAGNOSTICS_TAG, "Unable to start foreground receiver; attempting bind", it) }
         val epoch = ++bindingEpoch
         val connection = connectionFor(epoch)
         activeConnection = connection
