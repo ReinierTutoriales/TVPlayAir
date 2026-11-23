@@ -55,10 +55,13 @@ fun TvOverlayMenu(
     onAdjustAudioOffset: (Int) -> Unit,
     onAudioCommand: (DacpCommand) -> Unit,
     onVideoToggle: () -> Unit,
-    onVideoInteraction: () -> Unit,
+    onPlaybackInteraction: () -> Unit,
     onDismiss: () -> Unit
 ) {
     if (!state.visible) {
+        val remoteCommand = onAudioCommand.takeIf {
+            state.audioGeneration?.let(state::canSendAudioControl) == true
+        }
         when {
             state.showingDirectAudio || state.showingAudio -> {
                 val direct = state.directAudio.takeIf { state.showingDirectAudio }
@@ -80,14 +83,27 @@ fun TvOverlayMenu(
                     TvPlaybackControls(
                         telemetry = direct,
                         onToggle = onVideoToggle,
-                        onAudioCommand = onAudioCommand.takeIf {
-                            state.audioGeneration?.let(state::canSendAudioControl) == true
-                        }
+                        onAudioCommand = remoteCommand
+                    )
+                }
+            }
+            state.showingMirrorControls -> {
+                Box(
+                    modifier = Modifier.fillMaxSize().onPreviewKeyEvent {
+                        if (it.type == KeyEventType.KeyDown) onPlaybackInteraction()
+                        false
+                    }.padding(bottom = 32.dp),
+                    contentAlignment = Alignment.BottomCenter
+                ) {
+                    TvPlaybackControls(
+                        telemetry = null,
+                        onToggle = onVideoToggle,
+                        onAudioCommand = remoteCommand
                     )
                 }
             }
             state.showingVideoControls -> {
-                state.videoControls?.let { TvVideoControls(it, onVideoToggle, onVideoInteraction) }
+                state.videoControls?.let { TvVideoControls(it, onVideoToggle, onPlaybackInteraction) }
             }
             state.showStandby && !state.projectionHome -> TvStandbyScreen(state, onOpenMenu)
         }
