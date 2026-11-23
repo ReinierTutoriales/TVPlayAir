@@ -5,6 +5,7 @@ enum class PresentationState {
     MIRROR_PREPARING,
     MIRROR_ACTIVE,
     MIRROR_RECOVERING,
+    MIRROR_WAITING_KEYFRAME,
     SWITCHING_TO_DIRECT,
     DIRECT_ACTIVE,
     DIRECT_WITHOUT_SURFACE,
@@ -231,7 +232,9 @@ class VideoPresentationCoordinator(
     }
 
     fun onMirrorFrameRendered(): Boolean {
-        if (state != PresentationState.MIRROR_PREPARING && state != PresentationState.MIRROR_RECOVERING) return false
+        if (state != PresentationState.MIRROR_PREPARING && state != PresentationState.MIRROR_RECOVERING &&
+            state != PresentationState.MIRROR_WAITING_KEYFRAME
+        ) return false
         state = PresentationState.MIRROR_ACTIVE
         surfaceController.revealMirrorSurface()
         return true
@@ -244,9 +247,17 @@ class VideoPresentationCoordinator(
         return true
     }
 
+    fun onMirrorWaitingForKeyFrame(): Boolean {
+        if (!isMirrorRequested() || state == PresentationState.SWITCHING_TO_MIRROR) return false
+        state = PresentationState.MIRROR_WAITING_KEYFRAME
+        surfaceController.coverMirrorSurface()
+        return true
+    }
+
     private fun isMirrorRequested(): Boolean = when (state) {
         PresentationState.SWITCHING_TO_MIRROR, PresentationState.MIRROR_PREPARING,
-        PresentationState.MIRROR_ACTIVE, PresentationState.MIRROR_RECOVERING -> true
+        PresentationState.MIRROR_ACTIVE, PresentationState.MIRROR_RECOVERING,
+        PresentationState.MIRROR_WAITING_KEYFRAME -> true
         else -> false
     }
 

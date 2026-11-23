@@ -87,7 +87,8 @@ class MainActivity : ComponentActivity(), SurfaceLayerController {
             when {
                 overlayState.visible -> setOverlayVisible(false)
                 overlayState.showingVideoControls || overlayState.showingMirrorControls -> dismissPlaybackControls()
-                presentationCoordinator.state == PresentationState.MIRROR_ACTIVE -> {
+                presentationCoordinator.state == PresentationState.MIRROR_ACTIVE ||
+                    presentationCoordinator.state == PresentationState.MIRROR_WAITING_KEYFRAME -> {
                     finishMirrorPresentation()
                 }
             }
@@ -185,7 +186,11 @@ class MainActivity : ComponentActivity(), SurfaceLayerController {
             onRecovering = {
                 if (!destroyingView && presentationCoordinator.onMirrorRecovering()) syncPresentationState()
             },
-            onRecoveryTimeout = ::finishMirrorPresentation
+            onWaitingForKeyFrame = {
+                if (!destroyingView && presentationCoordinator.onMirrorWaitingForKeyFrame()) {
+                    syncPresentationState()
+                }
+            }
         )
         webVideoPlayer.attachView(directSurfaceView, object : WebVideoPlayer.ViewCallbacks {
             override fun onTelemetryChanged(telemetry: DirectPlaybackTelemetry) {
@@ -768,7 +773,8 @@ class MainActivity : ComponentActivity(), SurfaceLayerController {
         }
         closeOverlayOnBack.isEnabled = overlayState.visible ||
             overlayState.showingVideoControls ||
-            state == PresentationState.MIRROR_ACTIVE
+            state == PresentationState.MIRROR_ACTIVE ||
+            state == PresentationState.MIRROR_WAITING_KEYFRAME
         updateScreenWake()
     }
 

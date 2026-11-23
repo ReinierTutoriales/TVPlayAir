@@ -33,7 +33,7 @@ class MirrorDecoder(
     private val onVideoSizeChanged: ((Int, Int) -> Unit)? = null,
     private val onFirstFrameRendered: () -> Unit,
     private val onRecovering: () -> Unit,
-    private val onRecoveryTimeout: () -> Unit
+    private val onWaitingForKeyFrame: () -> Unit
 ) : MirrorVideoEngine {
 
     companion object {
@@ -60,8 +60,6 @@ class MirrorDecoder(
     @Volatile
     private var codec: MediaCodec? = null
     private var workerThread: Thread? = null
-    @Volatile
-    private var recoveryCallbackPending = false
 
     @Synchronized
     fun updateConfig(newConfig: MirrorVideoConfig, generation: Int, codecConfig: ByteArray): Boolean {
@@ -100,7 +98,6 @@ class MirrorDecoder(
             return false
         }
 
-        recoveryCallbackPending = false
         frameGate.resetGate()
         val watchdog = MirrorOutputWatchdog(
             allowLegacyOutputProgress = Build.VERSION.SDK_INT < Build.VERSION_CODES.UPSIDE_DOWN_CAKE,
@@ -128,7 +125,6 @@ class MirrorDecoder(
 
     @Synchronized
     override fun stopAndRelease(): Boolean {
-        recoveryCallbackPending = false
         running.set(false)
         workerThread?.let { thread ->
             thread.interrupt()
@@ -288,20 +284,15 @@ class MirrorDecoder(
             if (outputWatchdog.recoveryExpired()) {
                 Log.w(PLAYBACK_DIAGNOSTICS_TAG,
                     "route=mirror_decoder generation=$generation event=recovery_timeout")
-                recoveryCallbackPending = true
+                activeCodec?.let { releaseCodec(it) }
+                activeCodec = null
+                frameGate.resetGate()
+                outputWatchdog.parkUntilKeyFrame()
                 renderListenerHandler.post {
-                    // The worker's finally block has already set running=false by the time
-                    // this runs; use the pending recovery token, not running, to deliver it.
-                    if (shouldDeliverRecoveryTimeout(
-                            recoveryCallbackPending, workerThread === worker,
-                            generationId.get() == generation
-                        )
-                    ) {
-                        recoveryCallbackPending = false
-                        onRecoveryTimeout()
+                    if (running.get() && workerThread === worker && generationId.get() == generation) {
+                        onWaitingForKeyFrame()
                     }
                 }
-                return
             }
             activeCodec?.let { current ->
                 try {
@@ -342,6 +333,7 @@ class MirrorDecoder(
                 packetBuffer.get(configBytes)
                 val newCodecConfig = frameGate.onCodecConfig(configBytes)
                 if (activeCodec == null) {
+                    if (outputWatchdog.waitingForKeyFrame) continue
                     val surface = surfaceProvider()
                     if (surface != null && surface.isValid && running.get()) {
                         val created = createAndConfigureCodec(surface, config, configBytes, outputWatchdog, lastStalledCodec)
@@ -370,6 +362,10 @@ class MirrorDecoder(
                 val surface = surfaceProvider()
                 val csd = frameGate.getCachedCodecConfig()
                 if (surface != null && surface.isValid && csd != null && running.get()) {
+                    val wasWaiting = outputWatchdog.waitingForKeyFrame
+                    if (!outputWatchdog.resumeAtKeyFrame()) continue
+                    if (wasWaiting) Log.i(PLAYBACK_DIAGNOSTICS_TAG,
+                        "route=mirror_decoder generation=$generation event=retry_on_keyframe")
                     val created = createAndConfigureCodec(surface, config, csd, outputWatchdog, lastStalledCodec)
                     if (created != null) {
                         if (running.get()) {
@@ -496,6 +492,30 @@ internal class MirrorOutputWatchdog(
     private var recoveryStartedMs: Long? = null
     private var hasRendered = false
     private var lastOutputMs: Long? = null
+    private var retryAtMs: Long? = null
+
+    val waitingForKeyFrame: Boolean
+        @Synchronized get() = retryAtMs != null
+
+    @Synchronized
+    fun parkUntilKeyFrame() {
+        firstFrameDeadlineMs = null
+        recoveryStartedMs = null
+        lastOutputMs = null
+        queuedFrames = 0
+        hasRendered = false
+        retryAtMs = elapsedMs() + RECOVERY_TIMEOUT_MS
+    }
+
+    @Synchronized
+    fun resumeAtKeyFrame(): Boolean {
+        val retryAt = retryAtMs ?: return true
+        val now = elapsedMs()
+        if (now < retryAt) return false
+        retryAtMs = null
+        recoveryStartedMs = now
+        return true
+    }
 
     @Synchronized
     fun awaitFirstFrame() {
@@ -575,8 +595,3 @@ internal class MirrorFrameClock(
         return targetNs.takeIf { it > now && it <= now + 150_000_000L }
     }
 }
-
-/** Recovery callbacks may run after the worker has exited and cleared running. */
-internal fun shouldDeliverRecoveryTimeout(
-    pending: Boolean, sameWorker: Boolean, sameGeneration: Boolean
-): Boolean = pending && sameWorker && sameGeneration
