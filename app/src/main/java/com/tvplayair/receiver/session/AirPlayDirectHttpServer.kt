@@ -424,20 +424,12 @@ class AirPlayDirectHttpServer(
         }
         if (rawBytes == null && !identifiedFcupResponse) return false
 
-        val dataBytes = if (rawBytes != null && rawBytes.size >= 2 &&
-            rawBytes[0] == 0x1f.toByte() &&
-            rawBytes[1] == 0x8b.toByte()
-        ) {
-            runCatching { GZIPInputStream(ByteArrayInputStream(rawBytes)).readBytes() }
-                .getOrDefault(rawBytes)
-        } else {
-            rawBytes
-        }
+        val dataBytes = rawBytes?.let { decodeFcupPayload(it, MAX_BODY_BYTES) }
 
         if (dataBytes == null || dataBytes.isEmpty()) {
             val dataState = when (rawData) {
                 null -> "missing"
-                is String, is ByteArray -> "empty"
+                is String, is ByteArray -> if (rawBytes?.isNotEmpty() == true) "invalid_or_oversize" else "empty"
                 else -> "unsupported_type"
             }
             Log.w(PLAYBACK_DIAGNOSTICS_TAG,
@@ -956,4 +948,25 @@ internal fun drainAirPlayBody(input: BufferedInputStream, length: Int): Boolean 
         remaining -= count
     }
     return true
+}
+
+internal fun decodeFcupPayload(bytes: ByteArray, limit: Int): ByteArray? {
+    if (bytes.size < 2 || bytes[0] != 0x1f.toByte() || bytes[1] != 0x8b.toByte()) {
+        return bytes.takeIf { it.size <= limit }
+    }
+    return try {
+        GZIPInputStream(ByteArrayInputStream(bytes)).use { input ->
+            val decoded = ByteArrayOutputStream()
+            val buffer = ByteArray(8192)
+            while (true) {
+                val count = input.read(buffer)
+                if (count == -1) break
+                if (count > limit - decoded.size()) return null
+                decoded.write(buffer, 0, count)
+            }
+            decoded.toByteArray()
+        }
+    } catch (_: IOException) {
+        null
+    }
 }

@@ -68,6 +68,9 @@ object RtspMessageParser {
         return RtspTransportParams(controlPort, timingPort, mode)
     }
 
+    internal fun formatAudioSetupTransport(dataPort: Int, controlPort: Int, timingPort: Int): String =
+        "RTP/AVP/UDP;unicast;mode=record;server_port=$dataPort;control_port=$controlPort;timing_port=$timingPort"
+
     /**
      * Parses AirPlay SET_PARAMETER "volume: -14.400000" (dB, -30..0, -144 = mute)
      * into linear gain 0.0f..1.0f.

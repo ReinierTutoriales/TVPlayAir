@@ -216,12 +216,8 @@ class RaopAudioRtpReceiver(
     private var workerThread: Thread? = null
     private var controlThread: Thread? = null
 
-    fun setClientControlEndpoint(address: InetAddress?, port: Int?) {
-        if (address != null && port != null && port > 0) {
-            clientControlAddress = address
-            clientControlPort = port
-        }
-    }
+    internal val localControlPort: Int
+        get() = controlSocket?.localPort ?: 0
 
     fun configureSession(
         codec: RaopAudioCodec,
@@ -262,25 +258,16 @@ class RaopAudioRtpReceiver(
         decoder.configure(codec, sampleRate, csd0, samplesPerFrame)
     }
 
-    fun start(port: Int = DEFAULT_AUDIO_PORT, controlPort: Int = DEFAULT_CONTROL_PORT): Boolean {
+    fun start(peer: InetAddress?, remoteControlPort: Int? = null): Boolean {
+        clientControlAddress = peer
+        clientControlPort = remoteControlPort?.takeIf { it in 1..65535 } ?: 0
         if (running.get()) return true
-        val udp = runCatching {
-            DatagramSocket(null).apply {
-                reuseAddress = true
-                bind(InetSocketAddress(port))
-            }
-        }.onFailure {
-            Log.e(TAG, "Failed to bind RAOP UDP audio port $port", it)
-        }.getOrNull() ?: return false
-
-        val ctrlUdp = runCatching {
-            DatagramSocket(null).apply {
-                reuseAddress = true
-                bind(InetSocketAddress(controlPort))
-            }
-        }.onFailure {
-            Log.w(TAG, "Failed to bind RAOP UDP control port $controlPort (retransmit disabled)", it)
-        }.getOrNull()
+        val udp = bindUdp(DEFAULT_AUDIO_PORT) ?: return false
+        val ctrlUdp = bindUdp(DEFAULT_CONTROL_PORT) ?: bindUdp(0)
+        if (ctrlUdp == null) {
+            udp.close()
+            return false
+        }
 
         socket = udp
         controlSocket = ctrlUdp
@@ -289,14 +276,24 @@ class RaopAudioRtpReceiver(
             isDaemon = true
             start()
         }
-        if (ctrlUdp != null) {
-            controlThread = Thread({ controlLoop(ctrlUdp) }, "TVPlayAir-RaopControlUdp").apply {
-                isDaemon = true
-                start()
-            }
+        controlThread = Thread({ controlLoop(ctrlUdp) }, "TVPlayAir-RaopControlUdp").apply {
+            isDaemon = true
+            start()
         }
-        Log.i(TAG, "RAOP audio UDP receiver listening on port $port (control=$controlPort)")
+        Log.i(TAG, "RAOP audio UDP receiver listening on port ${udp.localPort} (control=${ctrlUdp.localPort})")
         return true
+    }
+
+    private fun bindUdp(port: Int): DatagramSocket? {
+        val udp = DatagramSocket(null)
+        return try {
+            udp.bind(InetSocketAddress(port))
+            udp
+        } catch (error: IOException) {
+            udp.close()
+            Log.w(TAG, "Failed to bind RAOP UDP port $port", error)
+            null
+        }
     }
 
     fun stop() {

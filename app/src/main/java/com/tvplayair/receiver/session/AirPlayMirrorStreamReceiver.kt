@@ -180,7 +180,6 @@ class AirPlayMirrorStreamReceiver(
     private val directPayload: ByteBuffer = ByteBuffer.allocateDirect(
         AirPlayMirrorHeaderParser.MAX_MIRROR_PAYLOAD_BYTES
     )
-    private val headerScratch = ByteArray(AirPlayMirrorHeaderParser.HEADER_BYTES)
     private val readChunk = ByteArray(8192)
 
     @Volatile
@@ -340,6 +339,7 @@ class AirPlayMirrorStreamReceiver(
     }
 
     private fun handleMirrorClient(client: Socket, cipherState: CipherState, trace: ConnectionTrace) {
+        val headerScratch = ByteArray(AirPlayMirrorHeaderParser.HEADER_BYTES)
         var streamIsHevc: Boolean? = null
         var streamWidth = 0
         var streamHeight = 0
