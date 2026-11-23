@@ -133,6 +133,12 @@ class MirrorDecoder(
     ): MediaCodec? {
         val generation = generationId.get()
         val startedMs = SystemClock.elapsedRealtime()
+        if (cfg.width <= 0 || cfg.height <= 0) {
+            Log.w(PLAYBACK_DIAGNOSTICS_TAG,
+                "route=mirror_decoder generation=$generation event=invalid_dimensions " +
+                    "size=${cfg.width}x${cfg.height}")
+            return null
+        }
         val format = MediaFormat.createVideoFormat(cfg.mimeType, cfg.width, cfg.height)
         if (csdBytes != null && csdBytes.isNotEmpty()) {
             format.setByteBuffer("csd-0", ByteBuffer.wrap(csdBytes))
