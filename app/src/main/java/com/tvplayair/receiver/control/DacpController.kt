@@ -51,6 +51,10 @@ object DacpRequestBuilder {
     fun hasValidClientCredentials(dacpId: String, activeRemote: String): Boolean =
         expectedServiceName(dacpId) != null && activeRemote.isNotBlank()
 
+    fun isCurrentCommand(
+        queuedGeneration: Long, activeGeneration: Long, sessionActive: Boolean
+    ): Boolean = queuedGeneration == activeGeneration && sessionActive
+
     fun buildRequest(
         host: String,
         port: Int,
@@ -145,7 +149,7 @@ class DacpController(
 
         try {
             executor.execute {
-            if (!stillCurrent() || generation != targetGeneration) return@execute
+            if (!DacpRequestBuilder.isCurrentCommand(generation, targetGeneration, stillCurrent())) return@execute
             var connection: HttpURLConnection? = null
             runCatching {
                 connection = (URL(request.url).openConnection() as HttpURLConnection).apply {
