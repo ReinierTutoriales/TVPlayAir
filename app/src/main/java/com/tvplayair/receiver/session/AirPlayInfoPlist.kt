@@ -7,9 +7,6 @@ import com.tvplayair.receiver.network.MdnsTxtRecords
  * capability responses advertising display resolution and audio capabilities.
  */
 object AirPlayInfoPlist {
-    // 0x5A7FFFF3,0x1C combined as 64-bit integer (clears VideoFairPlay bit 2 and VideoV2 bit 33
-    // so iOS uses direct Content-Location URLs in POST /play instead of FCUP reverse proxy + /fp-setup2).
-    const val FEATURES_64BIT: Long = (0x1CL shl 32) or 0x5A7FFFF3L
     const val SERVER_INFO_FEATURES: Long = 0x5A7FEFF3L
     const val STATUS_FLAGS: Int = 0x44
 
@@ -25,14 +22,13 @@ object AirPlayInfoPlist {
         return linkedMapOf(
             "deviceID" to deviceId,
             "macAddress" to deviceId,
-            "features" to FEATURES_64BIT,
+            "features" to MdnsTxtRecords.airPlayFeatures(hevcEnabled),
             "model" to MdnsTxtRecords.AIRPLAY_MODEL,
             "sourceVersion" to "220.68",
             "statusFlags" to STATUS_FLAGS.toLong(),
             "keepAliveLowPower" to true,
             "keepAliveSendStatsAsBody" to true,
             "vv" to 2L,
-            "preferredCodec" to if (hevcEnabled) "HEVC" else "H264",
             "displays" to listOf(
                 linkedMapOf<String, Any>(
                     "uuid" to "e5f7a68d-7b0f-4305-984b-974f677a150b",
@@ -45,8 +41,8 @@ object AirPlayInfoPlist {
                     "maxFPS" to maxFps.toLong(),
                     "features" to 14L,
                     "overscanned" to false,
-                    "refreshRate" to maxFps.toDouble(),
-                    "rotation" to true
+                    "refreshRate" to 1.0 / maxFps,
+                    "rotation" to false
                 )
             ),
             "audioFormats" to listOf(

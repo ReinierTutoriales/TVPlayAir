@@ -85,19 +85,23 @@ object AirPlayMirrorHeaderParser {
         val microsFraction = (ntpFraction * 1_000_000L) ushr 32
         val ptsUs = ntpSeconds * 1_000_000L + microsFraction
 
+        val sourceSize = if (payloadType == PAYLOAD_TYPE_CODEC_CONFIG) {
+            readSourceSize(buf, 40) ?: readSourceSize(buf, 16)
+        } else null
         return AirPlayMirrorHeader(
             payloadSize = payloadSize,
             payloadType = payloadType,
             ptsUs = ptsUs,
-            width = if (payloadType == PAYLOAD_TYPE_CODEC_CONFIG) dimension(buf, 16, 40) else 0,
-            height = if (payloadType == PAYLOAD_TYPE_CODEC_CONFIG) dimension(buf, 20, 44) else 0
+            width = sourceSize?.first ?: 0,
+            height = sourceSize?.second ?: 0
         )
     }
 
-    private fun dimension(header: ByteBuffer, offset: Int, fallbackOffset: Int): Int {
-        val first = header.getFloat(offset).takeIf { it in 16f..8192f }?.toInt() ?: 0
-        val second = header.getFloat(fallbackOffset).takeIf { it in 16f..8192f }?.toInt() ?: 0
-        return maxOf(first, second)
+    private fun readSourceSize(header: ByteBuffer, offset: Int): Pair<Int, Int>? {
+        val width = header.getFloat(offset)
+        val height = header.getFloat(offset + 4)
+        if (width !in 16f..8192f || height !in 16f..8192f) return null
+        return width.toInt() to height.toInt()
     }
 }
 

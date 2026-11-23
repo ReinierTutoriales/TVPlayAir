@@ -58,6 +58,7 @@ class AirPlayMirrorAndInfoTest {
 
         header.putInt(0, sampleEntry.capacity())
         header.put(4, AirPlayMirrorHeaderParser.PAYLOAD_TYPE_CODEC_CONFIG.toByte())
+        header.putFloat(16, 2868f).putFloat(20, 1320f)
         header.putFloat(40, 1170f).putFloat(44, 2532f)
         val parsed = AirPlayMirrorHeaderParser.parse(header.array())!!
         assertEquals(1170, parsed.width)
@@ -96,8 +97,9 @@ class AirPlayMirrorAndInfoTest {
         assertEquals(3840L, display0["widthPixels"])
         assertEquals(2160L, display0["heightPixels"])
         assertEquals(30L, display0["maxFPS"])
-        assertEquals(30.0, display0["refreshRate"])
-        assertEquals("HEVC", decoded["preferredCodec"])
+        assertEquals(1.0 / 30.0, display0["refreshRate"])
+        assertEquals(false, display0["rotation"])
+        assertEquals((0x41CL shl 32) or 0x5A7FFFF3L, decoded["features"])
         assertNotNull(display0["uuid"])
     }
 
