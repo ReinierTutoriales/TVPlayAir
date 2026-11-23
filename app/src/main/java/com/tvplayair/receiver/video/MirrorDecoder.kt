@@ -177,7 +177,7 @@ class MirrorDecoder(
                     .onFailure { logCodecFailure("create_candidate", it) }.getOrNull()
                     ?: return null
                 val attemptFormat = MediaFormat.createVideoFormat(cfg.mimeType, cfg.width, cfg.height)
-                if (!csdBytes.isNullOrEmpty()) {
+                if (csdBytes != null && csdBytes.isNotEmpty()) {
                     attemptFormat.setByteBuffer("csd-0", ByteBuffer.wrap(csdBytes))
                 }
                 if (lowLatency) {
