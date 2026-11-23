@@ -56,6 +56,7 @@ class MirrorDecoder(
     private var codec: MediaCodec? = null
     private var workerThread: Thread? = null
 
+    @Synchronized
     fun updateConfig(newConfig: MirrorVideoConfig, generation: Int, codecConfig: ByteArray): Boolean {
         if (generationId.get() == generation && config == newConfig &&
             frameGate.matchesCodecConfig(codecConfig)
