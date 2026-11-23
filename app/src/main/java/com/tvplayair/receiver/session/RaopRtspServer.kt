@@ -398,20 +398,29 @@ internal class RaopRtspServer(
                     }
                     "image/jpeg", "image/png" -> {
                         val rawArtwork = request.body.copyOf()
-                        artworkExecutor.execute {
-                            artworkThumbnail(rawArtwork)?.let { thumb ->
-                                nowPlaying.artwork(source, timestamp, thumb)
+                        val itemGen = nowPlaying.itemGenerationFor(source)
+                        if (itemGen != null) {
+                            artworkExecutor.execute {
+                                artworkThumbnail(rawArtwork)?.let { thumb ->
+                                    nowPlaying.artwork(source, timestamp, thumb, itemGen)
+                                }
                             }
                         }
                     }
-                    "image/none" -> artworkExecutor.execute {
-                        nowPlaying.artwork(source, timestamp, null)
+                    "image/none" -> {
+                        val itemGen = nowPlaying.itemGenerationFor(source)
+                        if (itemGen != null) {
+                            artworkExecutor.execute {
+                                nowPlaying.artwork(source, timestamp, null, itemGen)
+                            }
+                        }
                     }
                     "text/parameters", null -> nowPlaying.withOwner(source) { updateVolume(request.body) }
                 }
                 output.write(RtspMessageParser.formatResponse(200, "OK", cseq))
             }
             "FLUSH" -> {
+                nowPlaying.onFlush(source)
                 nowPlaying.withOwner(source) {
                     listener.onAudioStreamStarted(generationId.incrementAndGet())
                 }
