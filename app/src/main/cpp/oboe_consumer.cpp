@@ -107,6 +107,7 @@ oboe::Result OboeConsumer::openWithFallbackLocked(
         ->setFormat(oboe::AudioFormat::I16)
         ->setChannelCount(oboe::ChannelCount::Stereo)
         ->setSampleRate(kAudioSampleRate)
+        ->setSampleRateConversionQuality(oboe::SampleRateConversionQuality::Medium)
         ->setUsage(oboe::Usage::Media)
         ->setContentType(oboe::ContentType::Movie)
         ->setDataCallback(this)
@@ -151,6 +152,16 @@ bool OboeConsumer::openAndStartLocked() {
                 framesPerBurst * 2,
                 oboe::convertToText(bufResult.error()));
         }
+    }
+
+    const int32_t grantedRate = newStream->getSampleRate();
+    if (grantedRate != kAudioSampleRate) {
+        __android_log_print(
+            ANDROID_LOG_WARN,
+            kLogTag,
+            "Oboe granted non-48k sample rate %d Hz (expected %d Hz)",
+            grantedRate,
+            kAudioSampleRate);
     }
 
     __android_log_print(

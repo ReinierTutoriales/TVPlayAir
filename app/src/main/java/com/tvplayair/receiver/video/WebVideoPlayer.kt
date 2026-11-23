@@ -312,6 +312,14 @@ class WebVideoPlayer(context: Context) : DirectVideoEngine {
             .setAudioAttributes(audioAttributes, true)
             .build()
             .also { created ->
+                val preferredLanguage = java.util.Locale.getDefault().language.takeIf { it.isNotBlank() }
+                if (preferredLanguage != null) {
+                    created.trackSelectionParameters = created.trackSelectionParameters
+                        .buildUpon()
+                        .setPreferredAudioLanguage(preferredLanguage)
+                        .setPreferredTextLanguage(preferredLanguage)
+                        .build()
+                }
                 created.addListener(playerListener)
                 created.addAnalyticsListener(videoEvents)
                 player = created

@@ -26,6 +26,8 @@ internal class PcmResampler {
         const val CHANNELS = 2
     }
 
+    private var prev2Left = 0
+    private var prev2Right = 0
     private var previousLeft = 0
     private var previousRight = 0
     // Position of the next output sample relative to the previous input frame.
@@ -34,6 +36,10 @@ internal class PcmResampler {
     private var hasPreviousFrame = false
 
     fun reset() {
+        prev2Left = 0
+        prev2Right = 0
+        previousLeft = 0
+        previousRight = 0
         phase = 0L
         hasPreviousFrame = false
     }
@@ -48,8 +54,12 @@ internal class PcmResampler {
         var outSamples = 0
         var inputFrame = 0
         if (!hasPreviousFrame) {
-            previousLeft = src[0].toInt()
-            previousRight = src[1].toInt()
+            val l0 = src[0].toInt()
+            val r0 = src[1].toInt()
+            prev2Left = l0
+            prev2Right = r0
+            previousLeft = l0
+            previousRight = r0
             dst[outSamples++] = src[0]
             dst[outSamples++] = src[1]
             phase = srcRate.toLong()
@@ -60,11 +70,13 @@ internal class PcmResampler {
             val left = src[inputFrame * CHANNELS].toInt()
             val right = src[inputFrame * CHANNELS + 1].toInt()
             while (phase <= TARGET_SAMPLE_RATE) {
-                dst[outSamples++] = interpolate(previousLeft, left)
-                dst[outSamples++] = interpolate(previousRight, right)
+                dst[outSamples++] = cubicHermite(prev2Left, previousLeft, left)
+                dst[outSamples++] = cubicHermite(prev2Right, previousRight, right)
                 phase += srcRate
             }
             phase -= TARGET_SAMPLE_RATE
+            prev2Left = previousLeft
+            prev2Right = previousRight
             previousLeft = left
             previousRight = right
             inputFrame++
@@ -72,8 +84,19 @@ internal class PcmResampler {
         return outSamples / CHANNELS
     }
 
-    private fun interpolate(from: Int, to: Int): Short =
-        (from + (to - from) * phase / TARGET_SAMPLE_RATE).toShort()
+    private fun cubicHermite(y0: Int, y1: Int, y2: Int): Short {
+        val t = phase.toDouble() / TARGET_SAMPLE_RATE
+        val t2 = t * t
+        val t3 = t2 * t
+        val h00 = 2.0 * t3 - 3.0 * t2 + 1.0
+        val h10 = t3 - 2.0 * t2 + t
+        val h01 = -2.0 * t3 + 3.0 * t2
+        val h11 = t3 - t2
+        val m0 = 0.5 * (y2 - y0)
+        val m1 = (y2 - y1).toDouble()
+        val sample = (h00 * y1 + h10 * m0 + h01 * y2 + h11 * m1).toInt()
+        return sample.coerceIn(Short.MIN_VALUE.toInt(), Short.MAX_VALUE.toInt()).toShort()
+    }
 }
 
 /**
