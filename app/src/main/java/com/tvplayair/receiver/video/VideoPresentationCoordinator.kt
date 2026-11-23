@@ -226,7 +226,11 @@ class VideoPresentationCoordinator(
     }
 
     fun seekDirect(positionSec: Double) {
-        if (hasDirectPlayback) directEngine.seekTo(positionSec)
+        // Sender commands are untrusted. Never forward NaN, infinity or negative
+        // positions into Media3's seek path.
+        if (hasDirectPlayback && positionSec.isFinite() && positionSec >= 0.0) {
+            directEngine.seekTo(positionSec)
+        }
     }
 
     fun directTelemetry(): DirectPlaybackTelemetry = directEngine.currentTelemetry()

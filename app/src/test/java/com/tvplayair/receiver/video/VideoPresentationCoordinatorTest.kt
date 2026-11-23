@@ -9,6 +9,25 @@ import org.junit.Test
 class VideoPresentationCoordinatorTest {
 
     @Test
+    fun directSeekRejectsNonFiniteAndNegativeSenderPositions() {
+        val events = mutableListOf<String>()
+        val coordinator = VideoPresentationCoordinator(
+            FakeMirrorEngine(events), FakeDirectEngine(events),
+            FakeAudioController(events), FakeSurfaceController(events)
+        )
+        assertTrue(coordinator.switchToDirectVideo(
+            DirectPlaybackStart("https://example.com/movie.mp4", 0.0, playbackId = 3)
+        ))
+        events.clear()
+        listOf(Double.NaN, Double.POSITIVE_INFINITY, Double.NEGATIVE_INFINITY, -1.0)
+            .forEach(coordinator::seekDirect)
+        assertTrue(events.isEmpty())
+        coordinator.seekDirect(0.0)
+        coordinator.seekDirect(12.5)
+        assertEquals(listOf("direct.seekTo(0.0)", "direct.seekTo(12.5)"), events)
+    }
+
+    @Test
     fun losingMirrorSurfaceClearsPresentationAndStopsDecoder() {
         val events = mutableListOf<String>()
         val coordinator = VideoPresentationCoordinator(
