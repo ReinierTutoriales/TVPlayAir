@@ -128,6 +128,7 @@ class RaopAudioDecoder {
     private var codecType: RaopAudioCodec = RaopAudioCodec.PCM_L16_48K
     private var inputSampleRate: Int = PcmResampler.TARGET_SAMPLE_RATE
     private var mediaCodec: MediaCodec? = null
+    private var configured = false
     private var producedFrames = 0L
     private var queuedFrames = 0L
     private var decodeFailures = 0L
@@ -162,12 +163,14 @@ class RaopAudioDecoder {
 
         if (codec == RaopAudioCodec.PCM_L16_48K || codec == RaopAudioCodec.PCM_L16_44K1) {
             Log.i(TAG, "Configured PCM decoder ($codec @ $inputSampleRate Hz)")
+            configured = true
             return true
         }
 
         if (codec == RaopAudioCodec.ALAC) {
             val ok = NativeSharedMemory.nativeConfigureAlac(samplesPerFrame, inputSampleRate)
             Log.i(TAG, "Configured ALAC decoder ($inputSampleRate Hz, spf=$samplesPerFrame, ok=$ok)")
+            configured = ok
             return ok
         }
 
@@ -192,21 +195,26 @@ class RaopAudioDecoder {
             }
         }
 
-        mediaCodec = runCatching {
-            MediaCodec.createDecoderByType(MediaFormat.MIMETYPE_AUDIO_AAC).apply {
-                configure(format, null, null, 0)
-                start()
-            }
-        }.onFailure {
-            Log.e(TAG, "Failed to configure AAC decoder ($codec @ $inputSampleRate Hz)", it)
-        }.getOrNull()
+        var candidate: MediaCodec? = null
+        mediaCodec = try {
+            val created = MediaCodec.createDecoderByType(MediaFormat.MIMETYPE_AUDIO_AAC)
+            candidate = created
+            created.configure(format, null, null, 0)
+            created.start()
+            created
+        } catch (error: Exception) {
+            Log.e(TAG, "Failed to configure AAC decoder ($codec @ $inputSampleRate Hz)", error)
+            candidate?.let { runCatching { it.release() } }
+            null
+        }
 
         Log.i(
             TAG,
             "Configured AAC decoder ($codec @ $inputSampleRate Hz, spf=$samplesPerFrame, " +
                 "csd0Len=${effectiveCsd0?.size ?: 0}, ok=${mediaCodec != null})"
         )
-        return mediaCodec != null
+        configured = mediaCodec != null
+        return configured
     }
 
     private val aacTimestamps = LinkedHashMap<Long, Long>()
@@ -218,7 +226,7 @@ class RaopAudioDecoder {
     fun decodeAndPublish(
         payload: ByteArray, offset: Int, length: Int, generationId: Int, senderTimeUs: Long
     ) {
-        if (length <= 0) return
+        if (!configured || length <= 0 || offset < 0 || offset > payload.size || length > payload.size - offset) return
 
         when (codecType) {
             RaopAudioCodec.PCM_L16_48K, RaopAudioCodec.PCM_L16_44K1 -> {
@@ -239,17 +247,28 @@ class RaopAudioDecoder {
                     length,
                     srcSamples
                 )
-                if (frameCount > 0) {
+                if (frameCount in 1..MAX_PCM_FRAMES) {
                     publishResampled(frameCount, generationId, senderTimeUs)
                 } else {
+                    // JNI must not be allowed to advance beyond the preallocated PCM buffers.
                     decodeFailures++
                 }
             }
             RaopAudioCodec.AAC_LC, RaopAudioCodec.AAC_ELD -> {
                 val decoder = mediaCodec ?: return
                 if (aacGeneration != generationId) {
+                    // Clear pending output from the previous generation before accepting new audio.
+                    if (aacGeneration != null) {
+                        val flushed = runCatching { decoder.flush() }.isSuccess
+                        if (!flushed) {
+                            decodeFailures++
+                            release()
+                            return
+                        }
+                    }
                     aacGeneration = generationId
                     aacTimestamps.clear()
+                    aacNextPtsUs = 0L
                 }
                 val inIdx = runCatching { decoder.dequeueInputBuffer(DEQUEUE_TIMEOUT_US) }
                     .getOrDefault(-1)
@@ -275,16 +294,27 @@ class RaopAudioDecoder {
                         .getOrDefault(MediaCodec.INFO_TRY_AGAIN_LATER)
                     if (outIdx < 0) break
                     val outBuf = decoder.getOutputBuffer(outIdx)
-                    if (outBuf != null && info.size >= 4) {
-                        outBuf.position(info.offset)
-                        outBuf.limit(info.offset + info.size)
-                        val frameCount = (info.size / 4).coerceAtMost(MAX_PCM_FRAMES)
-                        outBuf.order(ByteOrder.LITTLE_ENDIAN).asShortBuffer()
-                            .get(srcSamples, 0, frameCount * 2)
-                        val outputTimeUs = aacTimestamps.remove(info.presentationTimeUs)
-                        publishResampled(frameCount, generationId, outputTimeUs ?: 0L)
+                    try {
+                        if (outBuf != null && info.size >= 4) {
+                            val validRange = info.offset >= 0 &&
+                                info.offset <= outBuf.capacity() &&
+                                info.size <= outBuf.capacity() - info.offset
+                            if (validRange) {
+                                val frameCount = (info.size / 4).coerceAtMost(MAX_PCM_FRAMES)
+                                outBuf.clear()
+                                outBuf.position(info.offset)
+                                outBuf.limit(info.offset + frameCount * 4)
+                                outBuf.order(ByteOrder.LITTLE_ENDIAN).asShortBuffer()
+                                    .get(srcSamples, 0, frameCount * 2)
+                                val outputTimeUs = aacTimestamps.remove(info.presentationTimeUs)
+                                publishResampled(frameCount, generationId, outputTimeUs ?: 0L)
+                            } else {
+                                decodeFailures++
+                            }
+                        }
+                    } finally {
+                        decoder.releaseOutputBuffer(outIdx, false)
                     }
-                    decoder.releaseOutputBuffer(outIdx, false)
                 }
             }
         }
@@ -313,6 +343,8 @@ class RaopAudioDecoder {
 
     @Synchronized
     fun release() {
+        configured = false
+        aacNextPtsUs = 0L
         aacTimestamps.clear()
         aacGeneration = null
         resampler.reset()
