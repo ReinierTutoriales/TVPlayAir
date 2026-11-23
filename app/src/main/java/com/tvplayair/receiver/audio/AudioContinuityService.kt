@@ -43,6 +43,7 @@ class AudioContinuityService : Service() {
         override fun onAudioStreamStopped() {
             audioGeneration = null
             consumer?.stop()
+            if (ownsHandoff) stopSelf()
         }
 
         override fun onSharedMemoryDetached() {
