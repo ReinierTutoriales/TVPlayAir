@@ -1,0 +1,78 @@
+#!/usr/bin/env python3
+"""Repository entry-point and resource hygiene checks; conservative, no auto-deletion."""
+from pathlib import Path
+import re
+import sys
+
+ROOT = Path(__file__).resolve().parents[1]
+MAIN = ROOT / "app/src/main"
+JAVA = MAIN / "java"
+CPP = MAIN / "cpp"
+RES = MAIN / "res"
+errors = []
+
+def check(condition, message):
+    if not condition:
+        errors.append(message)
+
+kotlin = {p: p.read_text(encoding="utf-8") for p in JAVA.rglob("*.kt")}
+xml = {p: p.read_text(encoding="utf-8") for p in RES.rglob("*.xml")}
+manifest = (MAIN / "AndroidManifest.xml").read_text(encoding="utf-8")
+cmake = (CPP / "CMakeLists.txt").read_text(encoding="utf-8")
+source_text = "\n".join(kotlin.values())
+
+# Detect exact duplicate imports, declarations and build entries without
+# guessing whether reflection, JNI or IPC consumers exist.
+for path, body in kotlin.items():
+    imports = re.findall(r"^import\\s+([^\\n]+)$", body, re.M)
+    for name in sorted(set(imports)):
+        check(imports.count(name) == 1,
+              f"Duplicate Kotlin import: {path.relative_to(ROOT)}: {name}")
+
+for path, body in xml.items():
+    if path.parent.name != "values":
+        continue
+    names = re.findall(r'<(?:string|color|dimen|style|bool|integer|array|string-array|plurals)\\s+name="([^"]+)"', body)
+    for name in sorted(set(names)):
+        check(names.count(name) == 1,
+              f"Duplicate Android resource declaration: {path.relative_to(ROOT)}: {name}")
+
+# CMake lists source paths as literal relative filenames. Count only
+# translation-unit references; header inclusion is not compilation.
+native_units = [p for p in CPP.rglob("*") if p.suffix in (".cpp", ".c")]
+for path in native_units:
+    relative = path.relative_to(CPP).as_posix()
+    occurrences = len(re.findall(r"(?<![A-Za-z0-9_./-])" + re.escape(relative) + r"(?![A-Za-z0-9_./-])", cmake))
+    check(occurrences == 1,
+          f"Native source must appear exactly once in CMake ({occurrences}): {relative}")
+
+# Only check resources referenced by generated R names; framework/manifest
+# resources are accounted for separately.
+for p in (RES / "drawable").glob("*.xml"):
+    check(bool(re.search(r"\bR\.drawable\." + re.escape(p.stem) + r"\b", source_text))
+          or ("@drawable/" + p.stem) in manifest
+          or any(("@drawable/" + p.stem) in body for body in xml.values()),
+          f"Orphan drawable: {p.relative_to(ROOT)}")
+
+strings = xml.get(RES / "values/strings.xml", "")
+for name in re.findall(r'<string\s+name="([^"]+)"', strings):
+    check(bool(re.search(r"\bR\.string\." + re.escape(name) + r"\b", source_text))
+          or ("@string/" + name) in manifest
+          or any(("@string/" + name) in body for body in xml.values()),
+          f"Orphan string: {name}")
+
+# Verify declared Android components actually exist; avoid mistaking implicit
+# JNI entry points or native code for unused implementation.
+package = "com.tvplayair.receiver"
+for name in re.findall(r'<(?:activity|activity-alias|service|receiver)[^>]*?android:name="([^"]+)"', manifest, re.S):
+    if name.startswith(".") and name != ".ProjectionHome":
+        target = JAVA / (package.replace(".", "/") + name.replace(".", "/") + ".kt")
+        check(target.exists(), f"Missing manifest component: {name}")
+
+
+if errors:
+    for error in errors:
+        print("ERROR:", error, file=sys.stderr)
+    sys.exit(1)
+print(f"Resource and entry-point hygiene OK: {len(kotlin)} Kotlin files, "
+      f"{len(xml)} XML resources")

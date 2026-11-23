@@ -7,9 +7,19 @@ import androidx.compose.ui.graphics.ImageBitmap
 import androidx.compose.ui.graphics.asImageBitmap
 import kotlin.math.min
 
-internal data class ArtworkKey(val size: Int, val contentHash: Int)
+internal data class ArtworkKey(val size: Int, val sha256: String)
 
-internal fun ByteArray.artworkKey(): ArtworkKey = ArtworkKey(size, contentHashCode())
+internal fun ByteArray.artworkKey(): ArtworkKey {
+    val digest = java.security.MessageDigest.getInstance("SHA-256").digest(this)
+    val hex = "0123456789abcdef"
+    return ArtworkKey(size, buildString(digest.size * 2) {
+        for (byte in digest) {
+            val value = byte.toInt() and 0xff
+            append(hex[value ushr 4])
+            append(hex[value and 0x0f])
+        }
+    })
+}
 
 internal data class UniformArtwork(val image: ImageBitmap, val tint: Color)
 
