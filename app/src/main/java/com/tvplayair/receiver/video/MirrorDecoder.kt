@@ -102,7 +102,10 @@ class MirrorDecoder(
 
         recoveryCallbackPending = false
         frameGate.resetGate()
-        val watchdog = MirrorOutputWatchdog(SystemClock::elapsedRealtime)
+        val watchdog = MirrorOutputWatchdog(
+            allowLegacyOutputProgress = Build.VERSION.SDK_INT < Build.VERSION_CODES.UPSIDE_DOWN_CAKE,
+            elapsedMs = SystemClock::elapsedRealtime
+        )
         val initialCsd = frameGate.getCachedCodecConfig()
         if (initialCsd != null) {
             val createdCodec = createAndConfigureCodec(surface, config, initialCsd, watchdog) ?: return false
@@ -302,7 +305,7 @@ class MirrorDecoder(
             }
             activeCodec?.let { current ->
                 try {
-                    drainOutputBuffers(current, bufferInfo, frameClock)
+                    drainOutputBuffers(current, bufferInfo, frameClock, outputWatchdog)
                     if (running.get() && outputWatchdog.renderStalled()) recover(current, "render_stall")
                 } catch (error: IllegalStateException) {
                     recover(current, "output", error)
@@ -386,7 +389,7 @@ class MirrorDecoder(
                 while (running.get() && attempts < 25) {
                     inputIndex = currentCodec.dequeueInputBuffer(DEQUEUE_TIMEOUT_US)
                     if (inputIndex >= 0) break
-                    drainOutputBuffers(currentCodec, bufferInfo, frameClock)
+                    drainOutputBuffers(currentCodec, bufferInfo, frameClock, outputWatchdog)
                     attempts++
                 }
                 if (inputIndex < 0) {
@@ -430,7 +433,8 @@ class MirrorDecoder(
     private fun drainOutputBuffers(
         activeCodec: MediaCodec,
         bufferInfo: MediaCodec.BufferInfo,
-        frameClock: MirrorFrameClock
+        frameClock: MirrorFrameClock,
+        outputWatchdog: MirrorOutputWatchdog
     ) {
         while (running.get()) {
             val outIndex = activeCodec.dequeueOutputBuffer(bufferInfo, 0L)
@@ -442,6 +446,7 @@ class MirrorDecoder(
                 } else {
                     activeCodec.releaseOutputBuffer(outIndex, renderTime)
                 }
+                if (videoFrame) outputWatchdog.onOutputReleased()
             } else if (outIndex == MediaCodec.INFO_OUTPUT_FORMAT_CHANGED) {
                 val outFmt = activeCodec.outputFormat
                 val w = if (outFmt.containsKey("crop-right") && outFmt.containsKey("crop-left")) {
@@ -475,7 +480,10 @@ class MirrorDecoder(
 }
 
 /** Shared by the decoder worker and the active codec's render callback. */
-internal class MirrorOutputWatchdog(private val elapsedMs: () -> Long) {
+internal class MirrorOutputWatchdog(
+    private val allowLegacyOutputProgress: Boolean = false,
+    private val elapsedMs: () -> Long
+) {
     private companion object {
         const val PENDING_FRAME_THRESHOLD = 4
         const val STALL_TIMEOUT_MS = 2_000L
@@ -487,6 +495,7 @@ internal class MirrorOutputWatchdog(private val elapsedMs: () -> Long) {
     private var firstFrameDeadlineMs: Long? = null
     private var recoveryStartedMs: Long? = null
     private var hasRendered = false
+    private var lastOutputMs: Long? = null
 
     @Synchronized
     fun awaitFirstFrame() {
@@ -497,6 +506,11 @@ internal class MirrorOutputWatchdog(private val elapsedMs: () -> Long) {
     fun onFrameQueued() {
         if (queuedFrames == 0) waitingSinceMs = elapsedMs()
         if (queuedFrames < PENDING_FRAME_THRESHOLD) queuedFrames++
+    }
+
+    @Synchronized
+    fun onOutputReleased() {
+        lastOutputMs = elapsedMs()
     }
 
     @Synchronized
@@ -512,6 +526,7 @@ internal class MirrorOutputWatchdog(private val elapsedMs: () -> Long) {
     fun beginRecovery() {
         if (recoveryStartedMs == null) recoveryStartedMs = elapsedMs()
         firstFrameDeadlineMs = null
+        lastOutputMs = null
         queuedFrames = 0
     }
 
@@ -525,8 +540,11 @@ internal class MirrorOutputWatchdog(private val elapsedMs: () -> Long) {
     @Synchronized
     fun renderStalled(): Boolean {
         val threshold = if (hasRendered) PENDING_FRAME_THRESHOLD else 1
+        val started = if (allowLegacyOutputProgress && hasRendered) {
+            maxOf(waitingSinceMs, lastOutputMs ?: waitingSinceMs)
+        } else waitingSinceMs
         return recoveryStartedMs == null && queuedFrames >= threshold &&
-            elapsedMs() - waitingSinceMs >= STALL_TIMEOUT_MS
+            elapsedMs() - started >= STALL_TIMEOUT_MS
     }
 }
 

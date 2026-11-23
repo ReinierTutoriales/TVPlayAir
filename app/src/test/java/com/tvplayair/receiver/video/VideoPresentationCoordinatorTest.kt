@@ -9,6 +9,16 @@ import org.junit.Test
 class VideoPresentationCoordinatorTest {
 
     @Test
+    fun timelineUsesTheAvailableWindowAndRespectsItsBoundaries() {
+        val video = DirectPlaybackTelemetry(600.0, 598.0, 1f, true, false, canSeek = true)
+        assertEquals(600.0, timelineSeekStep(video, 1))
+        assertEquals(592.0, timelineSeekStep(video, -1))
+        assertEquals(0.0, timelineSeekStep(video.copy(positionSec = 2.0), -1))
+        assertNull(timelineSeekStep(video.copy(canSeek = false), 1))
+        assertNull(timelineSeekStep(video.copy(durationSec = Double.NaN), 1))
+    }
+
+    @Test
     fun retainedPlaybackCallbacksAreBoundToTheirOriginalHandoff() {
         val original = Any()
         val replacement = Any()

@@ -49,6 +49,13 @@ interface DirectVideoEngine {
     fun currentTelemetry(): DirectPlaybackTelemetry
 }
 
+internal fun timelineSeekStep(telemetry: DirectPlaybackTelemetry, direction: Int): Double? {
+    val duration = telemetry.durationSec
+    val position = telemetry.positionSec
+    if (!telemetry.canSeek || !duration.isFinite() || duration <= 0.0 || !position.isFinite()) return null
+    return (position + direction * duration / 100.0).coerceIn(0.0, duration)
+}
+
 internal fun validDirectSeekPosition(positionSec: Double): Boolean =
     positionSec.isFinite() && positionSec >= 0.0
 

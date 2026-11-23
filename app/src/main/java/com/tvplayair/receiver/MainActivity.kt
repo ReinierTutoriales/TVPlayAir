@@ -150,7 +150,7 @@ class MainActivity : ComponentActivity(), SurfaceLayerController {
                         onAdjustAudioOffset = ::adjustAudioOffset,
                         onAudioCommand = { command -> sendAudioCommand(command, audioGeneration) },
                         onVideoToggle = { toggleVideoFromControls(directPlaybackId) },
-                        onSeekBy = { delta -> seekVideoBy(delta) },
+                        onSeekTo = ::seekVideoTo,
                         onPlaybackInteraction = ::refreshPlaybackControlsTimeout,
                         onDismiss = { setOverlayVisible(false) }
                     )
@@ -476,8 +476,7 @@ class MainActivity : ComponentActivity(), SurfaceLayerController {
             }
             KeyEvent.KEYCODE_MEDIA_FAST_FORWARD -> {
                 if (inDirectMode) {
-                    seekVideoBy(10.0)
-                    if (overlayState.showingDirectControls) refreshPlaybackControlsTimeout()
+                    if (presentationCoordinator.state == PresentationState.DIRECT_ACTIVE) showVideoControls()
                 } else {
                     sendAudioCommand(DacpCommand.BEGIN_FF, overlayState.audioGeneration)
                 }
@@ -485,8 +484,7 @@ class MainActivity : ComponentActivity(), SurfaceLayerController {
             }
             KeyEvent.KEYCODE_MEDIA_REWIND -> {
                 if (inDirectMode) {
-                    seekVideoBy(-10.0)
-                    if (overlayState.showingDirectControls) refreshPlaybackControlsTimeout()
+                    if (presentationCoordinator.state == PresentationState.DIRECT_ACTIVE) showVideoControls()
                 } else {
                     sendAudioCommand(DacpCommand.BEGIN_REW, overlayState.audioGeneration)
                 }
@@ -513,9 +511,8 @@ class MainActivity : ComponentActivity(), SurfaceLayerController {
                 }
                 return true
             }
-            keyCode == KeyEvent.KEYCODE_DPAD_LEFT -> if (event?.repeatCount == 0) seekVideoBy(-10.0)
-            keyCode == KeyEvent.KEYCODE_DPAD_RIGHT -> if (event?.repeatCount == 0) seekVideoBy(10.0)
-            keyCode == KeyEvent.KEYCODE_DPAD_UP || keyCode == KeyEvent.KEYCODE_DPAD_DOWN -> Unit
+            keyCode == KeyEvent.KEYCODE_DPAD_LEFT || keyCode == KeyEvent.KEYCODE_DPAD_RIGHT ||
+                keyCode == KeyEvent.KEYCODE_DPAD_UP || keyCode == KeyEvent.KEYCODE_DPAD_DOWN -> Unit
             else -> return false
         }
         showVideoControls()
@@ -548,17 +545,12 @@ class MainActivity : ComponentActivity(), SurfaceLayerController {
         refreshPlaybackControlsTimeout()
     }
 
-    private fun seekVideoBy(deltaSec: Double) {
+    private fun seekVideoTo(positionSec: Double) {
         val telemetry = presentationCoordinator.directTelemetry()
-        if (!telemetry.canSeek || !deltaSec.isFinite() || !telemetry.positionSec.isFinite()) return
-        val target = (telemetry.positionSec + deltaSec).coerceAtLeast(0.0)
-        if (!target.isFinite()) return
-        val bounded = if (telemetry.durationSec.isFinite() && telemetry.durationSec > 0.0) {
-            target.coerceAtMost(telemetry.durationSec)
-        } else {
-            target
-        }
-        presentationCoordinator.seekDirect(bounded)
+        if (!telemetry.canSeek || !positionSec.isFinite() ||
+            !telemetry.durationSec.isFinite() || telemetry.durationSec <= 0.0
+        ) return
+        presentationCoordinator.seekDirect(positionSec.coerceIn(0.0, telemetry.durationSec))
     }
 
     private fun dismissPlaybackControls() {

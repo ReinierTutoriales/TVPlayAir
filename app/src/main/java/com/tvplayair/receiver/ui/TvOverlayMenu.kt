@@ -1,6 +1,7 @@
 package com.tvplayair.receiver.ui
 
 import androidx.compose.foundation.background
+import androidx.compose.foundation.focusable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -11,23 +12,35 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.focus.FocusRequester
 import androidx.compose.ui.focus.focusRequester
+import androidx.compose.ui.focus.onFocusChanged
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.input.key.Key
 import androidx.compose.ui.input.key.KeyEventType
+import androidx.compose.ui.input.key.key
 import androidx.compose.ui.input.key.onPreviewKeyEvent
 import androidx.compose.ui.input.key.type
 import androidx.compose.ui.res.stringResource
+import androidx.compose.ui.semantics.ProgressBarRangeInfo
+import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.progressBarRangeInfo
+import androidx.compose.ui.semantics.semantics
+import androidx.compose.ui.semantics.setProgress
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
@@ -38,6 +51,7 @@ import androidx.tv.material3.Text
 import com.tvplayair.receiver.R
 import com.tvplayair.receiver.control.DacpCommand
 import com.tvplayair.receiver.video.DirectPlaybackTelemetry
+import com.tvplayair.receiver.video.timelineSeekStep
 import java.util.Locale
 
 private val ControlSurface = Color(0xFF151515)
@@ -56,7 +70,7 @@ fun TvOverlayMenu(
     onAdjustAudioOffset: (Int) -> Unit,
     onAudioCommand: (DacpCommand) -> Unit,
     onVideoToggle: () -> Unit,
-    onSeekBy: (Double) -> Unit,
+    onSeekTo: (Double) -> Unit,
     onPlaybackInteraction: () -> Unit,
     onDismiss: () -> Unit
 ) {
@@ -75,7 +89,7 @@ fun TvOverlayMenu(
                     artwork = direct?.artwork ?: remote?.artwork
                 ) {
                     if (direct != null && direct.durationSec.isFinite() && direct.durationSec > 0.0) {
-                        PlaybackProgress(direct)
+                        PlaybackProgress(direct, onSeekTo)
                         Text(
                             "${videoTime(direct.positionSec)} / ${videoTime(direct.durationSec)}",
                             color = SecondaryText,
@@ -85,7 +99,6 @@ fun TvOverlayMenu(
                     TvPlaybackControls(
                         telemetry = direct,
                         onToggle = onVideoToggle,
-                        onSeekBy = onSeekBy,
                         // Direct playback must never expose DACP controls from a previous audio session.
                         onAudioCommand = if (direct == null) remoteCommand else null
                     )
@@ -107,7 +120,7 @@ fun TvOverlayMenu(
                 }
             }
             state.showingVideoControls -> {
-                state.videoControls?.let { TvVideoControls(it, onVideoToggle, onSeekBy, onPlaybackInteraction) }
+                state.videoControls?.let { TvVideoControls(it, onVideoToggle, onSeekTo, onPlaybackInteraction) }
             }
             state.showStandby && !state.projectionHome -> TvStandbyScreen(state, onOpenMenu)
         }
@@ -172,7 +185,7 @@ fun TvOverlayMenu(
 private fun TvVideoControls(
     telemetry: DirectPlaybackTelemetry,
     onToggle: () -> Unit,
-    onSeekBy: (Double) -> Unit,
+    onSeekTo: (Double) -> Unit,
     onInteraction: () -> Unit
 ) {
     val hasDuration = telemetry.durationSec.isFinite() && telemetry.durationSec > 0.0
@@ -195,14 +208,24 @@ private fun TvVideoControls(
                 horizontalArrangement = Arrangement.spacedBy(24.dp),
                 verticalAlignment = Alignment.Bottom
             ) {
-                Text(
+                val cover = rememberUniformArtwork(telemetry.artwork, 60.dp)
+                if (cover != null) AlbumCover(cover.image, Modifier.size(60.dp))
+                Column(Modifier.weight(1f)) {
+                    Text(
                     text = telemetry.title ?: stringResource(R.string.video_playback),
-                    modifier = Modifier.weight(1f),
                     color = PrimaryText,
                     style = MaterialTheme.typography.headlineMedium,
                     maxLines = 2,
                     overflow = TextOverflow.Ellipsis
                 )
+                    listOfNotNull(telemetry.artist, telemetry.album)
+                        .distinct().filter { it != telemetry.title }
+                        .takeIf { it.isNotEmpty() }?.let { details ->
+                            Text(details.joinToString(" · "), color = SecondaryText,
+                                style = MaterialTheme.typography.bodyMedium, maxLines = 1,
+                                overflow = TextOverflow.Ellipsis)
+                        }
+                }
                 if (hasDuration) {
                     Text(
                         "${videoTime(telemetry.positionSec)} / ${videoTime(telemetry.durationSec)}",
@@ -211,8 +234,8 @@ private fun TvVideoControls(
                     )
                 }
             }
-            if (hasDuration) PlaybackProgress(telemetry)
-            TvPlaybackControls(telemetry, onToggle, Modifier.align(Alignment.CenterHorizontally), onSeekBy = onSeekBy)
+            if (hasDuration) PlaybackProgress(telemetry, onSeekTo)
+            TvPlaybackControls(telemetry, onToggle, Modifier.align(Alignment.CenterHorizontally))
             if (telemetry.isBuffering) {
                 Text(
                     stringResource(R.string.video_loading),
@@ -226,12 +249,46 @@ private fun TvVideoControls(
 }
 
 @Composable
-private fun PlaybackProgress(telemetry: DirectPlaybackTelemetry) {
+private fun PlaybackProgress(telemetry: DirectPlaybackTelemetry, onSeekTo: (Double) -> Unit) {
     val progress = (telemetry.positionSec / telemetry.durationSec).toFloat()
         .takeIf { it.isFinite() }?.coerceIn(0f, 1f) ?: 0f
+    val label = stringResource(R.string.video_timeline)
+    var focused by remember { mutableStateOf(false) }
+    val interaction = if (telemetry.canSeek) {
+        Modifier.onPreviewKeyEvent { event ->
+            val direction = when (event.key) {
+                Key.DirectionLeft -> -1
+                Key.DirectionRight -> 1
+                else -> return@onPreviewKeyEvent false
+            }
+            if (event.type == KeyEventType.KeyDown) {
+                timelineSeekStep(telemetry, direction)?.let(onSeekTo)
+            }
+            true
+        }.onFocusChanged { focused = it.isFocused }.focusable()
+    } else Modifier
     val trackShape = RoundedCornerShape(50)
-    Box(Modifier.fillMaxWidth().height(4.dp).background(Color.White.copy(alpha = 0.24f), trackShape)) {
-        Box(Modifier.fillMaxWidth(progress).height(4.dp).background(FocusColor, trackShape))
+    Box(
+        Modifier.fillMaxWidth().height(24.dp).then(interaction).semantics {
+            contentDescription = label
+            progressBarRangeInfo = ProgressBarRangeInfo(progress, 0f..1f)
+            if (telemetry.canSeek) {
+                setProgress { fraction ->
+                    if (!fraction.isFinite()) false else {
+                        onSeekTo(fraction.coerceIn(0f, 1f) * telemetry.durationSec)
+                        true
+                    }
+                }
+            }
+        },
+        contentAlignment = Alignment.CenterStart
+    ) {
+        val trackHeight = if (focused) 8.dp else 4.dp
+        Box(Modifier.fillMaxWidth().height(trackHeight).background(Color.White.copy(alpha = 0.24f), trackShape)) {
+            Box(Modifier.fillMaxWidth(progress).height(trackHeight).background(
+                if (focused) Color.White else FocusColor, trackShape
+            ))
+        }
     }
 }
 
@@ -240,8 +297,7 @@ private fun TvPlaybackControls(
     telemetry: DirectPlaybackTelemetry?,
     onToggle: () -> Unit,
     modifier: Modifier = Modifier,
-    onAudioCommand: ((DacpCommand) -> Unit)? = null,
-    onSeekBy: ((Double) -> Unit)? = null
+    onAudioCommand: ((DacpCommand) -> Unit)? = null
 ) {
     val playFocus = remember { FocusRequester() }
     val canToggle = telemetry != null || onAudioCommand != null
@@ -255,12 +311,6 @@ private fun TvPlaybackControls(
                 label = stringResource(R.string.audio_previous),
                 onClick = { onAudioCommand(DacpCommand.PREVIOUS) }
             ) { MediaControlGlyph(MediaGlyph.Previous) }
-        }
-
-        if (telemetry?.canSeek == true && onSeekBy != null) {
-            TvMediaControl(label = stringResource(R.string.video_seek_back_10), onClick = { onSeekBy(-10.0) }) {
-                Text("−10", style = MaterialTheme.typography.labelLarge)
-            }
         }
 
         val (label, glyph) = when (telemetry?.playWhenReady) {
@@ -278,12 +328,6 @@ private fun TvPlaybackControls(
             primary = true,
             enabled = canToggle
         ) { MediaControlGlyph(glyph) }
-
-        if (telemetry?.canSeek == true && onSeekBy != null) {
-            TvMediaControl(label = stringResource(R.string.video_seek_forward_10), onClick = { onSeekBy(10.0) }) {
-                Text("+10", style = MaterialTheme.typography.labelLarge)
-            }
-        }
 
         if (onAudioCommand != null) {
             TvMediaControl(
