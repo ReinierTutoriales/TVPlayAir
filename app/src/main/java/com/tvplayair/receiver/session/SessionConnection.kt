@@ -158,6 +158,10 @@ class SessionConnection(
                 val callback = callbackFor(epoch)
                 activeCallback = callback
                 service?.registerCallback(callback)
+                service?.setAutoOpenVisual(
+                    appContext.getSharedPreferences("receiver_presentation", Context.MODE_PRIVATE)
+                        .getBoolean("auto_open_visual", false)
+                )
                 service?.setProjectionVisible(projectionVisible)
                 service?.startServer()
                 Log.i(PLAYBACK_DIAGNOSTICS_TAG, "route=ipc epoch=$epoch event=bound")
