@@ -61,6 +61,8 @@ class MirrorDecoder(
             frameGate.matchesCodecConfig(codecConfig)
         ) return false
         stopAndRelease()
+        // The previous worker must retire before its ring generation and codec config change.
+        if (workerThread?.isAlive == true) return false
         config = newConfig
         generationId.set(generation)
         frameGate.clearAll()
@@ -99,6 +101,7 @@ class MirrorDecoder(
                 decodeLoop()
             } finally {
                 // The worker owns MediaCodec until its last dequeue/queue has returned.
+                running.set(false)
                 codec?.let { releaseCodec(it) }
             }
         }, "TVPlayAir-MirrorDecoder").apply { start() }
