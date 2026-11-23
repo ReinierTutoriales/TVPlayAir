@@ -541,8 +541,15 @@ class MainActivity : ComponentActivity(), SurfaceLayerController {
 
     private fun seekVideoBy(deltaSec: Double) {
         val telemetry = presentationCoordinator.directTelemetry()
-        if (!telemetry.canSeek) return
-        presentationCoordinator.seekDirect((telemetry.positionSec + deltaSec).coerceAtLeast(0.0))
+        if (!telemetry.canSeek || !deltaSec.isFinite() || !telemetry.positionSec.isFinite()) return
+        val target = (telemetry.positionSec + deltaSec).coerceAtLeast(0.0)
+        if (!target.isFinite()) return
+        val bounded = if (telemetry.durationSec.isFinite() && telemetry.durationSec > 0.0) {
+            target.coerceAtMost(telemetry.durationSec)
+        } else {
+            target
+        }
+        presentationCoordinator.seekDirect(bounded)
     }
 
     private fun dismissPlaybackControls() {
