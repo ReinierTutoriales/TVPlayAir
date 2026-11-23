@@ -189,6 +189,9 @@ class OboeAudioConsumer(context: Context) : AudioHandoffController {
 
     private external fun nativeStart(generationId: Int, discardInterruptedAudio: Boolean): Boolean
     private external fun nativeStop()
+    internal fun senderClockOffsetNs(): Long = nativeSenderClockOffsetNs()
+
+    private external fun nativeSenderClockOffsetNs(): Long
     private external fun nativeSetGeneration(generationId: Int)
     private external fun nativeSetOffsetMs(offsetMs: Int)
     private external fun nativeGetOffsetMs(): Int

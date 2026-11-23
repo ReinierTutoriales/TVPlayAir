@@ -24,6 +24,16 @@ constexpr uint32_t kMaxDrainAttemptsPerCallback = 64;
 // reset() must only be called while the audio stream is stopped.
 class AudioPcmPipeline final {
 public:
+    struct RenderAnchor {
+        int64_t senderTimeUs = 0;
+        int32_t outputFrame = 0;
+        uint32_t generation = 0;
+    };
+
+    uint32_t generationId() const {
+        return generationId_.load(std::memory_order_relaxed);
+    }
+
     static constexpr int32_t clampOffsetMs(int32_t offsetMs) {
         return offsetMs < kMinAudioOffsetMs
             ? kMinAudioOffsetMs
@@ -60,12 +70,13 @@ public:
         return underrunCount_.load(std::memory_order_relaxed);
     }
 
-    void render(SharedRingBuffer& ring, int16_t* out, int32_t numFrames) {
-        if (!out || numFrames <= 0) return;
+    RenderAnchor render(SharedRingBuffer& ring, int16_t* out, int32_t numFrames) {
+        if (!out || numFrames <= 0) return {};
+        RenderAnchor timing;
 
         if (muted_.load(std::memory_order_relaxed)) {
             std::memset(out, 0, static_cast<size_t>(numFrames) * kAudioBytesPerFrame);
-            return;
+            return {};
         }
 
         const uint32_t expectedGen = generationId_.load(std::memory_order_relaxed);
@@ -117,6 +128,13 @@ public:
                 } else {
                     std::memcpy(dst, src, sampleCount * sizeof(int16_t));
                 }
+                if (packetSenderTimeUs_ > 0) {
+                    timing = {packetSenderTimeUs_ +
+                        static_cast<int64_t>(packetFrameOffset_) * 1000000 / kAudioSampleRate,
+                        outFrame, expectedGen};
+                } else {
+                    timing = {};
+                }
                 packetFrameOffset_ += copyFrames;
                 outFrame += static_cast<int32_t>(copyFrames);
             } else if (!refillPacket(ring, expectedGen)) {
@@ -131,7 +149,9 @@ public:
 
         if (hadUnderrun) {
             underrunCount_.fetch_add(1, std::memory_order_relaxed);
+            return {};
         }
+        return timing;
     }
 
 private:
@@ -139,7 +159,7 @@ private:
         for (uint32_t attempt = 0; attempt < kMaxDrainAttemptsPerCallback; ++attempt) {
             uint32_t outSize = 0;
             const RingResult res = ring.readPacket(
-                packetBuf_.data(), kMaxAudioPacketBytes, &outSize, expectedGen);
+                packetBuf_.data(), kMaxAudioPacketBytes, &outSize, expectedGen, &packetSenderTimeUs_);
             if (res == RingResult::Ok) {
                 const uint32_t frames = static_cast<uint32_t>(outSize / kAudioBytesPerFrame);
                 if (frames > 0) {
@@ -162,6 +182,7 @@ private:
     uint32_t packetFrameOffset_ = 0;
     uint32_t packetFrameCount_ = 0;
     uint32_t packetGenerationId_ = 0;
+    int64_t packetSenderTimeUs_ = 0;
     int32_t appliedOffsetFrames_ = 0;
 
     std::atomic<int32_t> targetOffsetMs_{0};

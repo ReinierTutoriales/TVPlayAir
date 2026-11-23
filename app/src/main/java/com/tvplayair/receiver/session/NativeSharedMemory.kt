@@ -30,7 +30,8 @@ object NativeSharedMemory {
     external fun nativeWriteAudioPcm(
         directBuffer: ByteBuffer,
         byteCount: Int,
-        generationId: Int
+        generationId: Int,
+        senderTimeUs: Long
     ): Int
     external fun nativeGetVideoDroppedPackets(): Long
     external fun nativeGetAudioDroppedPackets(): Long

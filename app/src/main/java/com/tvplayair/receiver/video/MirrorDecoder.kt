@@ -29,6 +29,7 @@ data class MirrorVideoConfig(
  */
 class MirrorDecoder(
     private val surfaceProvider: () -> Surface?,
+    private val audioClockOffsetNs: () -> Long,
     private val onVideoSizeChanged: ((Int, Int) -> Unit)? = null,
     private val onRecoveryTimeout: () -> Unit
 ) : MirrorVideoEngine {
@@ -189,6 +190,7 @@ class MirrorDecoder(
     private fun decodeLoop() {
         val bufferInfo = MediaCodec.BufferInfo()
         val outputWatchdog = MirrorOutputWatchdog(SystemClock::elapsedRealtime)
+        val frameClock = MirrorFrameClock(audioClockOffsetNs, System::nanoTime)
         val worker = Thread.currentThread()
         val generation = generationId.get()
         var activeCodec = codec
@@ -218,7 +220,7 @@ class MirrorDecoder(
             }
             activeCodec?.let { current ->
                 try {
-                    drainOutputBuffers(current, bufferInfo, outputWatchdog)
+                    drainOutputBuffers(current, bufferInfo, outputWatchdog, frameClock)
                     if (running.get() && outputWatchdog.takeRecovery()) recover(current, "output_stall")
                 } catch (error: IllegalStateException) {
                     recover(current, "output", error)
@@ -302,7 +304,7 @@ class MirrorDecoder(
                 while (running.get() && attempts < 25) {
                     inputIndex = currentCodec.dequeueInputBuffer(DEQUEUE_TIMEOUT_US)
                     if (inputIndex >= 0) break
-                    drainOutputBuffers(currentCodec, bufferInfo, outputWatchdog)
+                    drainOutputBuffers(currentCodec, bufferInfo, outputWatchdog, frameClock)
                     attempts++
                 }
                 if (inputIndex < 0) {
@@ -346,13 +348,20 @@ class MirrorDecoder(
     private fun drainOutputBuffers(
         activeCodec: MediaCodec,
         bufferInfo: MediaCodec.BufferInfo,
-        outputWatchdog: MirrorOutputWatchdog
+        outputWatchdog: MirrorOutputWatchdog,
+        frameClock: MirrorFrameClock
     ) {
         while (running.get()) {
             val outIndex = activeCodec.dequeueOutputBuffer(bufferInfo, 0L)
             if (outIndex >= 0) {
-                activeCodec.releaseOutputBuffer(outIndex, true)
-                if ((bufferInfo.flags and MediaCodec.BUFFER_FLAG_CODEC_CONFIG) == 0) {
+                val videoFrame = (bufferInfo.flags and MediaCodec.BUFFER_FLAG_CODEC_CONFIG) == 0
+                val renderTime = if (videoFrame) frameClock.renderTimeNs(bufferInfo.presentationTimeUs) else null
+                if (renderTime == null) {
+                    activeCodec.releaseOutputBuffer(outIndex, videoFrame)
+                } else {
+                    activeCodec.releaseOutputBuffer(outIndex, renderTime)
+                }
+                if (videoFrame) {
                     outputWatchdog.onOutputReleased()
                 }
             } else if (outIndex == MediaCodec.INFO_OUTPUT_FORMAT_CHANGED) {
@@ -428,5 +437,29 @@ internal class MirrorOutputWatchdog(private val elapsedMs: () -> Long) {
         ) return false
         beginRecovery()
         return true
+    }
+}
+
+
+/** Maps the sender's NTP video PTS to Android's monotonic presentation clock. */
+internal class MirrorFrameClock(
+    private val audioClockOffsetNs: () -> Long,
+    private val nowNs: () -> Long
+) {
+    private var lastPollNs: Long? = null
+    private var offsetNs = Long.MIN_VALUE
+
+    fun renderTimeNs(senderPtsUs: Long): Long? {
+        if (senderPtsUs <= 0 || senderPtsUs > Long.MAX_VALUE / 1000L) return null
+        val now = nowNs()
+        val lastPoll = lastPollNs
+        if (lastPoll == null || now - lastPoll >= 100_000_000L) {
+            offsetNs = audioClockOffsetNs()
+            lastPollNs = now
+        }
+        if (offsetNs == Long.MIN_VALUE) return null
+        val targetNs = senderPtsUs * 1000L + offsetNs
+        // Late frames and unrelated sender clocks should retain immediate playback.
+        return targetNs.takeIf { it > now && it - now <= 150_000_000L }
     }
 }

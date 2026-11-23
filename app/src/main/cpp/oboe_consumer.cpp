@@ -1,3 +1,4 @@
+#include <time.h>
 #include "oboe_consumer.hpp"
 
 #include <android/log.h>
@@ -160,6 +161,8 @@ bool OboeConsumer::openAndStartLocked() {
         newStream->getBufferCapacityInFrames(),
         newStream->getDeviceId());
 
+    submittedFrames_ = 0;
+    anchorSenderTimeUs_.store(0);
     const oboe::Result startResult = newStream->requestStart();
     if (startResult != oboe::Result::OK) {
         __android_log_print(
@@ -181,8 +184,36 @@ oboe::DataCallbackResult OboeConsumer::onAudioReady(
     oboe::AudioStream* /* audioStream */,
     void* audioData,
     int32_t numFrames) {
-    pipeline_.render(ring_, static_cast<int16_t*>(audioData), numFrames);
+    const auto timing = pipeline_.render(ring_, static_cast<int16_t*>(audioData), numFrames);
+    anchorSequence_.fetch_add(1);
+    anchorSenderTimeUs_.store(timing.senderTimeUs);
+    anchorFrame_.store(submittedFrames_ + timing.outputFrame);
+    anchorGeneration_.store(timing.generation);
+    anchorSequence_.fetch_add(1);
+    submittedFrames_ += numFrames;
     return oboe::DataCallbackResult::Continue;
+}
+
+int64_t OboeConsumer::senderClockOffsetNs() {
+    const std::unique_lock<std::mutex> lock(streamMutex_, std::try_to_lock);
+    if (!lock.owns_lock() || !stream_ || !isRunning() ||
+        stream_->getSampleRate() != kAudioSampleRate) return INT64_MIN;
+
+    const uint32_t before = anchorSequence_.load();
+    if ((before & 1U) != 0U) return INT64_MIN;
+    const int64_t senderTimeUs = anchorSenderTimeUs_.load();
+    const int64_t frame = anchorFrame_.load();
+    const uint32_t generation = anchorGeneration_.load();
+    if (before != anchorSequence_.load() || senderTimeUs <= 0 ||
+        generation != pipeline_.generationId()) return INT64_MIN;
+
+    int64_t hardwareFrame = 0;
+    int64_t hardwareNs = 0;
+    if (stream_->getTimestamp(CLOCK_MONOTONIC, &hardwareFrame, &hardwareNs) != oboe::Result::OK ||
+        hardwareFrame < 0 || hardwareNs <= 0 || generation != pipeline_.generationId()) return INT64_MIN;
+    const int64_t frames = frame - hardwareFrame;
+    if (frames < -kAudioSampleRate / 2 || frames > kAudioSampleRate / 2) return INT64_MIN;
+    return hardwareNs + frames * INT64_C(1000000000) / kAudioSampleRate - senderTimeUs * 1000;
 }
 
 void OboeConsumer::onErrorBeforeClose(oboe::AudioStream* /* oboeStream */, oboe::Result error) {
@@ -273,6 +304,11 @@ Java_com_tvplayair_receiver_audio_OboeAudioConsumer_nativeSetDucked(
 JNIEXPORT jboolean JNICALL
 Java_com_tvplayair_receiver_audio_OboeAudioConsumer_nativeIsRunning(JNIEnv*, jobject) {
     return tvplayair::oboeConsumer().isRunning() ? JNI_TRUE : JNI_FALSE;
+}
+
+JNIEXPORT jlong JNICALL
+Java_com_tvplayair_receiver_audio_OboeAudioConsumer_nativeSenderClockOffsetNs(JNIEnv*, jobject) {
+    return static_cast<jlong>(tvplayair::oboeConsumer().senderClockOffsetNs());
 }
 
 } // extern "C"

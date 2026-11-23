@@ -169,6 +169,7 @@ class MainActivity : ComponentActivity(), SurfaceLayerController {
         audioConsumer = OboeAudioConsumer(this)
         mirrorDecoder = MirrorDecoder(
             surfaceProvider = { mirrorSurfaceView.holder.surface },
+            audioClockOffsetNs = audioConsumer::senderClockOffsetNs,
             onVideoSizeChanged = ::updateMirrorSurfaceAspectRatio,
             onRecoveryTimeout = ::finishMirrorPresentation
         )

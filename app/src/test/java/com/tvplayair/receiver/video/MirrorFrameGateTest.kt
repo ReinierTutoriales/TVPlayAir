@@ -9,6 +9,21 @@ import org.junit.Test
 class MirrorFrameGateTest {
 
     @Test
+    fun frameClockSchedulesOnlyPlausibleFutureFramesAndExpiresUnavailableAudio() {
+        var now = 1_000_000_000L
+        var offset = -3_000_000_000L
+        val clock = MirrorFrameClock({ offset }, { now })
+        assertTrue(clock.renderTimeNs(4_020_000L) == 1_020_000_000L)
+        assertNull(clock.renderTimeNs(4_500_000L))
+        assertNull(clock.renderTimeNs(3_999_000L))
+        assertNull(clock.renderTimeNs(0L))
+
+        offset = Long.MIN_VALUE
+        now += 100_000_000L
+        assertNull(clock.renderTimeNs(4_120_000L))
+    }
+
+    @Test
     fun duplicateCodecConfigDoesNotReplaceTheCachedBytes() {
         val gate = MirrorFrameGate()
         val config = byteArrayOf(1, 2, 3)
