@@ -40,9 +40,17 @@ inline uint32_t classifyNalByte(uint8_t nalHeader0, bool isHevc) {
     return 0u;
 }
 
+// A packet containing picture slices is a media access unit, even when
+// its parameter sets are carried in-band ahead of the picture.
+inline bool isPictureNalByte(uint8_t header, bool isHevc) {
+    const uint8_t type = isHevc ? (header >> 1) & 0x3Fu : header & 0x1Fu;
+    return isHevc ? type <= 31u : type >= 1u && type <= 5u;
+}
+
 inline uint32_t classifyAnnexB(const uint8_t* data, size_t size, bool isHevc) {
     if (!data || size < 4) return 0u;
     uint32_t flags = 0u;
+    bool hasPicture = false;
     size_t i = 0;
     while (i + 3 < size) {
         size_t startCodeLen = 0;
@@ -57,13 +65,14 @@ inline uint32_t classifyAnnexB(const uint8_t* data, size_t size, bool isHevc) {
             const size_t nalIdx = i + startCodeLen;
             if (nalIdx < size) {
                 flags |= classifyNalByte(data[nalIdx], isHevc);
+                hasPicture |= isPictureNalByte(data[nalIdx], isHevc);
             }
             i = nalIdx + 1;
         } else {
             ++i;
         }
     }
-    return flags;
+    return hasPicture ? flags & ~kVideoFlagCodecConfig : flags;
 }
 
 // Converts 4-byte big-endian length-prefixed AVCC/HVCC NAL units (AirPlay Mirroring format)
@@ -81,6 +90,7 @@ inline size_t convertLengthPrefixedToAnnexB(
     size_t srcPos = 0;
     size_t dstPos = 0;
     uint32_t flags = 0u;
+    bool hasPicture = false;
 
     while (srcPos + 4 <= srcSize) {
         const uint32_t nalLen =
@@ -104,6 +114,7 @@ inline size_t convertLengthPrefixedToAnnexB(
         dstPos += 4;
 
         flags |= classifyNalByte(src[srcPos], isHevc);
+        hasPicture |= isPictureNalByte(src[srcPos], isHevc);
         std::memcpy(dst + dstPos, src + srcPos, nalLen);
         dstPos += nalLen;
         srcPos += nalLen;
@@ -112,7 +123,7 @@ inline size_t convertLengthPrefixedToAnnexB(
     if (srcPos != srcSize || dstPos == 0) {
         return 0;
     }
-    *outFlags = flags;
+    *outFlags = hasPicture ? flags & ~kVideoFlagCodecConfig : flags;
     return dstPos;
 }
 

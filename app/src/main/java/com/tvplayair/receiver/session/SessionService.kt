@@ -284,8 +284,17 @@ class SessionService : Service() {
             protocolEngine.finishDirectPlayback(playbackId)
         }
 
-        override fun sendDacpCommand(command: String) {
-            dacpController.sendCommand(command)
+        override fun sendDacpCommand(source: ITvPlayCallback, audioGeneration: Int, command: String) {
+            val owner = source.asBinder()
+            val controlStillCurrent = {
+                synchronized(callbackLock) {
+                    callback?.asBinder() == owner &&
+                        activeAudioGeneration == audioGeneration && directPlayback == null
+                }
+            }
+            synchronized(callbackLock) {
+                if (controlStillCurrent()) dacpController.sendCommand(command, controlStillCurrent)
+            }
         }
 
         override fun configureAdvertising(

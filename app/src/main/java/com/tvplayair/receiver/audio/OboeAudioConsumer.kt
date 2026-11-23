@@ -33,6 +33,7 @@ class OboeAudioConsumer(context: Context) : AudioHandoffController {
     private var pausedForExternalPlayer = false
     private var hasFocus = false
     private var currentGenerationId = 0
+    private var interruptedGeneration: Int? = null
 
     private val resumeExistingAudio = Runnable {
         setPausedForExternalPlayer(false)
@@ -56,7 +57,7 @@ class OboeAudioConsumer(context: Context) : AudioHandoffController {
                 nativeSetDucked(false)
                 nativeSetMuted(false)
                 if (active && !pausedForExternalPlayer && !nativeIsRunning()) {
-                    if (!nativeStart(currentGenerationId)) {
+                    if (!startOutput()) {
                         Log.e(TAG, "Failed to restart Oboe stream on AUDIOFOCUS_GAIN")
                     }
                 }
@@ -97,6 +98,7 @@ class OboeAudioConsumer(context: Context) : AudioHandoffController {
         }
         Log.i(TAG, "start(gen=$generationId) pausedForExternal=$pausedForExternalPlayer running=${isRunning()}")
         if (pausedForExternalPlayer) {
+            interruptedGeneration = generationId
             return false
         }
         return requestFocusAndStart()
@@ -105,6 +107,7 @@ class OboeAudioConsumer(context: Context) : AudioHandoffController {
     override fun stop() {
         Log.i(TAG, "stop(gen=$currentGenerationId)")
         active = false
+        interruptedGeneration = null
         if (resumeScheduled) setPausedForExternalPlayer(false)
         nativeStop()
         abandonAudioFocus()
@@ -119,6 +122,7 @@ class OboeAudioConsumer(context: Context) : AudioHandoffController {
         if (pausedForExternalPlayer == paused) return
         pausedForExternalPlayer = paused
         if (paused) {
+            interruptedGeneration = currentGenerationId.takeIf { active }
             nativeStop()
             abandonAudioFocus()
         } else if (active) {
@@ -159,14 +163,14 @@ class OboeAudioConsumer(context: Context) : AudioHandoffController {
         if (hasFocus) {
             nativeSetDucked(false)
             nativeSetMuted(false)
-            return if (nativeIsRunning()) true else nativeStart(currentGenerationId)
+            return if (nativeIsRunning()) true else startOutput()
         }
         return when (audioManager.requestAudioFocus(audioFocusRequest)) {
             AudioManager.AUDIOFOCUS_REQUEST_GRANTED -> {
                 hasFocus = true
                 nativeSetDucked(false)
                 nativeSetMuted(false)
-                nativeStart(currentGenerationId)
+                startOutput()
             }
             AudioManager.AUDIOFOCUS_REQUEST_DELAYED -> {
                 hasFocus = false
@@ -186,7 +190,14 @@ class OboeAudioConsumer(context: Context) : AudioHandoffController {
         hasFocus = false
     }
 
-    private external fun nativeStart(generationId: Int): Boolean
+    private fun startOutput(): Boolean {
+        val discardInterruptedAudio = interruptedGeneration == currentGenerationId
+        val started = nativeStart(currentGenerationId, discardInterruptedAudio)
+        if (started) interruptedGeneration = null
+        return started
+    }
+
+    private external fun nativeStart(generationId: Int, discardInterruptedAudio: Boolean): Boolean
     private external fun nativeStop()
     private external fun nativeSetGeneration(generationId: Int)
     private external fun nativeSetOffsetMs(offsetMs: Int)

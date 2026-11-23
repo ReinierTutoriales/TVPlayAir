@@ -203,8 +203,9 @@ class SessionConnection(
         if (playbackId != 0L) runCatching { service?.finishDirectPlayback(source, playbackId) }
     }
 
-    fun sendDacpCommand(command: String) {
-        runCatching { service?.sendDacpCommand(command) }
+    fun sendDacpCommand(audioGeneration: Int, command: String) {
+        val source = activeCallback ?: return
+        runCatching { service?.sendDacpCommand(source, audioGeneration, command) }
     }
 
     fun setProjectionVisible(visible: Boolean) {

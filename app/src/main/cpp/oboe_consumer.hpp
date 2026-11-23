@@ -23,7 +23,7 @@ public:
     OboeConsumer(const OboeConsumer&) = delete;
     OboeConsumer& operator=(const OboeConsumer&) = delete;
 
-    bool start(uint32_t generationId);
+    bool start(uint32_t generationId, bool discardInterruptedAudio);
     void stop();
 
     void setGenerationId(uint32_t generationId);
@@ -64,6 +64,7 @@ private:
     std::atomic<int32_t> grantedSampleRate_{0};
     std::atomic<int32_t> grantedFramesPerBurst_{0};
     std::atomic<bool> exclusiveMode_{false};
+    bool preferSharedMode_ = false;
 };
 
 OboeConsumer& oboeConsumer();

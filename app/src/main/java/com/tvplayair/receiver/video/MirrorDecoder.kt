@@ -246,9 +246,16 @@ class MirrorDecoder(
                 frameGate.onCodecConfig(configBytes)
                 if (activeCodec == null) {
                     val surface = surfaceProvider()
-                    if (surface != null && surface.isValid) {
-                        activeCodec = createAndConfigureCodec(surface, config, configBytes)
-                        codec = activeCodec
+                    if (surface != null && surface.isValid && running.get()) {
+                        val created = createAndConfigureCodec(surface, config, configBytes)
+                        if (created != null) {
+                            if (running.get()) {
+                                activeCodec = created
+                                codec = created
+                            } else {
+                                releaseCodec(created)
+                            }
+                        }
                     }
                     // csd-0 was already passed into MediaCodec.configure(); skip duplicate queueInputBuffer.
                     continue
@@ -265,9 +272,16 @@ class MirrorDecoder(
             if (activeCodec == null && (flags and MirrorFrameGate.FLAG_KEY_FRAME) != 0) {
                 val surface = surfaceProvider()
                 val csd = frameGate.getCachedCodecConfig()
-                if (surface != null && surface.isValid && csd != null) {
-                    activeCodec = createAndConfigureCodec(surface, config, csd)
-                    codec = activeCodec
+                if (surface != null && surface.isValid && csd != null && running.get()) {
+                    val created = createAndConfigureCodec(surface, config, csd)
+                    if (created != null) {
+                        if (running.get()) {
+                            activeCodec = created
+                            codec = created
+                        } else {
+                            releaseCodec(created)
+                        }
+                    }
                 }
             }
             val currentCodec = activeCodec ?: continue

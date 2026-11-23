@@ -10,7 +10,7 @@ import java.io.IOException
 internal class FcupLoadErrorHandlingPolicy : DefaultLoadErrorHandlingPolicy() {
     override fun isEligibleForFallback(exception: IOException): Boolean {
         if (exception is InvalidResponseCodeException &&
-            (exception.responseCode == 502 || exception.responseCode == 504)
+            exception.responseCode in FALLBACK_HTTP_CODES
         ) {
             val uri = exception.dataSpec.uri
             return isFcupPlaylist(uri.host, uri.path)
@@ -19,6 +19,8 @@ internal class FcupLoadErrorHandlingPolicy : DefaultLoadErrorHandlingPolicy() {
     }
 
     companion object {
+        private val FALLBACK_HTTP_CODES = setOf(403, 404, 429, 502, 503, 504)
+
         internal fun isFcupPlaylist(host: String?, path: String?): Boolean =
             host == "127.0.0.1" && path != null &&
                 path.startsWith("/__fcup/") && path.endsWith("/playlist.m3u8")

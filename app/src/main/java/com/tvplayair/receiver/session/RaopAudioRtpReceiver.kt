@@ -1,6 +1,7 @@
 package com.tvplayair.receiver.session
 
 import android.util.Log
+import java.io.IOException
 import java.net.DatagramPacket
 import java.net.DatagramSocket
 import java.net.InetSocketAddress
@@ -84,7 +85,6 @@ class RaopAudioRtpReceiver(
 
     private val running = AtomicBoolean(false)
     private val decoder = RaopAudioDecoder()
-    private val rxBuf = ByteArray(MAX_UDP_PACKET)
 
     @Volatile
     private var socket: DatagramSocket? = null
@@ -175,13 +175,20 @@ class RaopAudioRtpReceiver(
     }
 
     private fun receiveLoop(udp: DatagramSocket) {
+        val rxBuf = ByteArray(MAX_UDP_PACKET)
         val packet = DatagramPacket(rxBuf, rxBuf.size)
         var rxPackets = 0L
         var unmatchedAlacPackets = 0L
         var lastAlacSelector: RaopAlacKeySelector? = null
-        while (running.get()) {
-            val ok = runCatching { udp.receive(packet); true }.getOrDefault(false)
-            if (!ok) continue
+        while (running.get() && !udp.isClosed) {
+            packet.length = rxBuf.size
+            try {
+                udp.receive(packet)
+            } catch (error: IOException) {
+                if (!udp.isClosed) Log.w(TAG, "Audio socket read failed", error)
+                break
+            }
+            if (udp.isClosed) break
             val parsed = RtpAudioPacketParser.parse(rxBuf, packet.length) ?: continue
             // Only process RTP payloadType 96 (audio data); ignore RTCP/Sync (84) and retransmit headers (86).
             if (parsed.payloadType != 96) continue

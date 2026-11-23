@@ -14,6 +14,6 @@ interface ITvPlaySession {
                                  float rate, boolean isPlaying, boolean isBuffering, boolean isReady);
     void setDirectPlaybackIntent(ITvPlayCallback source, long playbackId, String command);
     oneway void finishDirectPlayback(ITvPlayCallback source, long playbackId);
-    void sendDacpCommand(String command);
+    oneway void sendDacpCommand(ITvPlayCallback source, int audioGeneration, String command);
     oneway void configureAdvertising(int maxWidth, int maxHeight, boolean hevcEnabled, String serviceName);
 }

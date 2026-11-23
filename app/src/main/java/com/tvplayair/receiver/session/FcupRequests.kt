@@ -43,18 +43,24 @@ internal class FcupRequests {
         return null
     }
 
+    class SenderHttpError(val status: Int) : IOException("FCUP sender HTTP $status")
+
     class MissingResponseData : IOException("FCUP response has no data")
 
     @Synchronized
     fun pending(id: Int): Request? = byId[id]
 
     @Synchronized
-    fun complete(id: Int?, url: String?, data: ByteArray?): Boolean {
+    fun complete(id: Int?, url: String?, data: ByteArray?, senderStatus: Int? = null): Boolean {
         val request = (if (id != null) byId[id] else byUrl[url]) ?: return false
         if (url != null && request.url != url) return false
         remove(request)
-        return if (data == null || data.isEmpty()) request.result.completeExceptionally(MissingResponseData())
-        else request.result.complete(data)
+        return when {
+            senderStatus != null && senderStatus in 400..599 ->
+                request.result.completeExceptionally(SenderHttpError(senderStatus))
+            data == null || data.isEmpty() -> request.result.completeExceptionally(MissingResponseData())
+            else -> request.result.complete(data)
+        }
     }
 
     @Synchronized

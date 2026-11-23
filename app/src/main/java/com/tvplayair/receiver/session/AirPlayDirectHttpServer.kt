@@ -40,7 +40,7 @@ class AirPlayDirectHttpServer(
         private const val MAX_BODY_BYTES = 2 * 1024 * 1024
         private const val CLIENT_SO_TIMEOUT_MS = 30_000
         private const val EVENT_ACK_TIMEOUT_MS = 5_000
-        private const val FCUP_TIMEOUT_MS = 4_000L
+        private const val FCUP_TIMEOUT_MS = 8_000L
     }
 
     private val running = AtomicBoolean(false)
@@ -154,8 +154,8 @@ class AirPlayDirectHttpServer(
     override fun currentGenerationId(): Int = generationId.get()
 
     private fun acceptLoop(socket: ServerSocket) {
-        while (running.get()) {
-            val client = runCatching { socket.accept() }.getOrNull() ?: continue
+        while (running.get() && !socket.isClosed) {
+            val client = runCatching { socket.accept() }.getOrNull() ?: break
             Thread({
                 try {
                     handleClient(client)
@@ -232,14 +232,18 @@ class AirPlayDirectHttpServer(
                 listener.onClientConnected(userAgent, dacpId, activeRemote)
             }
 
-            val contentLength = headers["content-length"]?.toIntOrNull()?.coerceIn(0, MAX_BODY_BYTES) ?: 0
-            val body = if (contentLength > 0) readExactBytes(input, contentLength) else ByteArray(0)
-            if (body.size != contentLength) break
             val contentType = headers["content-type"].orEmpty()
             val isRtsp = RtspMessageParser.isRtspRequestLine(firstLine)
             val cseq = headers["cseq"]
             currentRequestProtocol.set(if (isRtsp) "RTSP/1.0" else "HTTP/1.1")
             currentRequestCSeq.set(cseq)
+            val contentLength = airPlayContentLength(lines, MAX_BODY_BYTES)
+            if (contentLength == null) {
+                writeResponse(output, 400, "Bad Request")
+                break
+            }
+            val body = if (contentLength > 0) readExactBytes(input, contentLength) else ByteArray(0)
+            if (body.size != contentLength) break
             Log.i(TAG, "<- $peer $method $path (proto=${if (isRtsp) "RTSP/1.0" else "HTTP/1.1"} cseq=${cseq ?: "-"} ct=$contentType len=${body.size})")
 
             val sessionId = headers["x-apple-session-id"]?.takeIf { value ->
@@ -308,14 +312,8 @@ class AirPlayDirectHttpServer(
                     break
                 }
                 fcup?.markAcknowledged()
-                val ackLen = acknowledgement.lineSequence()
-                    .firstOrNull { it.startsWith("Content-Length:", ignoreCase = true) }
-                    ?.substringAfter(':')
-                    ?.trim()
-                    ?.toIntOrNull() ?: 0
-                if (ackLen > 0) {
-                    readExactBytes(input, ackLen.coerceAtMost(MAX_BODY_BYTES))
-                }
+                val ackLen = airPlayContentLength(acknowledgement.split("\r\n"), MAX_BODY_BYTES) ?: break
+                if (!drainAirPlayBody(input, ackLen)) break
                 if (event.closeAfterDelivery) break
             }
         } finally {
@@ -350,7 +348,7 @@ class AirPlayDirectHttpServer(
 
     private fun handleFcupResponsePlist(bodyBytes: ByteArray): Boolean {
         val root = BinaryPlistParser.parse(bodyBytes) as? Map<*, *> ?: return false
-        val params = (root["params"] as? Map<*, *>) ?: root
+        val params = (root["params"] as? Map<*, *>) ?: (root["request"] as? Map<*, *>) ?: root
         val reqId = ((params["FCUP_Response_RequestID"]
             ?: params["FCUP_Response_ID"]
             ?: params["requestID"]
@@ -365,6 +363,15 @@ class AirPlayDirectHttpServer(
             params.containsKey("FCUP_Response_ID") || root.containsKey("FCUP_Response_RequestID") ||
             root.containsKey("FCUP_Response_ID") ||
             params.containsKey("FCUP_Response_URL") || root.containsKey("FCUP_Response_URL")
+        val senderStatus = ((params["FCUP_Response_StatusCode"]
+            ?: params["statusCode"]
+            ?: root["FCUP_Response_StatusCode"]) as? Number)?.toInt()?.takeIf { it in 400..599 }
+        if (senderStatus != null && identifiedFcupResponse) {
+            if (!fcupRequests.complete(reqId, respUrl, null, senderStatus)) {
+                Log.i(TAG, "Ignoring unmatched FCUP error id=$reqId")
+            }
+            return true
+        }
         val rawData = params["FCUP_Response_Data"]
             ?: params["data"]
             ?: root["FCUP_Response_Data"]
@@ -386,7 +393,17 @@ class AirPlayDirectHttpServer(
             rawBytes
         }
 
-        Log.i(TAG, "<- FCUP response id=$reqId len=${dataBytes?.size ?: 0}")
+        if (dataBytes == null || dataBytes.isEmpty()) {
+            val dataState = when (rawData) {
+                null -> "missing"
+                is String, is ByteArray -> "empty"
+                else -> "unsupported_type"
+            }
+            Log.w(PLAYBACK_DIAGNOSTICS_TAG,
+                "route=fcup event=sender_payload_unusable request=${reqId ?: "-"} data=$dataState")
+        } else {
+            Log.i(TAG, "<- FCUP response id=$reqId len=${dataBytes.size}")
+        }
 
         if (!fcupRequests.complete(reqId, respUrl, dataBytes)) {
             Log.i(TAG, "Ignoring unmatched FCUP response id=$reqId")
@@ -543,8 +560,22 @@ class AirPlayDirectHttpServer(
                 }
                 val dataBytes = response.getOrElse { error ->
                     fcupRequests.cancel(pending)
+                    val senderFailure = error.cause as? FcupRequests.SenderHttpError
                     if (playbackEvents.reverseSignal(playbackId) == null) {
                         writeResponse(output, 410, "Gone", fcupRequestId = pending.id)
+                    } else if (senderFailure != null) {
+                        Log.w(PLAYBACK_DIAGNOSTICS_TAG,
+                            "route=fcup id=$playbackId event=sender_http_error request=${pending.id} " +
+                                "status=${senderFailure.status}")
+                        val (status, reason) = when (senderFailure.status) {
+                            403 -> 403 to "Forbidden"
+                            404 -> 404 to "Not Found"
+                            429 -> 429 to "Too Many Requests"
+                            503 -> 503 to "Service Unavailable"
+                            504 -> 504 to "Gateway Timeout"
+                            else -> 502 to "Bad Gateway"
+                        }
+                        writeResponse(output, status, reason, fcupRequestId = pending.id)
                     } else if (error.cause is FcupRequests.MissingResponseData) {
                         Log.w(PLAYBACK_DIAGNOSTICS_TAG,
                             "route=fcup id=$playbackId event=response_empty request=${pending.id}")
@@ -557,9 +588,9 @@ class AirPlayDirectHttpServer(
                     }
                     return
                 }
-                val text = runCatching { dataBytes.toString(StandardCharsets.UTF_8) }.getOrNull()
-                if (text != null && text.trimStart().startsWith("#EXTM3U")) {
-                    val rewritten = rewriteM3u8ForFcupProxy(text, targetUrl, playbackId)
+                if (hasFcupPlaylistHeader(dataBytes)) {
+                    val playlist = dataBytes.toString(StandardCharsets.UTF_8)
+                    val rewritten = rewriteM3u8ForFcupProxy(playlist, targetUrl, playbackId)
                     Log.i(TAG, "-> /__fcup 200 OK m3u8 (${rewritten.length}B) id=${pending.id}")
                     writeResponse(output, 200, "OK", "application/vnd.apple.mpegurl", rewritten)
                 } else {
@@ -802,4 +833,43 @@ internal fun isAirPlayReverseAck(statusLine: String): Boolean {
         "HTTP/1.1", "RTSP/1.0", "EVENT/1.0" -> true
         else -> false
     }
+}
+
+
+internal fun hasFcupPlaylistHeader(data: ByteArray): Boolean {
+    val start = data.indexOfFirst { it != 0x20.toByte() && it != 0x09.toByte() &&
+        it != 0x0D.toByte() && it != 0x0A.toByte() }
+    val header = "#EXTM3U"
+    return start >= 0 && data.size - start >= header.length &&
+        header.indices.all { data[start + it] == header[it].code.toByte() }
+}
+
+
+/** AirPlay's HTTP-like endpoints receive fixed-length bodies. */
+internal fun airPlayContentLength(lines: List<String>, limit: Int): Int? {
+    var length: Int? = null
+    for (index in 1 until lines.size) {
+        val line = lines[index]
+        val name = line.substringBefore(':').trim()
+        if (name.equals("Transfer-Encoding", ignoreCase = true)) return null
+        if (!name.equals("Content-Length", ignoreCase = true)) continue
+        val value = line.substringAfter(':', "").trim()
+        if (value.isEmpty() || value.any { it !in '0'..'9' }) return null
+        val parsed = value.toIntOrNull()?.takeIf { it <= limit } ?: return null
+        if (length != null && length != parsed) return null
+        length = parsed
+    }
+    return length ?: 0
+}
+
+internal fun drainAirPlayBody(input: BufferedInputStream, length: Int): Boolean {
+    if (length == 0) return true
+    val scratch = ByteArray(minOf(length, 8192))
+    var remaining = length
+    while (remaining > 0) {
+        val count = input.read(scratch, 0, minOf(remaining, scratch.size))
+        if (count <= 0) return false
+        remaining -= count
+    }
+    return true
 }

@@ -9,6 +9,13 @@ import org.junit.Test
 import java.net.Socket
 
 class AirPlayProtocolTest {
+    @Test
+    fun onlyPlaylistPayloadsAreDecodedAsText() {
+        assertTrue(hasFcupPlaylistHeader(" \r\n#EXTM3U\n#EXT-X-VERSION:3".toByteArray()))
+        assertEquals(false, hasFcupPlaylistHeader(byteArrayOf(0, 0, 0, 24, 102, 116, 121, 112)))
+        assertEquals(false, hasFcupPlaylistHeader("#EXT".toByteArray()))
+    }
+
 
     @Test
     fun reverseChannelReportsLoadingPlayingPausedAndStoppedToTheSameSession() {

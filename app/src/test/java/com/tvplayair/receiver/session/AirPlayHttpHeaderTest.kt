@@ -5,12 +5,39 @@ import java.io.InputStream
 import java.net.SocketTimeoutException
 import org.junit.Assert.assertArrayEquals
 import org.junit.Assert.assertFalse
+import org.junit.Assert.assertEquals
 import org.junit.Assert.assertTrue
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertThrows
 import org.junit.Test
 
 class AirPlayHttpHeaderTest {
+    @Test
+    fun eventReaderConsumesTheWholeBodyBeforeTheNextRequest() {
+        val firstBody = "GET /looks-like-a-request HTTP/1.1"
+        val wire = "POST /feedback HTTP/1.1\r\nContent-Length: ${firstBody.length}\r\n\r\n" +
+            firstBody + "GET /info HTTP/1.1\r\n\r\n"
+        // One-byte reads force headers and bodies to cross read boundaries.
+        val input = BufferedInputStream(streamEndingInTimeout(wire), 1)
+        assertEquals("POST", readAirPlayEventMethod(input))
+        assertEquals("GET", readAirPlayEventMethod(input))
+        assertNull(readAirPlayEventMethod(input))
+    }
+
+    @Test
+    fun invalidAndOversizedLengthsDoNotGetTreatedAsEmptyOrClampedBodies() {
+        fun contentLength(vararg fields: String) =
+            airPlayContentLength(listOf("POST /action HTTP/1.1", *fields, ""), 8)
+        assertEquals(0, contentLength())
+        assertEquals(8, contentLength("Content-Length: 8", "content-length: 8"))
+        assertNull(contentLength("Content-Length: 9"))
+        assertNull(contentLength("Content-Length: -1"))
+        assertNull(contentLength("Content-Length: 1", "Content-Length: 2"))
+        assertNull(contentLength("Transfer-Encoding: chunked", "Content-Length: 1"))
+        val truncated = "POST /feedback HTTP/1.1\r\nContent-Length: 4\r\n\r\nab"
+        assertNull(readAirPlayEventMethod(truncated.byteInputStream().buffered()))
+    }
+
     @Test
     fun acceptsTheReverseAcknowledgementObservedDuringTrackChange() {
         assertTrue(isAirPlayReverseAck("EVENT/1.0 200 OK"))
