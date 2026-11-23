@@ -127,3 +127,20 @@ La primera integración activa una sesión de sistema para video directo y usa l
 - **Audio AirPlay.** La pista y la carátula llegan desde el emisor. Apple publica estos campos en Now Playing para que las apps los proporcionen a los accesorios compatibles. TVPlayAir descarta imágenes repetidas de la misma pista y decodifica la imagen al tamaño visible, fuera del hilo de interfaz. Los botones de pista anterior, reproducir o pausar, y pista siguiente aparecen cuando se ha localizado el servicio DACP de la sesión. [Apple Now Playing](https://developer.apple.com/documentation/mediaplayer/mpnowplayinginfocenter) · [Decodificación de imágenes en Android](https://developer.android.com/topic/performance/graphics/load-bitmap)
 - **Vídeo directo.** El vídeo entra sin la pantalla de audio ni los ajustes abiertos. Se retira la cubierta negra cuando Media3 confirma el primer fotograma del medio vigente en su superficie. Un aviso tardío de la superficie de duplicación no desplaza al vídeo directo. [Evento de primer fotograma de Media3](https://developer.android.com/reference/androidx/media3/exoplayer/analytics/AnalyticsListener)
 - **Mando.** Arriba o abajo muestra el panel sin pausar. Con el panel oculto, OK reproduce o pausa y muestra los controles, e izquierda o derecha salta 10 segundos si el medio permite buscar. Con el panel visible, el mando navega entre los botones disponibles. [Controles de reproducción de Android TV](https://developer.android.com/training/tv/playback/controls)
+
+## Corrección: presentación ante fallo de arranque del espejo (2026-11-23)
+
+**Contrato:** el coordinador no puede dejar visible la SurfaceView de mirroring cuando
+`MirrorVideoEngine.start()` devuelve `false`, ni durante una reconfiguración fallida.
+En ambos casos oculta las superficies y entra en `RECOVERING`; no simula un primer
+fotograma ni afirma compatibilidad de un códec. Las pruebas de regresión verifican
+el orden de transición y la ausencia de superficie visible tras ambos fallos.
+
+**Base técnica:** gestión de superficies y ciclo de vida de MediaCodec de Android:
+https://developer.android.com/reference/android/media/MediaCodec y
+https://developer.android.com/reference/android/view/SurfaceHolder.Callback.
+La elegibilidad por `MediaCodecInfo.VideoCapabilities` no garantiza que un
+decodificador llegue a renderizar. Esta corrección resuelve el estado visual
+obsoleto al fallar el arranque; la negociación AirPlay de resoluciones no
+soportadas y la detección de ausencia de primer fotograma requieren validación
+independiente. Sin pruebas con hardware no se certifica la solución de pantalla negra.
