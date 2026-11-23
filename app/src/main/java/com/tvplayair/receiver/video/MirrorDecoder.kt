@@ -262,8 +262,10 @@ class MirrorDecoder(
                 renderListenerHandler.post {
                     // The worker's finally block has already set running=false by the time
                     // this runs; use the pending recovery token, not running, to deliver it.
-                    if (recoveryCallbackPending && workerThread === worker &&
-                        generationId.get() == generation
+                    if (shouldDeliverRecoveryTimeout(
+                            recoveryCallbackPending, workerThread === worker,
+                            generationId.get() == generation
+                        )
                     ) {
                         recoveryCallbackPending = false
                         onRecoveryTimeout()
@@ -521,3 +523,8 @@ internal class MirrorFrameClock(
         return targetNs.takeIf { it > now && it <= now + 150_000_000L }
     }
 }
+
+/** Recovery callbacks may run after the worker has exited and cleared running. */
+internal fun shouldDeliverRecoveryTimeout(
+    pending: Boolean, sameWorker: Boolean, sameGeneration: Boolean
+): Boolean = pending && sameWorker && sameGeneration
