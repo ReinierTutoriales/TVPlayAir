@@ -60,6 +60,8 @@ class MainActivity : ComponentActivity(), SurfaceLayerController {
     private val webVideoPlayer: WebVideoPlayer get() = directVideoModel.player
     private lateinit var presentationCoordinator: VideoPresentationCoordinator
     private lateinit var sessionConnection: SessionConnection
+    private lateinit var sessionListener: SessionEventListener
+    private var audioHandedOff = false
     private lateinit var hidBridge: TvRemoteHidBridge
     private lateinit var identityStore: ReceiverIdentityStore
 
@@ -232,7 +234,7 @@ class MainActivity : ComponentActivity(), SurfaceLayerController {
         )
         hidBridge = TvRemoteHidBridge(this).apply { startIfSupported() }
 
-        val sessionListener = object : SessionEventListener {
+        sessionListener = object : SessionEventListener {
             override fun onSharedMemoryReady(generationId: Int, activeDirectPlaybackId: Long) {
                 sharedMemoryReady = true
                 awaitingDirectSnapshot = activeDirectPlaybackId != 0L
@@ -372,6 +374,11 @@ class MainActivity : ComponentActivity(), SurfaceLayerController {
 
     override fun onStart() {
         super.onStart()
+        if (audioHandedOff) {
+            AudioContinuityService.claim()
+            audioHandedOff = false
+            sessionConnection.replaceListener(sessionListener, replay = true)
+        }
         screenStarted = true
         sessionConnection.setProjectionVisible(true)
         if (directPlaybackId != 0L) publishDirectPlayback()
@@ -382,6 +389,11 @@ class MainActivity : ComponentActivity(), SurfaceLayerController {
         screenStarted = false
         dismissVideoControls()
         sessionConnection.setProjectionVisible(false)
+        if (overlayState.audioProjectionActive && directPlaybackId == 0L) {
+            audioHandedOff = AudioContinuityService.retain(
+                this, sessionConnection, audioConsumer, overlayState.audioGeneration
+            )
+        }
         super.onStop()
     }
 
@@ -819,8 +831,10 @@ class MainActivity : ComponentActivity(), SurfaceLayerController {
         val retainedByService = !isChangingConfigurations &&
             DirectPlaybackService.retain(DirectPlaybackService.RetainedPlayback(webVideoPlayer, sessionConnection))
         if (retainedByService) directVideoModel.relinquishPlayer()
-        val audioRetained = !retainedByService && overlayState.audioProjectionActive &&
-            AudioContinuityService.retain(this, sessionConnection, audioConsumer, overlayState.audioGeneration)
+        val audioRetained = !retainedByService && (audioHandedOff ||
+            (overlayState.audioProjectionActive && AudioContinuityService.retain(
+                this, sessionConnection, audioConsumer, overlayState.audioGeneration
+            )))
         if (retainedByService || isChangingConfigurations) {
             mirrorDecoder.stopAndRelease()
             audioConsumer.stop()
