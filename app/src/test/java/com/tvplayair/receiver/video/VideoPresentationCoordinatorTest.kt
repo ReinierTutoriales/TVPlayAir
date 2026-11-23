@@ -9,6 +9,16 @@ import org.junit.Test
 class VideoPresentationCoordinatorTest {
 
     @Test
+    fun retainedDirectPlaybackRejectsInvalidSeekPositions() {
+        assertFalse(validDirectSeekPosition(Double.NaN))
+        assertFalse(validDirectSeekPosition(Double.POSITIVE_INFINITY))
+        assertFalse(validDirectSeekPosition(Double.NEGATIVE_INFINITY))
+        assertFalse(validDirectSeekPosition(-0.5))
+        assertTrue(validDirectSeekPosition(0.0))
+        assertTrue(validDirectSeekPosition(12.5))
+    }
+
+    @Test
     fun directSeekRejectsNonFiniteAndNegativeSenderPositions() {
         val events = mutableListOf<String>()
         val coordinator = VideoPresentationCoordinator(

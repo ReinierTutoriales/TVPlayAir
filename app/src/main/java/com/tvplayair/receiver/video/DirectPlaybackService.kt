@@ -67,7 +67,7 @@ class DirectPlaybackService : MediaSessionService() {
                 when (command) {
                     "play" -> player.play()
                     "pause" -> player.pause()
-                    "seek" -> player.seekTo(value)
+                    "seek" -> if (validDirectSeekPosition(value)) player.seekTo(value)
                     "stop" -> finishRetained()
                 }
             }

@@ -47,6 +47,9 @@ interface DirectVideoEngine {
     fun currentTelemetry(): DirectPlaybackTelemetry
 }
 
+internal fun validDirectSeekPosition(positionSec: Double): Boolean =
+    positionSec.isFinite() && positionSec >= 0.0
+
 internal fun initialDirectPositionMs(startPosition: Double, durationMs: Long): Long? {
     // AirPlay sends a fraction. Some clients send absolute seconds above 1.
     return when {
@@ -228,7 +231,7 @@ class VideoPresentationCoordinator(
     fun seekDirect(positionSec: Double) {
         // Sender commands are untrusted. Never forward NaN, infinity or negative
         // positions into Media3's seek path.
-        if (hasDirectPlayback && positionSec.isFinite() && positionSec >= 0.0) {
+        if (hasDirectPlayback && validDirectSeekPosition(positionSec)) {
             directEngine.seekTo(positionSec)
         }
     }
