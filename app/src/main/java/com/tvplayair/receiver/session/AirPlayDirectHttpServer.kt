@@ -365,6 +365,14 @@ class AirPlayDirectHttpServer(
             params.containsKey("FCUP_Response_ID") || root.containsKey("FCUP_Response_RequestID") ||
             root.containsKey("FCUP_Response_ID") ||
             params.containsKey("FCUP_Response_URL") || root.containsKey("FCUP_Response_URL")
+        val senderStatus = ((params["FCUP_Response_StatusCode"]
+            ?: root["FCUP_Response_StatusCode"]) as? Number)?.toInt()?.takeIf { it in 400..599 }
+        if (senderStatus != null && identifiedFcupResponse) {
+            if (!fcupRequests.complete(reqId, respUrl, null, senderStatus)) {
+                Log.i(TAG, "Ignoring unmatched FCUP error id=$reqId")
+            }
+            return true
+        }
         val rawData = params["FCUP_Response_Data"]
             ?: params["data"]
             ?: root["FCUP_Response_Data"]
@@ -553,8 +561,22 @@ class AirPlayDirectHttpServer(
                 }
                 val dataBytes = response.getOrElse { error ->
                     fcupRequests.cancel(pending)
+                    val senderFailure = error.cause as? FcupRequests.SenderHttpError
                     if (playbackEvents.reverseSignal(playbackId) == null) {
                         writeResponse(output, 410, "Gone", fcupRequestId = pending.id)
+                    } else if (senderFailure != null) {
+                        Log.w(PLAYBACK_DIAGNOSTICS_TAG,
+                            "route=fcup id=$playbackId event=sender_http_error request=${pending.id} " +
+                                "status=${senderFailure.status}")
+                        val (status, reason) = when (senderFailure.status) {
+                            403 -> 403 to "Forbidden"
+                            404 -> 404 to "Not Found"
+                            429 -> 429 to "Too Many Requests"
+                            503 -> 503 to "Service Unavailable"
+                            504 -> 504 to "Gateway Timeout"
+                            else -> 502 to "Bad Gateway"
+                        }
+                        writeResponse(output, status, reason, fcupRequestId = pending.id)
                     } else if (error.cause is FcupRequests.MissingResponseData) {
                         Log.w(PLAYBACK_DIAGNOSTICS_TAG,
                             "route=fcup id=$playbackId event=response_empty request=${pending.id}")

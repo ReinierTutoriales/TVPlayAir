@@ -10,6 +10,16 @@ import org.junit.Assert.assertTrue
 import org.junit.Test
 
 class FcupRequestsTest {
+    @Test
+    fun preservesSenderHttpFailureEvenIfItsBodyIsNotEmpty() {
+        val requests = FcupRequests()
+        requests.reset(1)
+        val request = checkNotNull(requests.acquire(1, videoUrl) { true })
+        assertTrue(requests.complete(request.id, videoUrl, "error body".toByteArray(), senderStatus = 404))
+        val failure = runCatching { request.result.join() }.exceptionOrNull()
+        assertEquals(404, (failure?.cause as? FcupRequests.SenderHttpError)?.status)
+    }
+
     private val videoUrl = "mlhls://localhost/itag/602/mediadata.m3u8"
     private val audioUrl = "mlhls://localhost/itag/233/mediadata.m3u8"
 
