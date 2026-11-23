@@ -108,15 +108,20 @@ static void testAudioPcmProducerToConsumerEndToEnd() {
         audioRing,
         reinterpret_cast<const uint8_t*>(src.data()),
         src.size() * sizeof(int16_t),
-        3);
+        3,
+        1000000);
     assert(written == static_cast<size_t>(totalFrames) * kAudioBytesPerFrame);
 
     AudioPcmPipeline consumer;
     consumer.setGenerationId(3);
     std::vector<int16_t> dst(src.size(), 0);
-    consumer.render(audioRing, dst.data(), totalFrames);
-    assert(dst == src);
+    const auto timing = consumer.render(audioRing, dst.data(), totalFrames);
+    assert(timing.senderTimeUs == 1021333);
+    assert(timing.outputFrame == 1024);
+    assert(timing.generation == 3);
     assert(consumer.underrunCount() == 0);
+    assert(dst == src);
+    assert(consumer.render(audioRing, dst.data(), 1).senderTimeUs == 0);
 }
 
 static void testAvccDecoderConfigToAnnexB() {

@@ -18,6 +18,18 @@ import javax.crypto.spec.SecretKeySpec
 
 class RtspAndRtpParserTest {
     @Test
+    fun audioSetupAdvertisesReceiverPortsWhenSenderUsesDifferentPorts() {
+        val sender = RtspMessageParser.parseTransport("RTP/AVP/UDP;control_port=49152;timing_port=49153")
+        val answer = RtspMessageParser.formatAudioSetupTransport(6000, 62000, 7011)
+        val receiver = RtspMessageParser.parseTransport(answer)
+
+        assertEquals(49152, sender.controlPort)
+        assertEquals(62000, receiver.controlPort)
+        assertEquals(7011, receiver.timingPort)
+        assertTrue(answer.contains(";server_port=6000;"))
+    }
+
+    @Test
     fun mirrorAdmitsCompanionAudioButBlocksIndependentAudioTakeover() {
         val mirror = AirPlayConnectionCrypto { ByteArray(32) }
         val separate = AirPlayConnectionCrypto { ByteArray(32) }

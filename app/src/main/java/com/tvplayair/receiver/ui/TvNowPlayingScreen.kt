@@ -1,6 +1,5 @@
 package com.tvplayair.receiver.ui
 
-import androidx.compose.animation.Crossfade
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
@@ -62,7 +61,7 @@ internal fun TvNowPlayingScreen(
         val horizontalInset = maxWidth * 0.055f
         val coverPixels = with(LocalDensity.current) { coverSize.roundToPx() }.coerceAtLeast(1)
         val artworkKey = remember(artwork) { artwork?.takeIf { it.isNotEmpty() }?.artworkKey() }
-        var cover by remember { mutableStateOf<UniformArtwork?>(null) }
+        var cover by remember(artworkKey, coverPixels) { mutableStateOf<UniformArtwork?>(null) }
         LaunchedEffect(artworkKey, coverPixels) {
             val source = artwork?.takeIf { it.isNotEmpty() }
             if (source == null) {
@@ -143,23 +142,21 @@ private fun AlbumCover(image: ImageBitmap?, modifier: Modifier) {
             .border(1.dp, Color.White.copy(alpha = 0.14f), shape),
         contentAlignment = Alignment.Center
     ) {
-        Crossfade(targetState = image, label = "AlbumCoverCrossfade") { currentImage ->
-            if (currentImage != null) {
-                Image(
-                    bitmap = currentImage,
-                    contentDescription = null,
-                    modifier = Modifier.fillMaxSize(),
-                    contentScale = ContentScale.Crop
-                )
-            } else {
-                Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
-                    Canvas(Modifier.size(44.dp)) {
-                        val note = Color(0xFFA6A9B3)
-                        val unit = size.width / 12f
-                        drawLine(note, Offset(7f * unit, 2f * unit), Offset(7f * unit, 9f * unit), unit)
-                        drawLine(note, Offset(7f * unit, 2f * unit), Offset(10f * unit, 3.5f * unit), unit)
-                        drawOval(note, Offset(3f * unit, 8f * unit), Size(4.5f * unit, 3f * unit))
-                    }
+        if (image != null) {
+            Image(
+                bitmap = image,
+                contentDescription = null,
+                modifier = Modifier.fillMaxSize(),
+                contentScale = ContentScale.Crop
+            )
+        } else {
+            Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+                Canvas(Modifier.size(44.dp)) {
+                    val note = Color(0xFFA6A9B3)
+                    val unit = size.width / 12f
+                    drawLine(note, Offset(7f * unit, 2f * unit), Offset(7f * unit, 9f * unit), unit)
+                    drawLine(note, Offset(7f * unit, 2f * unit), Offset(10f * unit, 3.5f * unit), unit)
+                    drawOval(note, Offset(3f * unit, 8f * unit), Size(4.5f * unit, 3f * unit))
                 }
             }
         }

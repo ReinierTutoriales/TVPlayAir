@@ -261,16 +261,13 @@ class SessionService : Service() {
             startAirPlaySession()
         }
 
-        override fun stopServer() {
-            stopAirPlaySession()
-        }
-
         override fun updatePlaybackTelemetry(
             source: ITvPlayCallback,
             playbackId: Long,
             resumePositionMs: Long,
             durationSec: Double,
             positionSec: Double,
+            livePositionSec: Double,
             rate: Float,
             isPlaying: Boolean,
             isBuffering: Boolean,
@@ -283,7 +280,10 @@ class SessionService : Service() {
             }
             protocolEngine.updatePlaybackTelemetry(
                 playbackId,
-                DirectPlaybackTelemetry(durationSec, positionSec, rate, isPlaying, isBuffering, isReady)
+                DirectPlaybackTelemetry(
+                    durationSec, positionSec, rate, isPlaying, isBuffering, isReady,
+                    livePositionSec = livePositionSec.takeIf { it.isFinite() && it >= 0.0 }
+                )
             )
         }
 
@@ -345,16 +345,7 @@ class SessionService : Service() {
                     hevcEnabled = hevcEnabled
                 )
                 if (serverRunning) {
-                    protocolEngine.start(
-                        AirPlayServerConfig(
-                            airPlayPort = advertiseConfig.airPlayPort,
-                            maxWidth = advertiseConfig.maxWidth,
-                            maxHeight = advertiseConfig.maxHeight,
-                            hevcEnabled = advertiseConfig.hevcEnabled,
-                            deviceId = advertiseConfig.deviceId,
-                            ed25519PrivateKey = ed25519PrivateKey
-                        )
-                    )
+                    protocolEngine.start(serverConfig())
                     mdnsAdvertiser.start(advertiseConfig)
                 }
             }
@@ -478,6 +469,21 @@ class SessionService : Service() {
         addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_SINGLE_TOP or Intent.FLAG_ACTIVITY_REORDER_TO_FRONT)
     }
 
+    private fun serverConfig(): AirPlayServerConfig {
+        val requested = advertiseConfig
+        val profile = MirrorDisplayProfile.detect(this, requested.maxWidth, requested.maxHeight, requested.hevcEnabled)
+        Log.i(TAG, "Mirror profile: ${profile.width}x${profile.height}@${profile.fps} hevc=${profile.hevc}")
+        return AirPlayServerConfig(
+            airPlayPort = requested.airPlayPort,
+            maxWidth = profile.width,
+            maxHeight = profile.height,
+            hevcEnabled = profile.hevc,
+            deviceId = requested.deviceId,
+            ed25519PrivateKey = ed25519PrivateKey,
+            maxFps = profile.fps
+        )
+    }
+
     @Synchronized
     private fun startAirPlaySession() {
         if (serverRunning) return
@@ -485,16 +491,7 @@ class SessionService : Service() {
             Log.e(TAG, "AirPlay cannot start without video and audio shared memory")
             return
         }
-        val started = protocolEngine.start(
-            AirPlayServerConfig(
-                airPlayPort = advertiseConfig.airPlayPort,
-                maxWidth = advertiseConfig.maxWidth,
-                maxHeight = advertiseConfig.maxHeight,
-                hevcEnabled = advertiseConfig.hevcEnabled,
-                deviceId = advertiseConfig.deviceId,
-                ed25519PrivateKey = ed25519PrivateKey
-            )
-        )
+        val started = protocolEngine.start(serverConfig())
         if (started) {
             mdnsAdvertiser.start(advertiseConfig)
             serverRunning = true

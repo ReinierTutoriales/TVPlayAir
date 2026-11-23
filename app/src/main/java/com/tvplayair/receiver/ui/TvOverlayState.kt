@@ -26,6 +26,7 @@ data class TvOverlayState(
     val audioControlsAvailable: Boolean = false,
     val nowPlaying: RaopNowPlaying? = null,
     val directAudio: DirectPlaybackTelemetry? = null,
+    val mirrorControlsVisible: Boolean = false,
     val videoControls: DirectPlaybackTelemetry? = null,
     private val awaitingAudioPresentation: Boolean = false,
     private val pendingNowPlaying: RaopNowPlaying? = null
@@ -46,6 +47,9 @@ data class TvOverlayState(
 
     val showingDirectAudio: Boolean
         get() = !visible && presentationState == PresentationState.DIRECT_ACTIVE && directAudio != null
+
+    val showingMirrorControls: Boolean
+        get() = !visible && presentationState == PresentationState.MIRROR_ACTIVE && mirrorControlsVisible
 
     val showingDirectControls: Boolean
         get() = showingDirectAudio || showingVideoControls
@@ -72,6 +76,7 @@ data class TvOverlayState(
             presentationState = state,
             nowPlaying = if (showAudio) pendingNowPlaying ?: nowPlaying else null,
             directAudio = directAudio.takeIf { state == PresentationState.DIRECT_ACTIVE },
+            mirrorControlsVisible = mirrorControlsVisible && state == PresentationState.MIRROR_ACTIVE,
             videoControls = videoControls.takeIf { state == PresentationState.DIRECT_ACTIVE },
             awaitingAudioPresentation = awaitingAudioPresentation && !showAudio,
             pendingNowPlaying = pendingNowPlaying.takeUnless { showAudio }

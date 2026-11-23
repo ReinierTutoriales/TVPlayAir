@@ -75,7 +75,8 @@ public:
         SharedRingBuffer& audioRing,
         const uint8_t* data,
         size_t byteCount,
-        uint32_t generationId) {
+        uint32_t generationId,
+        int64_t senderTimeUs = 0) {
         if (!data || byteCount < kAudioBytesPerFrame) return 0;
 
         const size_t alignedTotal = byteCount - (byteCount % kAudioBytesPerFrame);
@@ -86,7 +87,9 @@ public:
                 chunk = kMaxAudioPacketBytes - (kMaxAudioPacketBytes % kAudioBytesPerFrame);
             }
             const RingResult res = audioRing.writePacket(
-                data + offset, static_cast<uint32_t>(chunk), generationId);
+                data + offset, static_cast<uint32_t>(chunk), generationId,
+                senderTimeUs > 0 ? senderTimeUs +
+                    static_cast<int64_t>(offset / kAudioBytesPerFrame) * 1000000 / kAudioSampleRate : 0);
             if (res != RingResult::Ok) {
                 break;
             }

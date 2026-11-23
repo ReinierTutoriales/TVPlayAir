@@ -74,7 +74,8 @@ Java_com_tvplayair_receiver_session_NativeSharedMemory_nativeWriteAudioPcm(
     jobject,
     jobject directBuffer,
     jint byteCount,
-    jint generationId) {
+    jint generationId,
+    jlong senderTimeUs) {
     if (!directBuffer || byteCount <= 0) return 0;
     auto* src = static_cast<const uint8_t*>(env->GetDirectBufferAddress(directBuffer));
     const jlong capacity = env->GetDirectBufferCapacity(directBuffer);
@@ -84,7 +85,7 @@ Java_com_tvplayair_receiver_session_NativeSharedMemory_nativeWriteAudioPcm(
         tvplayair::producerAudioRing(),
         src,
         static_cast<size_t>(byteCount),
-        static_cast<uint32_t>(generationId)));
+        static_cast<uint32_t>(generationId), static_cast<int64_t>(senderTimeUs)));
 }
 
 JNIEXPORT jlong JNICALL

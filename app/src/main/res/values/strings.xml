@@ -9,6 +9,4 @@
     <string name="video_loading">Cargando…</string>
     <string name="video_pause">Pausar</string>
     <string name="video_play">Reproducir</string>
-    <string name="video_seek_back">Retroceder 10 s</string>
-    <string name="video_seek_forward">Avanzar 10 s</string>
 </resources>

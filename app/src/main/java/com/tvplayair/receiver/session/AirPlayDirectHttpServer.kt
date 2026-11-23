@@ -424,20 +424,12 @@ class AirPlayDirectHttpServer(
         }
         if (rawBytes == null && !identifiedFcupResponse) return false
 
-        val dataBytes = if (rawBytes != null && rawBytes.size >= 2 &&
-            rawBytes[0] == 0x1f.toByte() &&
-            rawBytes[1] == 0x8b.toByte()
-        ) {
-            runCatching { GZIPInputStream(ByteArrayInputStream(rawBytes)).readBytes() }
-                .getOrDefault(rawBytes)
-        } else {
-            rawBytes
-        }
+        val dataBytes = rawBytes?.let { decodeFcupPayload(it, MAX_BODY_BYTES) }
 
         if (dataBytes == null || dataBytes.isEmpty()) {
             val dataState = when (rawData) {
                 null -> "missing"
-                is String, is ByteArray -> "empty"
+                is String, is ByteArray -> if (rawBytes?.isNotEmpty() == true) "invalid_or_oversize" else "empty"
                 else -> "unsupported_type"
             }
             Log.w(PLAYBACK_DIAGNOSTICS_TAG,
@@ -718,8 +710,8 @@ class AirPlayDirectHttpServer(
                 val scrubBody = String.format(
                     Locale.US,
                     "duration: %.6f\r\nposition: %.6f\r\n",
-                    t.durationSec.coerceAtLeast(0.0),
-                    t.positionSec.coerceAtLeast(0.0)
+                    AirPlayPlaybackInfoFormatter.reportedDuration(t),
+                    AirPlayPlaybackInfoFormatter.reportedPosition(t)
                 )
                 writeResponse(output, 200, "OK", "text/parameters", scrubBody)
             }
@@ -730,7 +722,10 @@ class AirPlayDirectHttpServer(
                 }
                 val position = AirPlayHttpRequestParser.parseQueryDouble(fullPath, "position")
                 if (position != null) {
-                    playbackEvents.control(sessionKey) { id -> listener.onDirectVideoCommand("seek", position, id) }
+                    playbackEvents.control(sessionKey) { id ->
+                        val target = AirPlayPlaybackInfoFormatter.positionInWindow(latestTelemetry.get(), position)
+                        listener.onDirectVideoCommand("seek", target, id)
+                    }
                     writeResponse(output, 200, "OK")
                 } else {
                     writeResponse(output, 400, "Bad Request")
@@ -766,11 +761,13 @@ class AirPlayDirectHttpServer(
                 writeResponse(output, 200, "OK")
             }
             method == "GET" && path == "/info" -> {
+                val cfg = activeConfig
                 val info = AirPlayInfoPlist.formatInfoBinary(
-                    deviceId = activeConfig.deviceId,
-                    maxWidth = activeConfig.maxWidth,
-                    maxHeight = activeConfig.maxHeight,
-                    hevcEnabled = activeConfig.hevcEnabled
+                    deviceId = cfg.deviceId,
+                    maxWidth = cfg.maxWidth,
+                    maxHeight = cfg.maxHeight,
+                    hevcEnabled = cfg.hevcEnabled,
+                    maxFps = cfg.maxFps
                 )
                 Log.i(TAG, "-> /info 200 OK bplist00 (${info.size}B)")
                 writeBinaryResponse(output, 200, "OK", "application/x-apple-binary-plist", info)
@@ -956,4 +953,25 @@ internal fun drainAirPlayBody(input: BufferedInputStream, length: Int): Boolean 
         remaining -= count
     }
     return true
+}
+
+internal fun decodeFcupPayload(bytes: ByteArray, limit: Int): ByteArray? {
+    if (bytes.size < 2 || bytes[0] != 0x1f.toByte() || bytes[1] != 0x8b.toByte()) {
+        return bytes.takeIf { it.size <= limit }
+    }
+    return try {
+        GZIPInputStream(ByteArrayInputStream(bytes)).use { input ->
+            val decoded = ByteArrayOutputStream()
+            val buffer = ByteArray(8192)
+            while (true) {
+                val count = input.read(buffer)
+                if (count == -1) break
+                if (count > limit - decoded.size()) return null
+                decoded.write(buffer, 0, count)
+            }
+            decoded.toByteArray()
+        }
+    } catch (_: IOException) {
+        null
+    }
 }

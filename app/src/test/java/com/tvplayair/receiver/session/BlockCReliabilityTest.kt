@@ -7,6 +7,7 @@ import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertNull
 import org.junit.Test
+import java.nio.ByteBuffer
 import javax.crypto.Cipher
 import javax.crypto.spec.IvParameterSpec
 import javax.crypto.spec.SecretKeySpec
@@ -16,6 +17,23 @@ class BlockCReliabilityTest {
         val cipher = Cipher.getInstance("AES/CTR/NoPadding")
         cipher.init(Cipher.ENCRYPT_MODE, SecretKeySpec(key, "AES"), IvParameterSpec(iv))
         return cipher.doFinal(plain)
+    }
+
+    @Test
+    fun raopSyncMapsWrappingRtpTimestampsIntoTheSenderClock() {
+        val packet = ByteBuffer.allocate(20)
+            .put(0, 0x90.toByte())
+            .put(1, 0xd4.toByte())
+            .putInt(4, 0xfffffc18.toInt())
+            .putLong(8, (10L shl 32) or 0x80000000L)
+            .array()
+
+        val anchor = checkNotNull(RaopClockAnchor.parse(packet, packet.size))
+        assertEquals(10_500_000L, anchor.senderTimeUs)
+        assertEquals(10_525_000L, anchor.senderTimeUsAt(200, 48_000))
+        assertNull(RaopClockAnchor.parse(packet, 19))
+        packet[1] = 0xd6.toByte()
+        assertNull(RaopClockAnchor.parse(packet, packet.size))
     }
 
     @Test
@@ -58,26 +76,26 @@ class BlockCReliabilityTest {
         val p12 = byteArrayOf(12)
         val p13 = byteArrayOf(13)
 
-        val r10 = jitter.push(10, p10)
+        val r10 = jitter.push(10, p10, 1000L)
         assertEquals(1, r10.readyPayloads.size)
-        assertArrayEquals(p10, r10.readyPayloads[0])
+        assertArrayEquals(p10, r10.readyPayloads[0].payload)
         assertNull(r10.missingRange)
 
         // Packet 11 lost; 12 and 13 arrive early.
-        val r12 = jitter.push(12, p12)
+        val r12 = jitter.push(12, p12, 1200L)
         assertEquals(0, r12.readyPayloads.size)
         assertEquals(11 to 1, r12.missingRange)
 
-        val r13 = jitter.push(13, p13)
+        val r13 = jitter.push(13, p13, 1300L)
         assertEquals(0, r13.readyPayloads.size)
         assertNull(r13.missingRange) // Already requested seq 11
 
         // Retransmitted packet 11 arrives -> drains 11, 12, 13 in order.
-        val r11 = jitter.push(11, p11)
-        assertEquals(3, r11.readyPayloads.size)
-        assertArrayEquals(p11, r11.readyPayloads[0])
-        assertArrayEquals(p12, r11.readyPayloads[1])
-        assertArrayEquals(p13, r11.readyPayloads[2])
+        val r11 = jitter.push(11, p11, 1100L)
+        assertEquals(listOf(1100L, 1200L, 1300L), r11.readyPayloads.map { it.rtpTimestamp })
+        assertArrayEquals(p11, r11.readyPayloads[0].payload)
+        assertArrayEquals(p12, r11.readyPayloads[1].payload)
+        assertArrayEquals(p13, r11.readyPayloads[2].payload)
     }
 
     @Test

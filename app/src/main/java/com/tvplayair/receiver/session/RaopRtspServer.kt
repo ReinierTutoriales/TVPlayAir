@@ -9,6 +9,7 @@ import java.io.ByteArrayOutputStream
 import java.io.EOFException
 import java.io.IOException
 import java.io.OutputStream
+import java.net.InetAddress
 import java.net.InetSocketAddress
 import java.net.ServerSocket
 import java.net.Socket
@@ -241,7 +242,7 @@ internal class RaopRtspServer(
                     }
                 }
 
-                if (!dispatchRtsp(request, output, source)) {
+                if (!dispatchRtsp(request, output, source, socket.inetAddress)) {
                     endReason = "rtsp_teardown"
                     break
                 }
@@ -259,7 +260,9 @@ internal class RaopRtspServer(
         }
     }
 
-    private fun dispatchRtsp(request: RtspRequest, output: OutputStream, source: AirPlayConnectionCrypto): Boolean {
+    private fun dispatchRtsp(
+        request: RtspRequest, output: OutputStream, source: AirPlayConnectionCrypto, peer: InetAddress?
+    ): Boolean {
         val cseq = request.cseq()
         when (request.method) {
             "OPTIONS" -> {
@@ -276,7 +279,8 @@ internal class RaopRtspServer(
                         deviceId = cfg.deviceId,
                         maxWidth = cfg.maxWidth,
                         maxHeight = cfg.maxHeight,
-                        hevcEnabled = cfg.hevcEnabled
+                        hevcEnabled = cfg.hevcEnabled,
+                        maxFps = cfg.maxFps
                     )
                     Log.i(TAG, "-> GET /info 200 OK bplist00 (${bin.size}B)")
                     output.write(
@@ -350,33 +354,31 @@ internal class RaopRtspServer(
             }
             "SETUP" -> {
                 if (BinaryPlistParser.isBinaryPlist(request.body)) {
-                    handleBinaryPlistSetup(request, output, source)
+                    handleBinaryPlistSetup(request, output, source, peer)
                 } else {
                     val transport = RtspMessageParser.parseTransport(request.header("transport"))
-                    val accepted = synchronized(nowPlaying) {
+                    val responseTransport = synchronized(nowPlaying) {
                         if (mirrorReceiver?.allowsAudio(source) == false) {
                             rejectConcurrentAudio(output, cseq)
-                            false
+                            null
                         } else {
                             source.announcedAudioSdp?.let(::configureFromSdp)
-                            if (audioReceiver.start(RaopAudioRtpReceiver.DEFAULT_AUDIO_PORT)) {
+                            if (audioReceiver.start(peer, transport.controlPort)) {
                                 activateAudioSource(source, request)
-                                true
+                                RtspMessageParser.formatAudioSetupTransport(
+                                    RaopAudioRtpReceiver.DEFAULT_AUDIO_PORT,
+                                    audioReceiver.localControlPort,
+                                    RaopAudioRtpReceiver.DEFAULT_TIMING_PORT
+                                )
                             } else {
                                 output.write(RtspMessageParser.formatResponse(503, "Service Unavailable", cseq))
-                                false
+                                null
                             }
                         }
                     }
-                    if (!accepted) {
+                    if (responseTransport == null) {
                         output.flush()
                         return true
-                    }
-                    val responseTransport = buildString {
-                        append("RTP/AVP/UDP;unicast;mode=record")
-                        append(";server_port=").append(RaopAudioRtpReceiver.DEFAULT_AUDIO_PORT)
-                        append(";control_port=").append(transport.controlPort ?: RaopAudioRtpReceiver.DEFAULT_CONTROL_PORT)
-                        append(";timing_port=").append(transport.timingPort ?: RaopAudioRtpReceiver.DEFAULT_TIMING_PORT)
                     }
                     output.write(
                         RtspMessageParser.formatResponse(
@@ -538,7 +540,9 @@ internal class RaopRtspServer(
         return RaopRemote(id, token)
     }
 
-    private fun handleBinaryPlistSetup(request: RtspRequest, output: OutputStream, source: AirPlayConnectionCrypto) {
+    private fun handleBinaryPlistSetup(
+        request: RtspRequest, output: OutputStream, source: AirPlayConnectionCrypto, peer: InetAddress?
+    ) {
         val cseq = request.cseq()
         val parsed = BinaryPlistParser.parse(request.body) as? Map<*, *>
         Log.i(TAG, "SETUP bplist keys=${parsed?.keys}")
@@ -570,13 +574,19 @@ internal class RaopRtspServer(
         } else synchronized(nowPlaying) {
             // Apply mirror ownership before offering a companion audio port, even if audio is listed first.
             val videoResponses = streams.filter { it["type"] == 110L }
-                .mapNotNull { configureStream(it, request, source) }
+                .mapNotNull { configureStream(it, request, source, peer) }
             val audioStreams = streams.filter { it["type"] == 96L }
             if (audioStreams.isNotEmpty() && mirrorReceiver?.allowsAudio(source) == false) {
                 rejectConcurrentAudio(output, cseq)
                 return
             }
-            mapOf("streams" to (videoResponses + audioStreams.mapNotNull { configureStream(it, request, source) }))
+            val audioResponses = audioStreams.map { stream ->
+                configureStream(stream, request, source, peer) ?: run {
+                    output.write(RtspMessageParser.formatResponse(503, "Service Unavailable", cseq))
+                    return
+                }
+            }
+            mapOf("streams" to (videoResponses + audioResponses))
         }
 
         val encoded = BinaryPlistWriter.encode(responseMap)
@@ -597,7 +607,8 @@ internal class RaopRtspServer(
     private fun configureStream(
         stream: Map<*, *>,
         request: RtspRequest,
-        source: AirPlayConnectionCrypto
+        source: AirPlayConnectionCrypto,
+        peer: InetAddress?
     ): Map<String, Long>? = when (stream["type"]) {
         110L -> { // AirPlay Screen Mirroring video stream
             val connId = (stream["streamConnectionID"] as? Long) ?: 0L
@@ -650,14 +661,16 @@ internal class RaopRtspServer(
                 alternateAesKey = rawKey,
                 extraAesKeys = extraKeys
             )
-            if (audioReceiver.start(RaopAudioRtpReceiver.DEFAULT_AUDIO_PORT)) {
+            val remoteControlPort = (stream["controlPort"] as? Long)
+                ?.takeIf { it in 1L..65535L }?.toInt()
+            if (audioReceiver.start(peer, remoteControlPort)) {
                 activateAudioSource(source, request)
-            }
-            mapOf(
-                "dataPort" to RaopAudioRtpReceiver.DEFAULT_AUDIO_PORT.toLong(),
-                "controlPort" to RaopAudioRtpReceiver.DEFAULT_CONTROL_PORT.toLong(),
-                "type" to 96L
-            )
+                mapOf(
+                    "dataPort" to RaopAudioRtpReceiver.DEFAULT_AUDIO_PORT.toLong(),
+                    "controlPort" to audioReceiver.localControlPort.toLong(),
+                    "type" to 96L
+                )
+            } else null
         }
         else -> null
     }

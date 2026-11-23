@@ -130,6 +130,15 @@ class AirPlayProtocolTest {
     }
 
     @Test
+    fun livePlaybackReportsContinuousPositionInsteadOfTheSeekWindowDuration() {
+        val telemetry = DirectPlaybackTelemetry(120.0, 95.0, 1f, true, false, livePositionSec = 210.0)
+        val plist = AirPlayPlaybackInfoFormatter.formatPlist(telemetry)
+        assertTrue(plist.contains("<key>duration</key><real>0.000</real>"))
+        assertTrue(plist.contains("<key>position</key><real>210.000</real>"))
+        assertEquals(85.0, AirPlayPlaybackInfoFormatter.positionInWindow(telemetry, 200.0), 0.001)
+    }
+
+    @Test
     fun formatsPlaybackInfoPlistFromTelemetry() {
         val plist = AirPlayPlaybackInfoFormatter.formatPlist(
             DirectPlaybackTelemetry(

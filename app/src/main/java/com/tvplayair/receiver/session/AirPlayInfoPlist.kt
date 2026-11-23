@@ -17,10 +17,11 @@ object AirPlayInfoPlist {
         deviceId: String,
         maxWidth: Int,
         maxHeight: Int,
-        hevcEnabled: Boolean
+        hevcEnabled: Boolean,
+        maxFps: Int
     ): Map<String, Any> {
-        val width = maxWidth.coerceIn(1280, 1920).toLong()
-        val height = maxHeight.coerceIn(720, 1080).toLong()
+        val width = maxWidth.toLong()
+        val height = maxHeight.toLong()
         return linkedMapOf(
             "deviceID" to deviceId,
             "macAddress" to deviceId,
@@ -41,10 +42,10 @@ object AirPlayInfoPlist {
                     "height" to height,
                     "widthPhysical" to 0L,
                     "heightPhysical" to 0L,
-                    "maxFPS" to 60L,
+                    "maxFPS" to maxFps.toLong(),
                     "features" to 14L,
                     "overscanned" to false,
-                    "refreshRate" to 60.0,
+                    "refreshRate" to maxFps.toDouble(),
                     "rotation" to true
                 )
             ),
@@ -67,47 +68,9 @@ object AirPlayInfoPlist {
         deviceId: String,
         maxWidth: Int,
         maxHeight: Int,
-        hevcEnabled: Boolean
-    ): ByteArray = BinaryPlistWriter.encode(buildInfoMap(deviceId, maxWidth, maxHeight, hevcEnabled))
-
-    fun formatInfoXml(
-        deviceId: String,
-        maxWidth: Int,
-        maxHeight: Int,
-        hevcEnabled: Boolean
-    ): String {
-        val width = maxWidth.coerceAtLeast(1280)
-        val height = maxHeight.coerceAtLeast(720)
-        val refreshRate = 60
-        val codecHint = if (hevcEnabled) "HEVC" else "H264"
-
-        return buildString {
-            append("<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n")
-            append("<!DOCTYPE plist PUBLIC \"-//Apple//DTD PLIST 1.0//EN\" ")
-            append("\"http://www.apple.com/DTDs/PropertyList-1.0.dtd\">\n")
-            append("<plist version=\"1.0\">\n<dict>\n")
-            append("  <key>deviceID</key><string>").append(deviceId).append("</string>\n")
-            append("  <key>features</key><integer>").append(FEATURES_64BIT).append("</integer>\n")
-            append("  <key>model</key><string>").append(MdnsTxtRecords.AIRPLAY_MODEL).append("</string>\n")
-            append("  <key>sourceVersion</key><string>220.68</string>\n")
-            append("  <key>statusFlags</key><integer>").append(STATUS_FLAGS).append("</integer>\n")
-            append("  <key>preferredCodec</key><string>").append(codecHint).append("</string>\n")
-            append("  <key>displays</key>\n  <array>\n    <dict>\n")
-            append("      <key>widthPixels</key><integer>").append(width).append("</integer>\n")
-            append("      <key>heightPixels</key><integer>").append(height).append("</integer>\n")
-            append("      <key>maxFPS</key><integer>").append(refreshRate).append("</integer>\n")
-            append("      <key>overscanned</key><false/>\n")
-            append("      <key>refreshRate</key><real>60.0</real>\n")
-            append("      <key>rotation</key><true/>\n")
-            append("    </dict>\n  </array>\n")
-            append("  <key>audioFormats</key>\n  <array>\n    <dict>\n")
-            append("      <key>audioInputFormats</key><integer>67108860</integer>\n")
-            append("      <key>audioOutputFormats</key><integer>67108860</integer>\n")
-            append("      <key>type</key><integer>100</integer>\n")
-            append("    </dict>\n  </array>\n")
-            append("</dict>\n</plist>\n")
-        }
-    }
+        hevcEnabled: Boolean,
+        maxFps: Int
+    ): ByteArray = BinaryPlistWriter.encode(buildInfoMap(deviceId, maxWidth, maxHeight, hevcEnabled, maxFps))
 
     fun formatServerInfoXml(deviceId: String): String = buildString {
         append("<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n")
