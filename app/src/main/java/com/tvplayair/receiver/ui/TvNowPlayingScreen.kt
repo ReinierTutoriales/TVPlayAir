@@ -73,7 +73,9 @@ internal fun TvNowPlayingScreen(
                 cover = decoded
             }
         }
-        val tint = cover?.tint ?: DefaultArtworkTint
+        // Do not retain or tint the next track with the previous track's artwork.
+        val currentCover = cover.takeIf { artworkKey != null }
+        val tint = currentCover?.tint ?: DefaultArtworkTint
         val compact = maxHeight < 360.dp || maxWidth < 640.dp
         val titleStyle = if (compact) MaterialTheme.typography.headlineMedium
             else MaterialTheme.typography.displaySmall
@@ -94,7 +96,7 @@ internal fun TvNowPlayingScreen(
             horizontalArrangement = Arrangement.spacedBy(horizontalInset),
             verticalAlignment = Alignment.CenterVertically
         ) {
-            AlbumCover(cover?.image, Modifier.size(coverSize))
+            AlbumCover(currentCover?.image, Modifier.size(coverSize))
             Column(
                 modifier = Modifier.weight(1f),
                 verticalArrangement = Arrangement.spacedBy(if (compact) 14.dp else 26.dp)
