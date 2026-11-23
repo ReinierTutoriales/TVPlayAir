@@ -36,6 +36,7 @@ import java.io.IOException
  * Direct 4K HDR web video player backed by Media3 ExoPlayer on a native SurfaceView.
  * Uses Safari iOS User-Agent and adaptive track selection for direct TV playback.
  */
+@OptIn(UnstableApi::class)
 class WebVideoPlayer(context: Context) : DirectVideoEngine {
     interface ViewCallbacks {
         fun onTelemetryChanged(telemetry: DirectPlaybackTelemetry)
@@ -93,7 +94,6 @@ class WebVideoPlayer(context: Context) : DirectVideoEngine {
     }
     private var firstFrameLogged = false
 
-    @OptIn(UnstableApi::class)
     private fun playbackIdFor(eventTime: AnalyticsListener.EventTime): Long? {
         val id = playbackId ?: return null
         val timeline = eventTime.timeline
@@ -104,7 +104,6 @@ class WebVideoPlayer(context: Context) : DirectVideoEngine {
         }
     }
 
-    @OptIn(UnstableApi::class)
     private val videoEvents = object : AnalyticsListener {
         override fun onRenderedFirstFrame(eventTime: AnalyticsListener.EventTime, output: Any, renderTimeMs: Long) {
             if (renderTimeMs < prepareStartedMs || output != surfaceView?.holder?.surface) return
@@ -251,7 +250,6 @@ class WebVideoPlayer(context: Context) : DirectVideoEngine {
         }
     }
 
-    @OptIn(UnstableApi::class)
     private fun ensurePlayer(): ExoPlayer {
         player?.let { return it }
 
@@ -279,7 +277,6 @@ class WebVideoPlayer(context: Context) : DirectVideoEngine {
             }
     }
 
-    @OptIn(UnstableApi::class)
     fun exposeSystemControls(id: Long) {
         val exo = player ?: return
         if (playbackId != id || mediaSession != null) return
@@ -313,7 +310,6 @@ class WebVideoPlayer(context: Context) : DirectVideoEngine {
             .build()
     }
 
-    @OptIn(UnstableApi::class)
     private fun createSystemPlayer(exo: ExoPlayer): Player =
         object : ForwardingSimpleBasePlayer(exo) {
             override fun handleSetPlayWhenReady(playWhenReady: Boolean): ListenableFuture<*> {

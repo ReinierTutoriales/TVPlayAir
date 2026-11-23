@@ -71,6 +71,13 @@ jobs:
         uses: gradle/actions/setup-gradle@v6.4.1
       - name: Verify Android dependencies, JVM tests, lint, native build and debug APK
         run: ./gradlew --no-daemon :app:checkDebugAarMetadata :app:testDebugUnitTest :app:lintDebug :app:externalNativeBuildDebug :app:assembleDebug
+      - name: Report lint errors on failure
+        if: failure()
+        run: |
+          report=app/build/reports/lint-results-debug.txt
+          if test -f "$report"; then
+            sed -n '/Error: /p' "$report"
+          fi
       - name: Upload debug APK
         uses: actions/upload-artifact@v7.0.0
         with:

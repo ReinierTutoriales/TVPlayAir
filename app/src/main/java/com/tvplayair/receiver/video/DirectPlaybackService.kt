@@ -2,12 +2,15 @@ package com.tvplayair.receiver.video
 
 import android.content.Context
 import android.content.Intent
+import androidx.annotation.OptIn
+import androidx.media3.common.util.UnstableApi
 import androidx.media3.session.MediaSession
 import androidx.media3.session.MediaSessionService
 import com.tvplayair.receiver.session.SessionConnection
 import com.tvplayair.receiver.session.SessionEventListener
 
 /** Owns active direct playback when the TV UI is gone. All handoffs run on the main thread. */
+@OptIn(UnstableApi::class)
 class DirectPlaybackService : MediaSessionService() {
     internal data class RetainedPlayback(
         val player: WebVideoPlayer,
