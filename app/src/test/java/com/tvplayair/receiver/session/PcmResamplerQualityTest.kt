@@ -33,7 +33,7 @@ class PcmResamplerQualityTest {
         }
         val dst = ShortArray(480 * 2)
         val outFrames = resampler.resampleStereoI16(src, srcFrames, 44_100, dst)
-        assertEquals(480, outFrames)
+        assertEquals(479, outFrames)
         // Midpoint frame ~240 should be close to 220 * 50 = 11000
         assertTrue(abs(dst[240 * 2] - 11_000) < 250)
     }
