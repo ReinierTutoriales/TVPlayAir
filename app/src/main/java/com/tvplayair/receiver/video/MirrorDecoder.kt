@@ -137,13 +137,29 @@ class MirrorDecoder(
         if (csdBytes != null && csdBytes.isNotEmpty()) {
             format.setByteBuffer("csd-0", ByteBuffer.wrap(csdBytes))
         }
-        val decoder = runCatching {
-            val codecName = MediaCodecList(MediaCodecList.REGULAR_CODECS).findDecoderForFormat(format)
-            if (codecName != null) MediaCodec.createByCodecName(codecName)
-            else MediaCodec.createDecoderByType(cfg.mimeType)
-        }.onFailure {
-            logCodecFailure("create", it)
-        }.getOrNull() ?: return null
+        // The device-preferred codec is not necessarily capable of decoding the sender's
+        // actual portrait dimensions. Check published capabilities before allocation.
+        val codecInfos = runCatching {
+            MediaCodecList(MediaCodecList.REGULAR_CODECS).codecInfos
+        }.onFailure { logCodecFailure("enumerate", it) }.getOrNull() ?: return null
+        val candidates = codecInfos.filter { info ->
+            !info.isEncoder && info.supportedTypes.any { it.equals(cfg.mimeType, ignoreCase = true) } &&
+                runCatching {
+                    info.getCapabilitiesForType(cfg.mimeType).videoCapabilities
+                        ?.isSizeSupported(cfg.width, cfg.height) == true
+                }.getOrDefault(false)
+        }
+        if (candidates.isEmpty()) {
+            Log.w(PLAYBACK_DIAGNOSTICS_TAG,
+                "route=mirror_decoder generation=$generation event=unsupported_dimensions " +
+                    "mime=${cfg.mimeType} size=${cfg.width}x${cfg.height}")
+            return null
+        }
+        val decoder = candidates.firstNotNullOfOrNull { candidate ->
+            runCatching { MediaCodec.createByCodecName(candidate.name) }.onFailure {
+                logCodecFailure("create_candidate", it)
+            }.getOrNull()
+        } ?: return null
         val codecName = decoder.name
         val lowLatencySupported = Build.VERSION.SDK_INT >= Build.VERSION_CODES.R && runCatching {
             decoder.codecInfo.getCapabilitiesForType(cfg.mimeType)
