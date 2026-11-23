@@ -1,13 +1,57 @@
 package com.tvplayair.receiver.video
 
 import org.junit.Assert.assertArrayEquals
-import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
 class MirrorFrameGateTest {
+
+    @Test
+    fun frameClockSchedulesOnlyPlausibleFutureFramesAndExpiresUnavailableAudio() {
+        var now = 1_000_000_000L
+        var offset = -3_000_000_000L
+        val clock = MirrorFrameClock({ offset }, { now })
+        assertTrue(clock.renderTimeNs(4_020_000L) == 1_020_000_000L)
+        assertNull(clock.renderTimeNs(4_500_000L))
+        assertNull(clock.renderTimeNs(3_999_000L))
+        assertNull(clock.renderTimeNs(0L))
+
+        offset = Long.MIN_VALUE
+        now += 100_000_000L
+        assertNull(clock.renderTimeNs(4_120_000L))
+    }
+
+    @Test
+    fun duplicateCodecConfigDoesNotReplaceTheCachedBytes() {
+        val gate = MirrorFrameGate()
+        val config = byteArrayOf(1, 2, 3)
+        assertTrue(gate.onCodecConfig(config))
+        assertFalse(gate.onCodecConfig(config.copyOf()))
+        assertFalse(gate.onCodecConfig(byteArrayOf()))
+        config[0] = 9
+        assertArrayEquals(byteArrayOf(1, 2, 3), gate.getCachedCodecConfig())
+        assertTrue(gate.onCodecConfig(config))
+    }
+
+    @Test
+    fun recoveryDeadlineDoesNotSlideAndClearsWhenOutputReturns() {
+        var nowMs = 100L
+        val watchdog = MirrorOutputWatchdog { nowMs }
+        nowMs += 30_000
+        assertFalse(watchdog.recoveryExpired())
+
+        watchdog.beginRecovery()
+        nowMs += 4_999
+        watchdog.beginRecovery()
+        assertFalse(watchdog.recoveryExpired())
+        nowMs++
+        assertTrue(watchdog.recoveryExpired())
+
+        watchdog.onOutputReleased()
+        assertFalse(watchdog.recoveryExpired())
+    }
 
     @Test
     fun outputRecoveryRequiresQueuedWorkAndRearmsOnlyAfterOutputReturns() {
@@ -41,28 +85,21 @@ class MirrorFrameGateTest {
     @Test
     fun dropsNonIdrFramesUntilKeyframeArrives() {
         val gate = MirrorFrameGate()
-        assertTrue(gate.isAwaitingIdr())
 
         assertFalse(gate.shouldSubmitFrame(0))
         assertFalse(gate.shouldSubmitFrame(0))
-        assertEquals(2L, gate.droppedNonIdrFrames)
-        assertEquals(0L, gate.acceptedFrames)
 
         assertTrue(gate.shouldSubmitFrame(MirrorFrameGate.FLAG_KEY_FRAME))
         gate.onFrameSubmitted(MirrorFrameGate.FLAG_KEY_FRAME)
-        assertFalse(gate.isAwaitingIdr())
         assertTrue(gate.shouldSubmitFrame(0))
         gate.onFrameSubmitted(0)
-        assertEquals(2L, gate.acceptedFrames)
     }
 
     @Test
     fun aKeyframeRejectedByMediaCodecDoesNotOpenTheGate() {
         val gate = MirrorFrameGate()
         assertTrue(gate.shouldSubmitFrame(MirrorFrameGate.FLAG_KEY_FRAME))
-        assertTrue(gate.isAwaitingIdr())
         assertFalse(gate.shouldSubmitFrame(0))
-        assertEquals(0L, gate.acceptedFrames)
         gate.onFrameSubmitted(MirrorFrameGate.FLAG_KEY_FRAME)
         assertTrue(gate.shouldSubmitFrame(0))
     }
@@ -72,15 +109,12 @@ class MirrorFrameGateTest {
         val gate = MirrorFrameGate()
         val spsPpsVps = byteArrayOf(0x00, 0x00, 0x00, 0x01, 0x40, 0x01, 0x42, 0x01)
         gate.onCodecConfig(spsPpsVps)
-        assertTrue(gate.hasCachedCodecConfig())
         assertTrue(gate.shouldSubmitFrame(MirrorFrameGate.FLAG_CODEC_CONFIG))
         assertTrue(gate.shouldSubmitFrame(MirrorFrameGate.FLAG_KEY_FRAME))
         gate.onFrameSubmitted(MirrorFrameGate.FLAG_KEY_FRAME)
-        assertFalse(gate.isAwaitingIdr())
 
         // Returning from ExoPlayer: reset gate but preserve SPS/PPS/VPS cache.
         gate.resetGate()
-        assertTrue(gate.isAwaitingIdr())
         assertArrayEquals(spsPpsVps, gate.getCachedCodecConfig())
         assertFalse(gate.shouldSubmitFrame(0))
         assertTrue(gate.shouldSubmitFrame(MirrorFrameGate.FLAG_KEY_FRAME))
@@ -94,7 +128,5 @@ class MirrorFrameGateTest {
 
         gate.clearAll()
         assertNull(gate.getCachedCodecConfig())
-        assertFalse(gate.hasCachedCodecConfig())
-        assertTrue(gate.isAwaitingIdr())
     }
 }

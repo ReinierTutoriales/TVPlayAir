@@ -5,11 +5,12 @@ import java.util.Locale
 
 data class AirPlayServerConfig(
     val airPlayPort: Int = 7000,
-    val maxWidth: Int = 3840,
-    val maxHeight: Int = 2160,
-    val hevcEnabled: Boolean = true,
+    val maxWidth: Int = 1280,
+    val maxHeight: Int = 720,
+    val hevcEnabled: Boolean = false,
     val deviceId: String = "58:55:CA:1A:E2:88",
-    val ed25519PrivateKey: ByteArray? = null
+    val ed25519PrivateKey: ByteArray? = null,
+    val maxFps: Int = 30
 )
 
 interface AirPlayProtocolListener {
@@ -176,9 +177,22 @@ object AirPlayHttpRequestParser {
 }
 
 object AirPlayPlaybackInfoFormatter {
+    fun reportedDuration(telemetry: DirectPlaybackTelemetry): Double =
+        if (telemetry.livePositionSec != null) 0.0 else telemetry.durationSec.coerceAtLeast(0.0)
+
+    fun reportedPosition(telemetry: DirectPlaybackTelemetry): Double {
+        val end = reportedDuration(telemetry).takeIf { it > 0.0 } ?: Double.MAX_VALUE
+        return (telemetry.livePositionSec ?: telemetry.positionSec).coerceIn(0.0, end)
+    }
+
+    fun positionInWindow(telemetry: DirectPlaybackTelemetry, senderPosition: Double): Double {
+        val live = telemetry.livePositionSec ?: return senderPosition
+        return (telemetry.positionSec + senderPosition - live).coerceAtLeast(0.0)
+    }
+
     fun formatPlist(telemetry: DirectPlaybackTelemetry): String {
-        val duration = telemetry.durationSec.coerceAtLeast(0.0)
-        val position = telemetry.positionSec.coerceIn(0.0, if (duration > 0.0) duration else Double.MAX_VALUE)
+        val duration = reportedDuration(telemetry)
+        val position = reportedPosition(telemetry)
         val rate = telemetry.rate.coerceAtLeast(0f)
         val readyToPlay = telemetry.isReady
         val bufferEmpty = telemetry.isBuffering
@@ -200,14 +214,16 @@ object AirPlayPlaybackInfoFormatter {
             append("  <key>playbackBufferEmpty</key>").append(if (bufferEmpty) "<true/>" else "<false/>").append("\n")
             append("  <key>playbackBufferFull</key><false/>\n")
             append("  <key>playbackLikelyToKeepUp</key>").append(if (likelyToKeepUp) "<true/>" else "<false/>").append("\n")
-            append("  <key>loadedTimeRanges</key><array><dict>")
-            append("<key>duration</key><real>").append(durationStr).append("</real>")
-            append("<key>start</key><real>0.000</real>")
-            append("</dict></array>\n")
-            append("  <key>seekableTimeRanges</key><array><dict>")
-            append("<key>duration</key><real>").append(durationStr).append("</real>")
-            append("<key>start</key><real>0.000</real>")
-            append("</dict></array>\n")
+            if (telemetry.livePositionSec == null) {
+                append("  <key>loadedTimeRanges</key><array><dict>")
+                append("<key>duration</key><real>").append(durationStr).append("</real>")
+                append("<key>start</key><real>0.000</real>")
+                append("</dict></array>\n")
+                append("  <key>seekableTimeRanges</key><array><dict>")
+                append("<key>duration</key><real>").append(durationStr).append("</real>")
+                append("<key>start</key><real>0.000</real>")
+                append("</dict></array>\n")
+            }
             append("</dict>\n</plist>\n")
         }
     }

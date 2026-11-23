@@ -159,8 +159,6 @@ class TvRemoteHidBridge(context: Context) {
         }
     }
 
-    fun isAvailable(): Boolean = available
-
     fun isConnected(): Boolean = available && connectedHost != null
 
     @SuppressLint("MissingPermission")

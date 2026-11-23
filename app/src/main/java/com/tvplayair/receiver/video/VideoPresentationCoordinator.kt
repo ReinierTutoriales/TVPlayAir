@@ -23,7 +23,8 @@ data class DirectPlaybackTelemetry(
     val audioOnly: Boolean = false,
     val artist: String? = null,
     val album: String? = null,
-    val artwork: ByteArray? = null
+    val artwork: ByteArray? = null,
+    val livePositionSec: Double? = null
 )
 
 interface AudioHandoffController {

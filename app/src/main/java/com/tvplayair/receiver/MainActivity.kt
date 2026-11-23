@@ -76,12 +76,12 @@ class MainActivity : ComponentActivity(), SurfaceLayerController {
 
     private val mainHandler = Handler(Looper.getMainLooper())
     private var pendingVideoSelect: Pair<Long, Long>? = null
-    private val hideVideoControls = Runnable { dismissVideoControls() }
+    private val hidePlaybackControls = Runnable { dismissPlaybackControls() }
     private val closeOverlayOnBack = object : OnBackPressedCallback(false) {
         override fun handleOnBackPressed() {
             when {
                 overlayState.visible -> setOverlayVisible(false)
-                overlayState.showingVideoControls -> dismissVideoControls()
+                overlayState.showingVideoControls || overlayState.showingMirrorControls -> dismissPlaybackControls()
                 presentationCoordinator.state == PresentationState.MIRROR_ACTIVE -> {
                     mirrorRequested = false
                     presentationCoordinator.onMirrorDisconnected()
@@ -142,8 +142,7 @@ class MainActivity : ComponentActivity(), SurfaceLayerController {
                         onAdjustAudioOffset = ::adjustAudioOffset,
                         onAudioCommand = { command -> sendAudioCommand(command, audioGeneration) },
                         onVideoToggle = { toggleVideoFromControls(directPlaybackId) },
-                        onVideoSeek = { seekVideoFromControls(directPlaybackId, it) },
-                        onVideoInteraction = ::refreshVideoControlsTimeout,
+                        onPlaybackInteraction = ::refreshPlaybackControlsTimeout,
                         onDismiss = { setOverlayVisible(false) }
                     )
                 }
@@ -170,7 +169,9 @@ class MainActivity : ComponentActivity(), SurfaceLayerController {
         audioConsumer = OboeAudioConsumer(this)
         mirrorDecoder = MirrorDecoder(
             surfaceProvider = { mirrorSurfaceView.holder.surface },
-            onVideoSizeChanged = ::updateMirrorSurfaceAspectRatio
+            audioClockOffsetNs = audioConsumer::senderClockOffsetNs,
+            onVideoSizeChanged = ::updateMirrorSurfaceAspectRatio,
+            onRecoveryTimeout = ::finishMirrorPresentation
         )
         webVideoPlayer.attachView(directSurfaceView, object : WebVideoPlayer.ViewCallbacks {
             override fun onTelemetryChanged(telemetry: DirectPlaybackTelemetry) {
@@ -178,7 +179,7 @@ class MainActivity : ComponentActivity(), SurfaceLayerController {
                     presentationCoordinator.state == PresentationState.DIRECT_ACTIVE) {
                     val previousIntent = overlayState.videoControls?.playWhenReady
                     overlayState = overlayState.withDirectTelemetry(telemetry)
-                    if (previousIntent != overlayState.videoControls?.playWhenReady) refreshVideoControlsTimeout()
+                    if (previousIntent != overlayState.videoControls?.playWhenReady) refreshPlaybackControlsTimeout()
                 }
                 if (::presentationCoordinator.isInitialized &&
                     canReportDirectPlayback() &&
@@ -256,7 +257,7 @@ class MainActivity : ComponentActivity(), SurfaceLayerController {
                 mirrorRequested = false
                 directPlaybackId = 0L
                 cancelDirectStartupTimeout()
-                dismissVideoControls()
+                dismissPlaybackControls()
                 presentationCoordinator.onSessionDied()
                 overlayState = overlayState.withAudioStreamStopped().withPresentation(presentationCoordinator.state)
                     .copy(connectedClient = null)
@@ -318,14 +319,7 @@ class MainActivity : ComponentActivity(), SurfaceLayerController {
                 overlayState = overlayState.copy(connectedClient = clientName)
             }
 
-            override fun onMirrorStreamEnded() {
-                mirrorRequested = false
-                if (!overlayState.audioProjectionActive) {
-                    overlayState = overlayState.copy(connectedClient = null)
-                }
-                presentationCoordinator.onMirrorDisconnected()
-                syncPresentationState()
-            }
+            override fun onMirrorStreamEnded() = finishMirrorPresentation()
 
             override fun onAudioStreamStarted(generationId: Int) {
                 overlayState = overlayState.withAudioStreamStarted(generationId)
@@ -374,14 +368,15 @@ class MainActivity : ComponentActivity(), SurfaceLayerController {
     override fun onStop() {
         saveDirectCheckpoint()
         screenStarted = false
-        dismissVideoControls()
+        dismissPlaybackControls()
         sessionConnection.setProjectionVisible(false)
         super.onStop()
     }
 
     override fun onKeyDown(keyCode: Int, event: KeyEvent?): Boolean {
         val openDuringMirror = isSelectKey(keyCode) && !overlayState.visible &&
-            presentationCoordinator.state == PresentationState.MIRROR_ACTIVE && !hidBridge.isConnected()
+            presentationCoordinator.state == PresentationState.MIRROR_ACTIVE &&
+            !overlayState.showingMirrorControls && !hidBridge.isConnected()
         val openFromProjectionHome = isSelectKey(keyCode) && overlayState.projectionHome &&
             !overlayState.visible && overlayState.showStandby && !overlayState.showingAudio
         if (isSettingsKey(keyCode) || openDuringMirror || openFromProjectionHome) {
@@ -390,6 +385,14 @@ class MainActivity : ComponentActivity(), SurfaceLayerController {
         }
 
         if (overlayState.visible) return super.onKeyDown(keyCode, event)
+
+        if (presentationCoordinator.state == PresentationState.MIRROR_ACTIVE && !hidBridge.isConnected() &&
+            (keyCode == KeyEvent.KEYCODE_DPAD_UP || keyCode == KeyEvent.KEYCODE_DPAD_DOWN)
+        ) {
+            overlayState = overlayState.copy(mirrorControlsVisible = true)
+            refreshPlaybackControlsTimeout()
+            return true
+        }
 
         val inDirectMode = presentationCoordinator.hasDirectPlayback
         if (presentationCoordinator.state == PresentationState.DIRECT_ACTIVE &&
@@ -446,7 +449,7 @@ class MainActivity : ComponentActivity(), SurfaceLayerController {
             KeyEvent.KEYCODE_MEDIA_FAST_FORWARD -> {
                 if (inDirectMode) {
                     seekVideoBy(10.0)
-                    if (overlayState.showingDirectControls) refreshVideoControlsTimeout()
+                    if (overlayState.showingDirectControls) refreshPlaybackControlsTimeout()
                 } else {
                     sendAudioCommand(DacpCommand.BEGIN_FF, overlayState.audioGeneration)
                 }
@@ -455,7 +458,7 @@ class MainActivity : ComponentActivity(), SurfaceLayerController {
             KeyEvent.KEYCODE_MEDIA_REWIND -> {
                 if (inDirectMode) {
                     seekVideoBy(-10.0)
-                    if (overlayState.showingDirectControls) refreshVideoControlsTimeout()
+                    if (overlayState.showingDirectControls) refreshPlaybackControlsTimeout()
                 } else {
                     sendAudioCommand(DacpCommand.BEGIN_REW, overlayState.audioGeneration)
                 }
@@ -494,32 +497,27 @@ class MainActivity : ComponentActivity(), SurfaceLayerController {
     private fun showVideoControls() {
         overlayState = overlayState.copy(videoControls = presentationCoordinator.directTelemetry())
         closeOverlayOnBack.isEnabled = true
-        refreshVideoControlsTimeout()
+        refreshPlaybackControlsTimeout()
     }
 
-    private fun refreshVideoControlsTimeout() {
-        if (!overlayState.showingVideoControls) return
-        mainHandler.removeCallbacks(hideVideoControls)
-        if (overlayState.videoControls?.playWhenReady == true) {
-            mainHandler.postDelayed(hideVideoControls, 5_000L)
+    private fun refreshPlaybackControlsTimeout() {
+        if (!overlayState.showingVideoControls && !overlayState.showingMirrorControls) return
+        mainHandler.removeCallbacks(hidePlaybackControls)
+        if (overlayState.showingMirrorControls || overlayState.videoControls?.playWhenReady == true) {
+            mainHandler.postDelayed(hidePlaybackControls, 5_000L)
         }
     }
 
     private fun sendAudioCommand(command: DacpCommand, generation: Int?) {
         if (generation == null || !overlayState.canSendAudioControl(generation)) return
         sessionConnection.sendDacpCommand(generation, command.wirePath)
+        if (overlayState.showingMirrorControls) refreshPlaybackControlsTimeout()
     }
 
     private fun toggleVideoFromControls(playbackId: Long) {
         if (directPlaybackId != playbackId || !overlayState.showingDirectControls) return
         setDirectPlaybackIntent("toggle")
-        refreshVideoControlsTimeout()
-    }
-
-    private fun seekVideoFromControls(playbackId: Long, deltaSec: Double) {
-        if (directPlaybackId != playbackId || !overlayState.showingDirectControls) return
-        seekVideoBy(deltaSec)
-        refreshVideoControlsTimeout()
+        refreshPlaybackControlsTimeout()
     }
 
     private fun seekVideoBy(deltaSec: Double) {
@@ -528,10 +526,10 @@ class MainActivity : ComponentActivity(), SurfaceLayerController {
         presentationCoordinator.seekDirect((telemetry.positionSec + deltaSec).coerceAtLeast(0.0))
     }
 
-    private fun dismissVideoControls() {
-        mainHandler.removeCallbacks(hideVideoControls)
-        if (overlayState.videoControls != null) {
-            overlayState = overlayState.copy(videoControls = null)
+    private fun dismissPlaybackControls() {
+        mainHandler.removeCallbacks(hidePlaybackControls)
+        if (overlayState.videoControls != null || overlayState.mirrorControlsVisible) {
+            overlayState = overlayState.copy(videoControls = null, mirrorControlsVisible = false)
         }
         closeOverlayOnBack.isEnabled = overlayState.visible ||
             (::presentationCoordinator.isInitialized &&
@@ -583,7 +581,7 @@ class MainActivity : ComponentActivity(), SurfaceLayerController {
     private fun setOverlayVisible(visible: Boolean) {
         if (overlayState.visible == visible) return
         overlayState = overlayState.copy(visible = visible)
-        dismissVideoControls()
+        dismissPlaybackControls()
         updateScreenWake()
     }
 
@@ -629,7 +627,7 @@ class MainActivity : ComponentActivity(), SurfaceLayerController {
         val id = video.playbackId
         if (video.url.isBlank() || !video.airPlayPosition.isFinite() || id <= 0L) return false
         if (directPlaybackId == id && presentationCoordinator.hasDirectPlayback) return true
-        dismissVideoControls()
+        dismissPlaybackControls()
         overlayState = overlayState.clearAudioMetadata().copy(visible = false, directAudio = null)
         directAspectRatio = null
         updateDirectSurfaceAspectRatio()
@@ -682,6 +680,15 @@ class MainActivity : ComponentActivity(), SurfaceLayerController {
         )
     }
 
+    private fun finishMirrorPresentation() {
+        mirrorRequested = false
+        if (!overlayState.audioProjectionActive) {
+            overlayState = overlayState.copy(connectedClient = null)
+        }
+        presentationCoordinator.onMirrorDisconnected()
+        syncPresentationState()
+    }
+
     private fun finishDirectSession(playbackId: Long) {
         if (directPlaybackId != playbackId) return
         directPlaybackId = 0L
@@ -697,8 +704,10 @@ class MainActivity : ComponentActivity(), SurfaceLayerController {
     private fun syncPresentationState() {
         val state = presentationCoordinator.state
         if (state != PresentationState.SWITCHING_TO_DIRECT) cancelDirectStartupTimeout()
-        if (state != PresentationState.DIRECT_ACTIVE && overlayState.videoControls != null) {
-            dismissVideoControls()
+        if ((state != PresentationState.DIRECT_ACTIVE && overlayState.videoControls != null) ||
+            (state != PresentationState.MIRROR_ACTIVE && overlayState.mirrorControlsVisible)
+        ) {
+            dismissPlaybackControls()
         }
         if (overlayState.presentationState != state) {
             overlayState = overlayState.withPresentation(state)
@@ -799,7 +808,7 @@ class MainActivity : ComponentActivity(), SurfaceLayerController {
         saveDirectCheckpoint()
         destroyingView = true
         cancelDirectStartupTimeout()
-        mainHandler.removeCallbacks(hideVideoControls)
+        mainHandler.removeCallbacks(hidePlaybackControls)
         hidBridge.release()
         webVideoPlayer.detachView(directSurfaceView)
         val retainedByService = !isChangingConfigurations &&

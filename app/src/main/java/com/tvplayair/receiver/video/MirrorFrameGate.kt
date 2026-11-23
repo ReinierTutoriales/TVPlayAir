@@ -15,19 +15,12 @@ class MirrorFrameGate {
     private var cachedCodecConfig: ByteArray? = null
     private var awaitingIdr = true
 
-    var droppedNonIdrFrames: Long = 0L
-        private set
+    fun matchesCodecConfig(data: ByteArray): Boolean = cachedCodecConfig.contentEquals(data)
 
-    var acceptedFrames: Long = 0L
-        private set
-
-    fun isAwaitingIdr(): Boolean = awaitingIdr
-
-    fun hasCachedCodecConfig(): Boolean = cachedCodecConfig != null
-
-    fun onCodecConfig(data: ByteArray, offset: Int = 0, length: Int = data.size - offset) {
-        if (length <= 0 || offset < 0 || offset + length > data.size) return
-        cachedCodecConfig = data.copyOfRange(offset, offset + length)
+    fun onCodecConfig(data: ByteArray): Boolean {
+        if (data.isEmpty() || matchesCodecConfig(data)) return false
+        cachedCodecConfig = data.copyOf()
+        return true
     }
 
     fun getCachedCodecConfig(): ByteArray? = cachedCodecConfig?.copyOf()
@@ -47,15 +40,10 @@ class MirrorFrameGate {
         awaitingIdr = true
     }
 
-    fun shouldSubmitFrame(flags: Int): Boolean {
-        if (!awaitingIdr || (flags and (FLAG_CODEC_CONFIG or FLAG_KEY_FRAME)) != 0) return true
-        droppedNonIdrFrames++
-        return false
-    }
+    fun shouldSubmitFrame(flags: Int): Boolean =
+        !awaitingIdr || (flags and (FLAG_CODEC_CONFIG or FLAG_KEY_FRAME)) != 0
 
     fun onFrameSubmitted(flags: Int) {
-        if ((flags and FLAG_CODEC_CONFIG) != 0) return
-        if ((flags and FLAG_KEY_FRAME) != 0) awaitingIdr = false
-        acceptedFrames++
+        if ((flags and FLAG_CODEC_CONFIG) == 0 && (flags and FLAG_KEY_FRAME) != 0) awaitingIdr = false
     }
 }

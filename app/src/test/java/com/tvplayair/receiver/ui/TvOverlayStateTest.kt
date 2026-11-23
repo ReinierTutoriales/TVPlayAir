@@ -14,6 +14,22 @@ import org.junit.Test
 class TvOverlayStateTest {
 
     @Test
+    fun mirrorControlsStayHiddenUntilRequestedAndDoNotFollowTheNextSource() {
+        val mirror = TvOverlayState(audioGeneration = 1, audioControlsAvailable = true)
+            .withPresentation(PresentationState.MIRROR_ACTIVE)
+        assertFalse(mirror.showingMirrorControls)
+        val controls = mirror.copy(mirrorControlsVisible = true)
+        assertTrue(controls.showingMirrorControls)
+        assertFalse(controls.showingAudio)
+        assertTrue(controls.canSendAudioControl(1))
+        assertFalse(controls.copy(visible = true).showingMirrorControls)
+        val switching = controls.withPresentation(PresentationState.SWITCHING_TO_DIRECT)
+        assertFalse(switching.showingMirrorControls)
+        assertFalse(switching.canSendAudioControl(1))
+        assertFalse(switching.withPresentation(PresentationState.MIRROR_ACTIVE).showingMirrorControls)
+    }
+
+    @Test
     fun aConnectedClientKeepsStandbyVisibleUntilVideoTakesOver() {
         val connected = TvOverlayState(connectedClient = "iPhone")
 

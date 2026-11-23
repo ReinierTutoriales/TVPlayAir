@@ -1,8 +1,10 @@
 package com.tvplayair.receiver.session
 
 import java.io.BufferedInputStream
+import java.io.ByteArrayOutputStream
 import java.io.InputStream
 import java.net.SocketTimeoutException
+import java.util.zip.GZIPOutputStream
 import org.junit.Assert.assertArrayEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertEquals
@@ -12,6 +14,19 @@ import org.junit.Assert.assertThrows
 import org.junit.Test
 
 class AirPlayHttpHeaderTest {
+    @Test
+    fun fcupGzipReturnsOnlyValidPayloadsWithinTheDecodedLimit() {
+        val payload = ByteArray(9000) { 'a'.code.toByte() }
+        val zipped = ByteArrayOutputStream().also { output ->
+            GZIPOutputStream(output).use { it.write(payload) }
+        }.toByteArray()
+
+        assertArrayEquals(payload, decodeFcupPayload(zipped, payload.size))
+        assertNull(decodeFcupPayload(zipped, payload.size - 1))
+        assertNull(decodeFcupPayload(zipped.copyOf(zipped.size - 4), payload.size))
+        assertArrayEquals(payload, decodeFcupPayload(payload, payload.size))
+    }
+
     @Test
     fun eventReaderConsumesTheWholeBodyBeforeTheNextRequest() {
         val firstBody = "GET /looks-like-a-request HTTP/1.1"

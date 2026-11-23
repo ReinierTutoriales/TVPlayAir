@@ -149,16 +149,6 @@ class OboeAudioConsumer(context: Context) : AudioHandoffController {
 
     fun isRunning(): Boolean = nativeIsRunning()
 
-    fun getUnderrunCount(): Long = nativeGetUnderrunCount()
-
-    fun getRecoveryCount(): Long = nativeGetRecoveryCount()
-
-    fun getGrantedSampleRate(): Int = nativeGetGrantedSampleRate()
-
-    fun getGrantedFramesPerBurst(): Int = nativeGetGrantedFramesPerBurst()
-
-    fun isExclusiveMode(): Boolean = nativeIsExclusiveMode()
-
     private fun requestFocusAndStart(): Boolean {
         if (hasFocus) {
             nativeSetDucked(false)
@@ -199,15 +189,13 @@ class OboeAudioConsumer(context: Context) : AudioHandoffController {
 
     private external fun nativeStart(generationId: Int, discardInterruptedAudio: Boolean): Boolean
     private external fun nativeStop()
+    internal fun senderClockOffsetNs(): Long = nativeSenderClockOffsetNs()
+
+    private external fun nativeSenderClockOffsetNs(): Long
     private external fun nativeSetGeneration(generationId: Int)
     private external fun nativeSetOffsetMs(offsetMs: Int)
     private external fun nativeGetOffsetMs(): Int
     private external fun nativeSetMuted(muted: Boolean)
     private external fun nativeSetDucked(ducked: Boolean)
     private external fun nativeIsRunning(): Boolean
-    private external fun nativeGetUnderrunCount(): Long
-    private external fun nativeGetRecoveryCount(): Long
-    private external fun nativeGetGrantedSampleRate(): Int
-    private external fun nativeGetGrantedFramesPerBurst(): Int
-    private external fun nativeIsExclusiveMode(): Boolean
 }

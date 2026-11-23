@@ -13,7 +13,7 @@ description: Use when optimizing, cleaning, or reviewing TVPlayAir. Prioritizes 
 - Keep DACP mandatory and Bluetooth HID optional/best-effort. Failure of optional HID must not affect playback or receiver availability.
 - Preserve native SurfaceView presentation and v1.0's no-OpenGL constraint.
 - Do not introduce dependencies, abstractions, allocations, copies, threads or callbacks without a demonstrated need.
-- Verify compatibility from minSdk 29 through targetSdk 35 and the pinned compileSdk 36 baseline.
+- Verify compatibility against the active minSdk, targetSdk and compileSdk from the build.
 - Check current official Android/AndroidX/Media3/NDK/Oboe documentation before replacing APIs or relying on codec/OS behavior.
 - Report residual device validation explicitly; CI cannot establish HDR passthrough, VPU capacity, audio latency or Bluetooth stack behavior.
 - Follow `agent-governance` for all Git mutations.

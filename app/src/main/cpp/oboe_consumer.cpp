@@ -1,3 +1,4 @@
+#include <time.h>
 #include "oboe_consumer.hpp"
 
 #include <android/log.h>
@@ -89,26 +90,6 @@ bool OboeConsumer::isRunning() const {
     return running_.load(std::memory_order_acquire);
 }
 
-uint64_t OboeConsumer::underrunCount() const {
-    return pipeline_.underrunCount();
-}
-
-uint64_t OboeConsumer::recoveryCount() const {
-    return recoveryCount_.load(std::memory_order_relaxed);
-}
-
-int32_t OboeConsumer::grantedSampleRate() const {
-    return grantedSampleRate_.load(std::memory_order_relaxed);
-}
-
-int32_t OboeConsumer::grantedFramesPerBurst() const {
-    return grantedFramesPerBurst_.load(std::memory_order_relaxed);
-}
-
-bool OboeConsumer::isExclusiveMode() const {
-    return exclusiveMode_.load(std::memory_order_relaxed);
-}
-
 oboe::Result OboeConsumer::openWithFallbackLocked(
     std::shared_ptr<oboe::AudioStream>& outStream) {
     oboe::AudioStreamBuilder builder;
@@ -164,12 +145,6 @@ bool OboeConsumer::openAndStartLocked() {
         }
     }
 
-    grantedSampleRate_.store(newStream->getSampleRate(), std::memory_order_relaxed);
-    grantedFramesPerBurst_.store(framesPerBurst, std::memory_order_relaxed);
-    exclusiveMode_.store(
-        newStream->getSharingMode() == oboe::SharingMode::Exclusive,
-        std::memory_order_relaxed);
-
     __android_log_print(
         ANDROID_LOG_INFO,
         kLogTag,
@@ -186,6 +161,8 @@ bool OboeConsumer::openAndStartLocked() {
         newStream->getBufferCapacityInFrames(),
         newStream->getDeviceId());
 
+    submittedFrames_ = 0;
+    anchorSenderTimeUs_.store(0);
     const oboe::Result startResult = newStream->requestStart();
     if (startResult != oboe::Result::OK) {
         __android_log_print(
@@ -207,8 +184,36 @@ oboe::DataCallbackResult OboeConsumer::onAudioReady(
     oboe::AudioStream* /* audioStream */,
     void* audioData,
     int32_t numFrames) {
-    pipeline_.render(ring_, static_cast<int16_t*>(audioData), numFrames);
+    const auto timing = pipeline_.render(ring_, static_cast<int16_t*>(audioData), numFrames);
+    anchorSequence_.fetch_add(1);
+    anchorSenderTimeUs_.store(timing.senderTimeUs);
+    anchorFrame_.store(submittedFrames_ + timing.outputFrame);
+    anchorGeneration_.store(timing.generation);
+    anchorSequence_.fetch_add(1);
+    submittedFrames_ += numFrames;
     return oboe::DataCallbackResult::Continue;
+}
+
+int64_t OboeConsumer::senderClockOffsetNs() {
+    const std::unique_lock<std::mutex> lock(streamMutex_, std::try_to_lock);
+    if (!lock.owns_lock() || !stream_ || !isRunning() ||
+        stream_->getSampleRate() != kAudioSampleRate) return INT64_MIN;
+
+    const uint32_t before = anchorSequence_.load();
+    if ((before & 1U) != 0U) return INT64_MIN;
+    const int64_t senderTimeUs = anchorSenderTimeUs_.load();
+    const int64_t frame = anchorFrame_.load();
+    const uint32_t generation = anchorGeneration_.load();
+    if (before != anchorSequence_.load() || senderTimeUs <= 0 ||
+        generation != pipeline_.generationId()) return INT64_MIN;
+
+    int64_t hardwareFrame = 0;
+    int64_t hardwareNs = 0;
+    if (stream_->getTimestamp(CLOCK_MONOTONIC, &hardwareFrame, &hardwareNs) != oboe::Result::OK ||
+        hardwareFrame < 0 || hardwareNs <= 0 || generation != pipeline_.generationId()) return INT64_MIN;
+    const int64_t frames = frame - hardwareFrame;
+    if (frames < -kAudioSampleRate / 2 || frames > kAudioSampleRate / 2) return INT64_MIN;
+    return hardwareNs + frames * INT64_C(1000000000) / kAudioSampleRate - senderTimeUs * 1000;
 }
 
 void OboeConsumer::onErrorBeforeClose(oboe::AudioStream* /* oboeStream */, oboe::Result error) {
@@ -239,7 +244,6 @@ void OboeConsumer::onErrorAfterClose(oboe::AudioStream* oboeStream, oboe::Result
 
     pipeline_.reset();
     if (openAndStartLocked()) {
-        recoveryCount_.fetch_add(1, std::memory_order_relaxed);
         __android_log_print(ANDROID_LOG_INFO, kLogTag, "Oboe stream recovered successfully");
     } else {
         __android_log_print(ANDROID_LOG_ERROR, kLogTag, "Oboe stream recovery failed");
@@ -303,29 +307,8 @@ Java_com_tvplayair_receiver_audio_OboeAudioConsumer_nativeIsRunning(JNIEnv*, job
 }
 
 JNIEXPORT jlong JNICALL
-Java_com_tvplayair_receiver_audio_OboeAudioConsumer_nativeGetUnderrunCount(JNIEnv*, jobject) {
-    return static_cast<jlong>(tvplayair::oboeConsumer().underrunCount());
-}
-
-JNIEXPORT jlong JNICALL
-Java_com_tvplayair_receiver_audio_OboeAudioConsumer_nativeGetRecoveryCount(JNIEnv*, jobject) {
-    return static_cast<jlong>(tvplayair::oboeConsumer().recoveryCount());
-}
-
-JNIEXPORT jint JNICALL
-Java_com_tvplayair_receiver_audio_OboeAudioConsumer_nativeGetGrantedSampleRate(JNIEnv*, jobject) {
-    return static_cast<jint>(tvplayair::oboeConsumer().grantedSampleRate());
-}
-
-JNIEXPORT jint JNICALL
-Java_com_tvplayair_receiver_audio_OboeAudioConsumer_nativeGetGrantedFramesPerBurst(
-    JNIEnv*, jobject) {
-    return static_cast<jint>(tvplayair::oboeConsumer().grantedFramesPerBurst());
-}
-
-JNIEXPORT jboolean JNICALL
-Java_com_tvplayair_receiver_audio_OboeAudioConsumer_nativeIsExclusiveMode(JNIEnv*, jobject) {
-    return tvplayair::oboeConsumer().isExclusiveMode() ? JNI_TRUE : JNI_FALSE;
+Java_com_tvplayair_receiver_audio_OboeAudioConsumer_nativeSenderClockOffsetNs(JNIEnv*, jobject) {
+    return static_cast<jlong>(tvplayair::oboeConsumer().senderClockOffsetNs());
 }
 
 } // extern "C"

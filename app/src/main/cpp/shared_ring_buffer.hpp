@@ -19,7 +19,7 @@ static_assert(std::atomic<uint32_t>::is_always_lock_free,
               "SPSC requiere atomics lock-free");
 
 constexpr uint32_t kRingMagic = 0x5456504C;
-constexpr uint32_t kRingVersion = 1;
+constexpr uint32_t kRingVersion = 2;
 constexpr size_t kCacheLine = 64;
 
 enum class RingResult : uint32_t {
@@ -40,6 +40,7 @@ struct alignas(kCacheLine) RingHeader {
 struct PacketHeader {
     uint32_t payloadSize;
     uint32_t generationId;
+    int64_t senderTimeUs;
 };
 
 // POSIX mmap + SPSC data plane; ASharedMemory FD creation is kept outside.
@@ -126,7 +127,7 @@ public:
         }
     }
 
-    RingResult writePacket(const void* data, uint32_t size, uint32_t generationId) {
+    RingResult writePacket(const void* data, uint32_t size, uint32_t generationId, int64_t senderTimeUs = 0) {
         if (!valid() || (!data && size != 0)) return RingResult::Invalid;
         if (size > header_->payloadCapacity) {
             header_->droppedPackets.fetch_add(1, std::memory_order_relaxed);
@@ -141,13 +142,14 @@ public:
         PacketHeader* packet = packetAt(write);
         packet->payloadSize = size;
         packet->generationId = generationId;
+        packet->senderTimeUs = senderTimeUs;
         if (size) std::memcpy(payloadAt(packet), data, size);
         header_->writePos.store(write + 1, std::memory_order_release);
         return RingResult::Ok;
     }
 
     RingResult readPacket(void* out, uint32_t outCapacity, uint32_t* outSize,
-                          uint32_t expectedGenerationId) {
+                          uint32_t expectedGenerationId, int64_t* senderTimeUs = nullptr) {
         if (!valid() || !outSize || (!out && outCapacity != 0)) return RingResult::Invalid;
         const uint32_t read = header_->readPos.load(std::memory_order_relaxed);
         const uint32_t write = header_->writePos.load(std::memory_order_acquire);
@@ -169,6 +171,7 @@ public:
         }
         if (size) std::memcpy(out, payloadAt(packet), size);
         *outSize = size;
+        if (senderTimeUs) *senderTimeUs = packet->senderTimeUs;
         header_->readPos.store(read + 1, std::memory_order_release);
         return RingResult::Ok;
     }

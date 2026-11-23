@@ -29,7 +29,9 @@ data class MirrorVideoConfig(
  */
 class MirrorDecoder(
     private val surfaceProvider: () -> Surface?,
-    private val onVideoSizeChanged: ((Int, Int) -> Unit)? = null
+    private val audioClockOffsetNs: () -> Long,
+    private val onVideoSizeChanged: ((Int, Int) -> Unit)? = null,
+    private val onRecoveryTimeout: () -> Unit
 ) : MirrorVideoEngine {
 
     companion object {
@@ -39,7 +41,7 @@ class MirrorDecoder(
         private const val IDLE_POLL_SLEEP_MS = 2L
     }
 
-    val frameGate = MirrorFrameGate()
+    private val frameGate = MirrorFrameGate()
 
     private val packetBuffer: ByteBuffer =
         ByteBuffer.allocateDirect(MAX_PACKET_BYTES).order(ByteOrder.LITTLE_ENDIAN)
@@ -56,7 +58,7 @@ class MirrorDecoder(
 
     fun updateConfig(newConfig: MirrorVideoConfig, generation: Int, codecConfig: ByteArray): Boolean {
         if (generationId.get() == generation && config == newConfig &&
-            frameGate.getCachedCodecConfig().contentEquals(codecConfig)
+            frameGate.matchesCodecConfig(codecConfig)
         ) return false
         stopAndRelease()
         config = newConfig
@@ -111,68 +113,61 @@ class MirrorDecoder(
         val generation = generationId.get()
         val startedMs = SystemClock.elapsedRealtime()
         val format = MediaFormat.createVideoFormat(cfg.mimeType, cfg.width, cfg.height)
-        // Format changes rebuild the decoder. Adaptive maximum hints reserve extra buffers.
-        // Safe low-latency fallback on API 29+; never force KEY_OPERATING_RATE = 32767.
-        format.setInteger(MediaFormat.KEY_PRIORITY, 0)
         if (csdBytes != null && csdBytes.isNotEmpty()) {
             format.setByteBuffer("csd-0", ByteBuffer.wrap(csdBytes))
         }
-
         val decoder = runCatching {
-            val codecName = MediaCodecList(MediaCodecList.REGULAR_CODECS)
-                .findDecoderForFormat(format)
-            if (codecName != null) {
-                MediaCodec.createByCodecName(codecName)
-            } else {
-                MediaCodec.createDecoderByType(cfg.mimeType)
-            }
+            val codecName = MediaCodecList(MediaCodecList.REGULAR_CODECS).findDecoderForFormat(format)
+            if (codecName != null) MediaCodec.createByCodecName(codecName)
+            else MediaCodec.createDecoderByType(cfg.mimeType)
         }.onFailure {
             logCodecFailure("create", it)
         }.getOrNull() ?: return null
         val codecName = decoder.name
+        val lowLatencySupported = Build.VERSION.SDK_INT >= Build.VERSION_CODES.R && runCatching {
+            decoder.codecInfo.getCapabilitiesForType(cfg.mimeType)
+                .isFeatureSupported(MediaCodecInfo.CodecCapabilities.FEATURE_LowLatency)
+        }.getOrDefault(false)
 
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
-            val lowLatencySupported = runCatching {
-                decoder.codecInfo
-                    .getCapabilitiesForType(cfg.mimeType)
-                    .isFeatureSupported(MediaCodecInfo.CodecCapabilities.FEATURE_LowLatency)
-            }.getOrDefault(false)
-            if (lowLatencySupported) {
-                format.setInteger(MediaFormat.KEY_LOW_LATENCY, 1)
-            }
-            Log.i(
-                TAG,
-                "Configured $codecName (${cfg.mimeType} ${cfg.width}x${cfg.height}) " +
-                    "lowLatency=$lowLatencySupported csd=${csdBytes?.size ?: 0}B"
-            )
-        } else {
-            Log.i(
-                TAG,
-                "Configured $codecName (${cfg.mimeType} ${cfg.width}x${cfg.height}) " +
-                    "API ${Build.VERSION.SDK_INT} priority=0 csd=${csdBytes?.size ?: 0}B"
-            )
+        fun startDecoder(instance: MediaCodec, lowLatency: Boolean): MediaCodec? {
+            return runCatching {
+                instance.configure(format, surface, null, 0)
+                instance.setOnFrameRenderedListener({ activeCodec, _, _ ->
+                    synchronized(codecLock) {
+                        if (codec === activeCodec) {
+                            Log.i(PLAYBACK_DIAGNOSTICS_TAG,
+                                "route=mirror_decoder generation=$generation event=first_frame codec=$codecName " +
+                                    "elapsedMs=${SystemClock.elapsedRealtime() - startedMs}")
+                            runCatching { activeCodec.setOnFrameRenderedListener(null, null) }
+                        }
+                    }
+                }, renderListenerHandler)
+                instance.start()
+                Log.i(PLAYBACK_DIAGNOSTICS_TAG,
+                    "route=mirror_decoder generation=$generation event=codec_started codec=$codecName " +
+                        "size=${cfg.width}x${cfg.height} lowLatency=$lowLatency")
+                instance
+            }.onFailure {
+                logCodecFailure(if (lowLatency) "start_low_latency" else "start_basic", it)
+                runCatching { instance.release() }
+            }.getOrNull()
         }
 
-        return runCatching {
-            decoder.configure(format, surface, null, 0)
-            decoder.setOnFrameRenderedListener({ activeCodec, _, _ ->
-                synchronized(codecLock) {
-                    if (codec === activeCodec) {
-                        Log.i(PLAYBACK_DIAGNOSTICS_TAG,
-                            "route=mirror_decoder generation=$generation event=first_frame codec=$codecName " +
-                                "elapsedMs=${SystemClock.elapsedRealtime() - startedMs}")
-                        runCatching { activeCodec.setOnFrameRenderedListener(null, null) }
-                    }
-                }
-            }, renderListenerHandler)
-            decoder.start()
-            Log.i(PLAYBACK_DIAGNOSTICS_TAG,
-                "route=mirror_decoder generation=$generation event=codec_started codec=$codecName")
-            decoder
-        }.onFailure {
-            logCodecFailure("configure", it)
-            runCatching { decoder.release() }
-        }.getOrNull()
+        format.setInteger(MediaFormat.KEY_PRIORITY, 0)
+        if (!lowLatencySupported) return startDecoder(decoder, lowLatency = false)
+
+        format.setInteger(MediaFormat.KEY_LOW_LATENCY, 1)
+        startDecoder(decoder, lowLatency = true)?.let { return it }
+        if (!surface.isValid || generationId.get() != generation) return null
+
+        Log.i(PLAYBACK_DIAGNOSTICS_TAG,
+            "route=mirror_decoder generation=$generation event=retry_basic codec=$codecName")
+        // A failed configure/start can leave the codec unusable; reopen it with the base format.
+        format.removeKey(MediaFormat.KEY_LOW_LATENCY)
+        format.removeKey(MediaFormat.KEY_PRIORITY)
+        return runCatching { MediaCodec.createByCodecName(codecName) }.onFailure {
+            logCodecFailure("create_basic", it)
+        }.getOrNull()?.let { startDecoder(it, lowLatency = false) }
     }
 
     private fun logCodecFailure(operation: String, error: Throwable) {
@@ -195,6 +190,9 @@ class MirrorDecoder(
     private fun decodeLoop() {
         val bufferInfo = MediaCodec.BufferInfo()
         val outputWatchdog = MirrorOutputWatchdog(SystemClock::elapsedRealtime)
+        val frameClock = MirrorFrameClock(audioClockOffsetNs, System::nanoTime)
+        val worker = Thread.currentThread()
+        val generation = generationId.get()
         var activeCodec = codec
 
         fun recover(codecToRelease: MediaCodec, operation: String, error: IllegalStateException? = null) {
@@ -205,14 +203,24 @@ class MirrorDecoder(
                 "route=mirror_decoder generation=${generationId.get()} event=await_keyframe reason=$operation")
             releaseCodec(codecToRelease, reclaimed)
             activeCodec = null
-            outputWatchdog.clearQueuedFrames()
+            outputWatchdog.beginRecovery()
             frameGate.resetGate()
         }
 
         while (running.get()) {
+            if (outputWatchdog.recoveryExpired()) {
+                Log.w(PLAYBACK_DIAGNOSTICS_TAG,
+                    "route=mirror_decoder generation=$generation event=recovery_timeout")
+                renderListenerHandler.post {
+                    if (running.get() && workerThread === worker && generationId.get() == generation) {
+                        onRecoveryTimeout()
+                    }
+                }
+                return
+            }
             activeCodec?.let { current ->
                 try {
-                    drainOutputBuffers(current, bufferInfo, outputWatchdog)
+                    drainOutputBuffers(current, bufferInfo, outputWatchdog, frameClock)
                     if (running.get() && outputWatchdog.takeRecovery()) recover(current, "output_stall")
                 } catch (error: IllegalStateException) {
                     recover(current, "output", error)
@@ -247,8 +255,7 @@ class MirrorDecoder(
                 val configBytes = ByteArray(payloadSize)
                 packetBuffer.position(MirrorFrameGate.PACKET_HEADER_BYTES)
                 packetBuffer.get(configBytes)
-                val previousCsd = frameGate.getCachedCodecConfig()
-                frameGate.onCodecConfig(configBytes)
+                val newCodecConfig = frameGate.onCodecConfig(configBytes)
                 if (activeCodec == null) {
                     val surface = surfaceProvider()
                     if (surface != null && surface.isValid && running.get()) {
@@ -264,7 +271,7 @@ class MirrorDecoder(
                     }
                     // csd-0 was already passed into MediaCodec.configure(); skip duplicate queueInputBuffer.
                     continue
-                } else if (previousCsd != null && previousCsd.contentEquals(configBytes)) {
+                } else if (!newCodecConfig) {
                     // Identical SPS/PPS already configured on activeCodec; skip duplicate re-config buffer.
                     continue
                 }
@@ -297,7 +304,7 @@ class MirrorDecoder(
                 while (running.get() && attempts < 25) {
                     inputIndex = currentCodec.dequeueInputBuffer(DEQUEUE_TIMEOUT_US)
                     if (inputIndex >= 0) break
-                    drainOutputBuffers(currentCodec, bufferInfo, outputWatchdog)
+                    drainOutputBuffers(currentCodec, bufferInfo, outputWatchdog, frameClock)
                     attempts++
                 }
                 if (inputIndex < 0) {
@@ -341,13 +348,20 @@ class MirrorDecoder(
     private fun drainOutputBuffers(
         activeCodec: MediaCodec,
         bufferInfo: MediaCodec.BufferInfo,
-        outputWatchdog: MirrorOutputWatchdog
+        outputWatchdog: MirrorOutputWatchdog,
+        frameClock: MirrorFrameClock
     ) {
         while (running.get()) {
             val outIndex = activeCodec.dequeueOutputBuffer(bufferInfo, 0L)
             if (outIndex >= 0) {
-                activeCodec.releaseOutputBuffer(outIndex, true)
-                if ((bufferInfo.flags and MediaCodec.BUFFER_FLAG_CODEC_CONFIG) == 0) {
+                val videoFrame = (bufferInfo.flags and MediaCodec.BUFFER_FLAG_CODEC_CONFIG) == 0
+                val renderTime = if (videoFrame) frameClock.renderTimeNs(bufferInfo.presentationTimeUs) else null
+                if (renderTime == null) {
+                    activeCodec.releaseOutputBuffer(outIndex, videoFrame)
+                } else {
+                    activeCodec.releaseOutputBuffer(outIndex, renderTime)
+                }
+                if (videoFrame) {
                     outputWatchdog.onOutputReleased()
                 }
             } else if (outIndex == MediaCodec.INFO_OUTPUT_FORMAT_CHANGED) {
@@ -387,11 +401,12 @@ internal class MirrorOutputWatchdog(private val elapsedMs: () -> Long) {
     private companion object {
         const val PENDING_FRAME_THRESHOLD = 4
         const val STALL_TIMEOUT_MS = 2_000L
+        const val RECOVERY_TIMEOUT_MS = 5_000L
     }
 
     private var queuedFrames = 0
     private var waitingSinceMs = 0L
-    private var recoveryAttempted = false
+    private var recoveryStartedMs: Long? = null
 
     fun onFrameQueued() {
         if (queuedFrames == 0) waitingSinceMs = elapsedMs()
@@ -401,19 +416,50 @@ internal class MirrorOutputWatchdog(private val elapsedMs: () -> Long) {
     fun onOutputReleased() {
         if (queuedFrames > 0) queuedFrames--
         waitingSinceMs = elapsedMs()
-        recoveryAttempted = false
+        recoveryStartedMs = null
     }
 
     fun clearQueuedFrames() {
         queuedFrames = 0
     }
 
+    fun beginRecovery() {
+        if (recoveryStartedMs == null) recoveryStartedMs = elapsedMs()
+        clearQueuedFrames()
+    }
+
+    fun recoveryExpired(): Boolean =
+        recoveryStartedMs?.let { elapsedMs() - it >= RECOVERY_TIMEOUT_MS } == true
+
     fun takeRecovery(): Boolean {
-        if (recoveryAttempted || queuedFrames < PENDING_FRAME_THRESHOLD ||
+        if (recoveryStartedMs != null || queuedFrames < PENDING_FRAME_THRESHOLD ||
             elapsedMs() - waitingSinceMs < STALL_TIMEOUT_MS
         ) return false
-        recoveryAttempted = true
-        clearQueuedFrames()
+        beginRecovery()
         return true
+    }
+}
+
+
+/** Maps the sender's NTP video PTS to Android's monotonic presentation clock. */
+internal class MirrorFrameClock(
+    private val audioClockOffsetNs: () -> Long,
+    private val nowNs: () -> Long
+) {
+    private var lastPollNs: Long? = null
+    private var offsetNs = Long.MIN_VALUE
+
+    fun renderTimeNs(senderPtsUs: Long): Long? {
+        if (senderPtsUs <= 0 || senderPtsUs > Long.MAX_VALUE / 1000L) return null
+        val now = nowNs()
+        val lastPoll = lastPollNs
+        if (lastPoll == null || now - lastPoll >= 100_000_000L) {
+            offsetNs = audioClockOffsetNs()
+            lastPollNs = now
+        }
+        if (offsetNs == Long.MIN_VALUE) return null
+        val targetNs = senderPtsUs * 1000L + offsetNs
+        // Late frames and unrelated sender clocks should retain immediate playback.
+        return targetNs.takeIf { it > now && it - now <= 150_000_000L }
     }
 }

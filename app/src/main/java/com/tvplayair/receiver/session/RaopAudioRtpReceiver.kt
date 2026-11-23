@@ -6,7 +6,30 @@ import java.net.DatagramPacket
 import java.net.DatagramSocket
 import java.net.InetAddress
 import java.net.InetSocketAddress
+import java.nio.ByteBuffer
 import java.util.concurrent.atomic.AtomicBoolean
+
+internal data class RaopClockAnchor(val rtpTimestamp: Long, val senderTimeUs: Long) {
+    fun senderTimeUsAt(timestamp: Long, sampleRate: Int): Long =
+        senderTimeUs + (timestamp - rtpTimestamp).toInt().toLong() * 1_000_000L / sampleRate
+
+    companion object {
+        fun parse(data: ByteArray, length: Int): RaopClockAnchor? {
+            if (length !in 20..data.size || (data[0].toInt() and 0xc0) != 0x80 ||
+                (data[1].toInt() and 0x7f) != 0x54
+            ) return null
+            val buffer = ByteBuffer.wrap(data, 0, length)
+            val rtp = buffer.getInt(4).toLong() and 0xffffffffL
+            val ntp = buffer.getLong(8)
+            if (ntp == 0L) return null
+            val fraction = ntp and 0xffffffffL
+            return RaopClockAnchor(
+                rtp,
+                (ntp ushr 32) * 1_000_000L + ((fraction * 1_000_000L) ushr 32)
+            )
+        }
+    }
+}
 
 data class RtpAudioPacket(
     val payloadType: Int,
@@ -73,14 +96,16 @@ internal class RaopRtpJitterBuffer(
     private val maxReorderWindow: Int = 32,
     private val maxHoldPackets: Int = 8
 ) {
+    data class Packet(val payload: ByteArray, val rtpTimestamp: Long)
+
     data class PushResult(
-        val readyPayloads: List<ByteArray>,
+        val readyPayloads: List<Packet>,
         val missingRange: Pair<Int, Int>?
     )
 
     private var nextExpectedSeq: Int = -1
     private var lastRequestedSeq: Int = -1
-    private val buffered = HashMap<Int, ByteArray>()
+    private val buffered = HashMap<Int, Packet>()
 
     @Synchronized
     fun reset() {
@@ -90,17 +115,18 @@ internal class RaopRtpJitterBuffer(
     }
 
     @Synchronized
-    fun push(seq: Int, payload: ByteArray): PushResult {
+    fun push(seq: Int, payload: ByteArray, rtpTimestamp: Long): PushResult {
+        val packet = Packet(payload, rtpTimestamp)
         val normSeq = seq and 0xFFFF
         if (nextExpectedSeq == -1) {
             nextExpectedSeq = (normSeq + 1) and 0xFFFF
-            return PushResult(listOf(payload), null)
+            return PushResult(listOf(packet), null)
         }
 
         val delta = (normSeq - nextExpectedSeq) and 0xFFFF
         if (delta == 0) {
-            val ready = ArrayList<ByteArray>(buffered.size + 1)
-            ready.add(payload)
+            val ready = ArrayList<Packet>(buffered.size + 1)
+            ready.add(packet)
             nextExpectedSeq = (nextExpectedSeq + 1) and 0xFFFF
             drainContiguous(ready)
             return PushResult(ready, null)
@@ -116,11 +142,11 @@ internal class RaopRtpJitterBuffer(
             buffered.clear()
             lastRequestedSeq = -1
             nextExpectedSeq = (normSeq + 1) and 0xFFFF
-            return PushResult(listOf(payload), null)
+            return PushResult(listOf(packet), null)
         }
 
-        buffered[normSeq] = payload
-        val ready = ArrayList<ByteArray>()
+        buffered[normSeq] = packet
+        val ready = ArrayList<Packet>()
         if (buffered.size > maxHoldPackets) {
             // Advance past unrecovered gap to bound latency.
             val minSeq = buffered.keys.minByOrNull { (it - nextExpectedSeq) and 0xFFFF }
@@ -140,7 +166,7 @@ internal class RaopRtpJitterBuffer(
         return PushResult(ready, missingRange)
     }
 
-    private fun drainContiguous(out: MutableList<ByteArray>) {
+    private fun drainContiguous(out: MutableList<Packet>) {
         while (true) {
             val next = buffered.remove(nextExpectedSeq) ?: break
             out.add(next)
@@ -184,6 +210,7 @@ class RaopAudioRtpReceiver(
     private val decoder = RaopAudioDecoder()
     private val jitterBuffer = RaopRtpJitterBuffer()
     private val decodeLock = Any()
+    private var jitterGeneration: Int? = null
 
     @Volatile
     private var socket: DatagramSocket? = null
@@ -207,6 +234,13 @@ class RaopAudioRtpReceiver(
     private var unencryptedPrefix0: Int = -1
     @Volatile
     private var unencryptedPrefix1: Int = -1
+    private data class SessionClockAnchor(val generation: Int, val anchor: RaopClockAnchor)
+
+    @Volatile
+    private var clockAnchor: SessionClockAnchor? = null
+    @Volatile
+    private var clockSampleRate = 0
+    private var timestampedPackets = 0L
     @Volatile
     private var rxPackets: Long = 0L
     @Volatile
@@ -216,12 +250,8 @@ class RaopAudioRtpReceiver(
     private var workerThread: Thread? = null
     private var controlThread: Thread? = null
 
-    fun setClientControlEndpoint(address: InetAddress?, port: Int?) {
-        if (address != null && port != null && port > 0) {
-            clientControlAddress = address
-            clientControlPort = port
-        }
-    }
+    internal val localControlPort: Int
+        get() = controlSocket?.localPort ?: 0
 
     fun configureSession(
         codec: RaopAudioCodec,
@@ -253,6 +283,8 @@ class RaopAudioRtpReceiver(
             RaopAlacKeySelector(candidates, iv)
         } else null
         jitterBuffer.reset()
+        clockAnchor = null
+        clockSampleRate = sampleRate
         clientControlAddress = null
         clientControlPort = 0
         rxPackets = 0L
@@ -262,25 +294,16 @@ class RaopAudioRtpReceiver(
         decoder.configure(codec, sampleRate, csd0, samplesPerFrame)
     }
 
-    fun start(port: Int = DEFAULT_AUDIO_PORT, controlPort: Int = DEFAULT_CONTROL_PORT): Boolean {
+    fun start(peer: InetAddress?, remoteControlPort: Int? = null): Boolean {
+        clientControlAddress = peer
+        clientControlPort = remoteControlPort?.takeIf { it in 1..65535 } ?: 0
         if (running.get()) return true
-        val udp = runCatching {
-            DatagramSocket(null).apply {
-                reuseAddress = true
-                bind(InetSocketAddress(port))
-            }
-        }.onFailure {
-            Log.e(TAG, "Failed to bind RAOP UDP audio port $port", it)
-        }.getOrNull() ?: return false
-
-        val ctrlUdp = runCatching {
-            DatagramSocket(null).apply {
-                reuseAddress = true
-                bind(InetSocketAddress(controlPort))
-            }
-        }.onFailure {
-            Log.w(TAG, "Failed to bind RAOP UDP control port $controlPort (retransmit disabled)", it)
-        }.getOrNull()
+        val udp = bindUdp(DEFAULT_AUDIO_PORT) ?: return false
+        val ctrlUdp = bindUdp(DEFAULT_CONTROL_PORT) ?: bindUdp(0)
+        if (ctrlUdp == null) {
+            udp.close()
+            return false
+        }
 
         socket = udp
         controlSocket = ctrlUdp
@@ -289,19 +312,30 @@ class RaopAudioRtpReceiver(
             isDaemon = true
             start()
         }
-        if (ctrlUdp != null) {
-            controlThread = Thread({ controlLoop(ctrlUdp) }, "TVPlayAir-RaopControlUdp").apply {
-                isDaemon = true
-                start()
-            }
+        controlThread = Thread({ controlLoop(ctrlUdp) }, "TVPlayAir-RaopControlUdp").apply {
+            isDaemon = true
+            start()
         }
-        Log.i(TAG, "RAOP audio UDP receiver listening on port $port (control=$controlPort)")
+        Log.i(TAG, "RAOP audio UDP receiver listening on port ${udp.localPort} (control=${ctrlUdp.localPort})")
         return true
+    }
+
+    private fun bindUdp(port: Int): DatagramSocket? {
+        val udp = DatagramSocket(null)
+        return try {
+            udp.bind(InetSocketAddress(port))
+            udp
+        } catch (error: IOException) {
+            udp.close()
+            Log.w(TAG, "Failed to bind RAOP UDP port $port", error)
+            null
+        }
     }
 
     fun stop() {
         running.set(false)
         jitterBuffer.reset()
+        clockAnchor = null
         clientControlAddress = null
         clientControlPort = 0
         runCatching { socket?.close() }
@@ -340,10 +374,18 @@ class RaopAudioRtpReceiver(
                 clientControlPort = packet.port
             }
             val payloadType = rxBuf[1].toInt() and 0x7F
+            if (payloadType == 0x54 && clientControlAddress == packet.address &&
+                clientControlPort == packet.port
+            ) {
+                val generation = generationProvider()
+                RaopClockAnchor.parse(rxBuf, packet.length)?.let {
+                    clockAnchor = SessionClockAnchor(generation, it)
+                }
+            }
             if (payloadType == 0x56 && packet.length > 4 + RtpAudioPacketParser.MIN_RTP_HEADER_BYTES) {
                 val parsed = RtpAudioPacketParser.parse(rxBuf, packet.length - 4, baseOffset = 4) ?: continue
                 if (parsed.payloadType == 96) {
-                    enqueueRtpPacket(parsed.sequenceNumber, rxBuf, parsed.payloadOffset, parsed.payloadLength)
+                    enqueueRtpPacket(parsed, rxBuf)
                 }
             }
         }
@@ -376,30 +418,49 @@ class RaopAudioRtpReceiver(
                 clientControlAddress = packet.address
             }
             val parsed = RtpAudioPacketParser.parse(rxBuf, packet.length) ?: continue
-            // Only process RTP payloadType 96 (audio data); ignore RTCP/Sync (84) and retransmit headers (86).
+            // Audio data only; sync and retransmissions arrive on the control socket.
             if (parsed.payloadType != 96) continue
-            enqueueRtpPacket(parsed.sequenceNumber, rxBuf, parsed.payloadOffset, parsed.payloadLength)
+            logSenderClockSample(parsed.timestamp)
+            enqueueRtpPacket(parsed, rxBuf)
         }
     }
 
-    private fun enqueueRtpPacket(seq: Int, buf: ByteArray, offset: Int, length: Int) {
-        val payloadCopy = buf.copyOfRange(offset, offset + length)
-        val result = jitterBuffer.push(seq, payloadCopy)
-        result.missingRange?.let { (firstMissing, count) ->
-            sendRetransmitRequest(firstMissing, count)
+    private fun logSenderClockSample(rtpTimestamp: Long) {
+        val timing = clockAnchor ?: return
+        val sampleRate = clockSampleRate
+        if (sampleRate <= 0 || timing.generation != generationProvider()) return
+        if (timestampedPackets++ % 200L == 0L) {
+            val senderTimeUs = timing.anchor.senderTimeUsAt(rtpTimestamp, sampleRate)
+            Log.i(TAG, "RAOP clock sample gen=${timing.generation} rtp=$rtpTimestamp senderTimeUs=$senderTimeUs")
         }
-        if (result.readyPayloads.isEmpty()) return
-        synchronized(decodeLock) {
-            for (payload in result.readyPayloads) {
-                decodeAudioPayload(payload, 0, payload.size)
+    }
+
+    private fun enqueueRtpPacket(packet: RtpAudioPacket, buf: ByteArray) {
+        val generation = generationProvider()
+        val payload = buf.copyOfRange(packet.payloadOffset, packet.payloadOffset + packet.payloadLength)
+        val missing = synchronized(decodeLock) {
+            if (generation != generationProvider()) return
+            if (jitterGeneration != generation) {
+                jitterBuffer.reset()
+                jitterGeneration = generation
             }
+            val result = jitterBuffer.push(packet.sequenceNumber, payload, packet.timestamp)
+            val timing = clockAnchor?.takeIf { it.generation == generation }
+            val sampleRate = clockSampleRate
+            for (ready in result.readyPayloads) {
+                val timestampUs = if (timing != null && sampleRate > 0) {
+                    timing.anchor.senderTimeUsAt(ready.rtpTimestamp, sampleRate).coerceAtLeast(0L)
+                } else 0L
+                decodeAudioPayload(ready.payload, 0, ready.payload.size, generation, timestampUs)
+            }
+            result.missingRange
         }
+        missing?.let { (firstMissing, count) -> sendRetransmitRequest(firstMissing, count) }
     }
 
-    private fun decodeAudioPayload(buf: ByteArray, offset: Int, length: Int) {
+    private fun decodeAudioPayload(buf: ByteArray, offset: Int, length: Int, generation: Int, senderTimeUs: Long) {
         val key = aesKey
         val iv = aesIv
-        val generation = generationProvider()
         rxPackets++
         val selector = alacKeySelector
         if (lastAlacSelector !== selector) {
@@ -423,7 +484,7 @@ class RaopAudioRtpReceiver(
                 if (previousIndex == null) {
                     Log.i(TAG, "Selected RAOP ALAC key idx=${selector.selectedIndex} after $unmatchedAlacPackets unmatched packets")
                 }
-                decoder.decodeAndPublish(plain, 0, plain.size, generation)
+                decoder.decodeAndPublish(plain, 0, plain.size, generation, senderTimeUs)
             }
             return
         }
@@ -433,7 +494,7 @@ class RaopAudioRtpReceiver(
                     unencryptedPrefix0 = buf[offset].toInt() and 0xFF
                     unencryptedPrefix1 = buf[offset + 1].toInt() and 0xFF
                 }
-                decoder.decodeAndPublish(buf, offset, length, generation)
+                decoder.decodeAndPublish(buf, offset, length, generation, senderTimeUs)
                 return
             }
             var plain = SessionCrypto.decryptRaopAudioCbc(key, iv, buf, offset, length)
@@ -466,9 +527,9 @@ class RaopAudioRtpReceiver(
                     keyConfirmed = true
                 }
             }
-            decoder.decodeAndPublish(plain, 0, plain.size, generation)
+            decoder.decodeAndPublish(plain, 0, plain.size, generation, senderTimeUs)
         } else {
-            decoder.decodeAndPublish(buf, offset, length, generation)
+            decoder.decodeAndPublish(buf, offset, length, generation, senderTimeUs)
         }
     }
 }

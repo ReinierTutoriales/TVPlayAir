@@ -3,7 +3,6 @@ package com.tvplayair.receiver.session
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertNull
-import org.junit.Assert.assertTrue
 import org.junit.Test
 import java.nio.ByteBuffer
 import java.nio.ByteOrder
@@ -54,23 +53,26 @@ class AirPlayMirrorAndInfoTest {
     }
 
     @Test
-    fun formatsInfoPlistWith4kHevcCapabilities() {
-        val xml = AirPlayInfoPlist.formatInfoXml(
-            deviceId = "AA:BB:CC:DD:EE:FF",
-            maxWidth = 3840,
-            maxHeight = 2160,
-            hevcEnabled = true
-        )
-        assertTrue(xml.contains("<key>deviceID</key><string>AA:BB:CC:DD:EE:FF</string>"))
-        assertTrue(xml.contains("<key>widthPixels</key><integer>3840</integer>"))
-        assertTrue(xml.contains("<key>heightPixels</key><integer>2160</integer>"))
-        assertTrue(xml.contains("<key>preferredCodec</key><string>HEVC</string>"))
+    fun mirrorProfileRespectsResolutionCodecAndFrameRateLimits() {
+        val uhd30 = MirrorDisplayProfile(3840, 2160, 30, true)
+        val fhd60 = MirrorDisplayProfile(1920, 1080, 60, false)
+        val hd30 = MirrorDisplayProfile(1280, 720, 30, false)
+        val supported = setOf(uhd30, fhd60)
 
+        assertEquals(uhd30, MirrorDisplayProfile.select(3840, 2160, true, supported::contains))
+        assertEquals(fhd60, MirrorDisplayProfile.select(1920, 1080, true, supported::contains))
+        assertEquals(fhd60, MirrorDisplayProfile.select(3840, 2160, false, supported::contains))
+        assertEquals(hd30, MirrorDisplayProfile.select(3840, 2160, true) { false })
+    }
+
+    @Test
+    fun binaryInfoAdvertisesTheSelectedResolutionCodecAndFrameRate() {
         val bplist = AirPlayInfoPlist.formatInfoBinary(
             deviceId = "AA:BB:CC:DD:EE:FF",
             maxWidth = 3840,
             maxHeight = 2160,
-            hevcEnabled = true
+            hevcEnabled = true,
+            maxFps = 30
         )
         val decoded = BinaryPlistParser.parse(bplist) as? Map<*, *>
         assertNotNull(decoded)
@@ -79,6 +81,11 @@ class AirPlayMirrorAndInfoTest {
         val display0 = displays?.firstOrNull() as? Map<*, *>
         assertNotNull(display0)
         assertEquals(14L, display0!!["features"])
+        assertEquals(3840L, display0["widthPixels"])
+        assertEquals(2160L, display0["heightPixels"])
+        assertEquals(30L, display0["maxFPS"])
+        assertEquals(30.0, display0["refreshRate"])
+        assertEquals("HEVC", decoded["preferredCodec"])
         assertNotNull(display0["uuid"])
     }
 
