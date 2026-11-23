@@ -62,28 +62,38 @@ fun TvOverlayMenu(
     onDismiss: () -> Unit
 ) {
     if (!state.visible) {
-        if (state.showingDirectAudio) {
-            state.directAudio?.let { audio ->
-                TvNowPlayingScreen(audio.title, audio.artist, audio.album, audio.artwork) {
-                    if (audio.durationSec.isFinite() && audio.durationSec > 0.0) {
-                        PlaybackProgress(audio)
+        when {
+            state.showingDirectAudio || state.showingAudio -> {
+                val direct = state.directAudio.takeIf { state.showingDirectAudio }
+                val remote = state.nowPlaying.takeIf { direct == null }
+                TvNowPlayingScreen(
+                    title = direct?.title ?: remote?.track?.title,
+                    artist = direct?.artist ?: remote?.track?.artist,
+                    album = direct?.album ?: remote?.track?.album,
+                    artwork = direct?.artwork ?: remote?.artwork
+                ) {
+                    if (direct != null && direct.durationSec.isFinite() && direct.durationSec > 0.0) {
+                        PlaybackProgress(direct)
                         Text(
-                            "${videoTime(audio.positionSec)} / ${videoTime(audio.durationSec)}",
+                            "${videoTime(direct.positionSec)} / ${videoTime(direct.durationSec)}",
                             color = SecondaryText,
                             style = MaterialTheme.typography.bodyMedium
                         )
                     }
-                    DirectTransportControls(audio, onVideoToggle, onVideoSeek)
+                    TvPlaybackControls(
+                        telemetry = direct,
+                        onToggle = onVideoToggle,
+                        onSeek = onVideoSeek,
+                        onAudioCommand = onAudioCommand.takeIf {
+                            state.audioGeneration?.let(state::canSendAudioControl) == true
+                        }
+                    )
                 }
             }
-        } else if (state.showingVideoControls) {
-            state.videoControls?.let { TvVideoControls(it, onVideoToggle, onVideoSeek, onVideoInteraction) }
-        } else if (state.showStandby) {
-            if (state.showingAudio) {
-                TvNowPlayingScreen(state.nowPlaying, state.audioControlsAvailable, onAudioCommand)
-            } else if (!state.projectionHome) {
-                TvStandbyScreen(state, onOpenMenu)
+            state.showingVideoControls -> {
+                state.videoControls?.let { TvVideoControls(it, onVideoToggle, onVideoSeek, onVideoInteraction) }
             }
+            state.showStandby && !state.projectionHome -> TvStandbyScreen(state, onOpenMenu)
         }
         return
     }
@@ -185,7 +195,7 @@ private fun TvVideoControls(
                 }
             }
             if (hasDuration) PlaybackProgress(telemetry)
-            DirectTransportControls(telemetry, onToggle, onSeek, Modifier.align(Alignment.CenterHorizontally))
+            TvPlaybackControls(telemetry, onToggle, onSeek, Modifier.align(Alignment.CenterHorizontally))
             if (telemetry.isBuffering) {
                 Text(
                     stringResource(R.string.video_loading),
@@ -208,34 +218,57 @@ private fun PlaybackProgress(telemetry: DirectPlaybackTelemetry) {
 }
 
 @Composable
-private fun DirectTransportControls(
-    telemetry: DirectPlaybackTelemetry,
+private fun TvPlaybackControls(
+    telemetry: DirectPlaybackTelemetry?,
     onToggle: () -> Unit,
     onSeek: (Double) -> Unit,
-    modifier: Modifier = Modifier
+    modifier: Modifier = Modifier,
+    onAudioCommand: ((DacpCommand) -> Unit)? = null
 ) {
     val playFocus = remember { FocusRequester() }
-    LaunchedEffect(Unit) { playFocus.requestFocus() }
+    val canToggle = telemetry != null || onAudioCommand != null
+    LaunchedEffect(canToggle) {
+        if (canToggle) playFocus.requestFocus()
+    }
     TvMediaControlGroup(modifier) {
-        if (telemetry.canSeek) {
+        if (telemetry?.canSeek == true) {
             TvMediaControl(
                 label = stringResource(R.string.video_seek_back),
                 onClick = { onSeek(-10.0) }
             ) { Text("−10", Modifier.clearAndSetSemantics {}) }
+        } else if (telemetry == null && onAudioCommand != null) {
+            TvMediaControl(
+                label = stringResource(R.string.audio_previous),
+                onClick = { onAudioCommand(DacpCommand.PREVIOUS) }
+            ) { MediaControlGlyph(MediaGlyph.Previous) }
+        }
+
+        val (label, glyph) = when (telemetry?.playWhenReady) {
+            true -> R.string.video_pause to MediaGlyph.Pause
+            false -> R.string.video_play to MediaGlyph.Play
+            null -> R.string.audio_play_pause to MediaGlyph.PlayPause
         }
         TvMediaControl(
-            label = stringResource(if (telemetry.playWhenReady) R.string.video_pause else R.string.video_play),
-            onClick = onToggle,
+            label = stringResource(label),
+            onClick = {
+                if (telemetry != null) onToggle()
+                else onAudioCommand?.invoke(DacpCommand.PLAY_PAUSE)
+            },
             modifier = Modifier.focusRequester(playFocus),
-            primary = true
-        ) {
-            MediaControlGlyph(if (telemetry.playWhenReady) MediaGlyph.Pause else MediaGlyph.Play)
-        }
-        if (telemetry.canSeek) {
+            primary = true,
+            enabled = canToggle
+        ) { MediaControlGlyph(glyph) }
+
+        if (telemetry?.canSeek == true) {
             TvMediaControl(
                 label = stringResource(R.string.video_seek_forward),
                 onClick = { onSeek(10.0) }
             ) { Text("+10", Modifier.clearAndSetSemantics {}) }
+        } else if (telemetry == null && onAudioCommand != null) {
+            TvMediaControl(
+                label = stringResource(R.string.audio_next),
+                onClick = { onAudioCommand(DacpCommand.NEXT) }
+            ) { MediaControlGlyph(MediaGlyph.Next) }
         }
     }
 }

@@ -104,7 +104,7 @@ class MediaContinuityBaselineTest {
         }
 
         fun resetAudioBuffer() {
-            overlay = overlay.withAudioStreamStarted()
+            overlay = overlay.withAudioStreamStarted((overlay.audioGeneration ?: 0) + 1)
         }
 
         fun startMirror() {

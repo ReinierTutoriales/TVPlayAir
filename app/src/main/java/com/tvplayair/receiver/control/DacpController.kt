@@ -126,7 +126,7 @@ class DacpController(
     }
 
     @Synchronized
-    fun sendCommand(commandName: String): Boolean {
+    fun sendCommand(commandName: String, stillCurrent: () -> Boolean): Boolean {
         val command = DacpCommand.fromWireName(commandName) ?: return false
         val host = resolvedHost ?: return false
         val port = resolvedPort
@@ -135,7 +135,7 @@ class DacpController(
         val generation = targetGeneration
 
         executor.execute {
-            if (generation != targetGeneration) return@execute
+            if (!stillCurrent() || generation != targetGeneration) return@execute
             var connection: HttpURLConnection? = null
             runCatching {
                 connection = (URL(request.url).openConnection() as HttpURLConnection).apply {

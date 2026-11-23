@@ -21,7 +21,7 @@ data class TvOverlayState(
     val connectedClient: String? = null,
     val receiverName: String = "TVPlayAir",
     val projectionHome: Boolean = false,
-    val audioProjectionActive: Boolean = false,
+    val audioGeneration: Int? = null,
     val audioControlsAvailable: Boolean = false,
     val nowPlaying: RaopNowPlaying? = null,
     val directAudio: DirectPlaybackTelemetry? = null,
@@ -36,6 +36,9 @@ data class TvOverlayState(
     val showStandby: Boolean
         get() = presentationState == PresentationState.IDLE ||
             presentationState == PresentationState.RECOVERING
+
+    val audioProjectionActive: Boolean
+        get() = audioGeneration != null
 
     val showingAudio: Boolean
         get() = showStandby && (audioProjectionActive || nowPlaying != null)
@@ -74,13 +77,17 @@ data class TvOverlayState(
         )
     }
 
-    fun withAudioStreamStarted(): TvOverlayState = copy(
-        audioProjectionActive = true,
+    fun canSendAudioControl(generation: Int): Boolean =
+        audioGeneration == generation && audioControlsAvailable &&
+            (showStandby || presentationState == PresentationState.MIRROR_ACTIVE)
+
+    fun withAudioStreamStarted(generation: Int): TvOverlayState = copy(
+        audioGeneration = generation,
         awaitingAudioPresentation = !showStandby
     )
 
     fun withAudioStreamStopped(): TvOverlayState = clearAudioMetadata().copy(
-        audioProjectionActive = false,
+        audioGeneration = null,
         audioControlsAvailable = false
     )
 

@@ -62,7 +62,7 @@ class TvOverlayStateTest {
     fun switchingAppsNeverRestoresArtworkOrVideoControlsFromThePreviousMode() {
         val oldTrack = RaopNowPlaying(RaopTrack("Anterior", null, null), byteArrayOf(1))
         val newTrack = RaopNowPlaying(RaopTrack("Actual", null, null), byteArrayOf(2))
-        var state = TvOverlayState(audioProjectionActive = true).withNowPlaying(oldTrack)
+        var state = TvOverlayState(audioGeneration = 1).withNowPlaying(oldTrack)
 
         repeat(100) {
             state = state.withPresentation(PresentationState.SWITCHING_TO_DIRECT)
@@ -83,7 +83,7 @@ class TvOverlayStateTest {
 
     @Test
     fun incomingVideoClosesSettingsAndDropsTheOutgoingArtwork() {
-        val audio = TvOverlayState(visible = true, audioProjectionActive = true)
+        val audio = TvOverlayState(visible = true, audioGeneration = 1)
             .withNowPlaying(RaopNowPlaying(RaopTrack("Anterior", null, null), byteArrayOf(1)))
 
         for (state in listOf(PresentationState.SWITCHING_TO_DIRECT, PresentationState.MIRROR_ACTIVE)) {
@@ -100,11 +100,11 @@ class TvOverlayStateTest {
         val old = RaopNowPlaying(RaopTrack("Anterior", null, null), byteArrayOf(1))
         val artwork = byteArrayOf(2)
         val fresh = RaopNowPlaying(RaopTrack("Actual", null, null), artwork)
-        val direct = TvOverlayState(audioProjectionActive = true).withNowPlaying(old)
+        val direct = TvOverlayState(audioGeneration = 1).withNowPlaying(old)
             .withPresentation(PresentationState.DIRECT_ACTIVE)
         assertNull(direct.withNowPlaying(old).withPresentation(PresentationState.IDLE).nowPlaying)
 
-        val handoff = direct.withAudioStreamStarted()
+        val handoff = direct.withAudioStreamStarted(2)
             .withNowPlaying(RaopNowPlaying(artwork = artwork))
             .withNowPlaying(fresh)
         assertNull(handoff.nowPlaying)
@@ -112,6 +112,19 @@ class TvOverlayStateTest {
         assertEquals(fresh, handoff.withPresentation(PresentationState.IDLE).nowPlaying)
         assertNull(handoff.clearAudioMetadata().withPresentation(PresentationState.IDLE).nowPlaying)
         assertNull(handoff.withNowPlaying(null).withPresentation(PresentationState.IDLE).nowPlaying)
+    }
+
+    @Test
+    fun audioControlsOnlyApplyToTheCurrentStreamAndCannotPreemptDirectPlayback() {
+        val first = TvOverlayState(audioGeneration = 1, audioControlsAvailable = true)
+        assertTrue(first.canSendAudioControl(1))
+        val switching = first.withPresentation(PresentationState.SWITCHING_TO_DIRECT)
+        assertFalse(switching.canSendAudioControl(1))
+        val second = switching.withAudioStreamStarted(2).withPresentation(PresentationState.IDLE)
+        assertFalse(second.canSendAudioControl(1))
+        assertTrue(second.canSendAudioControl(2))
+        assertFalse(second.withAudioStreamStopped().canSendAudioControl(2))
+        assertFalse(second.copy(audioControlsAvailable = false).canSendAudioControl(2))
     }
 
     @Test

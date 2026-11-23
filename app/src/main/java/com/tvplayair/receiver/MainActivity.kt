@@ -131,6 +131,8 @@ class MainActivity : ComponentActivity(), SurfaceLayerController {
         val overlayComposeView = ComposeView(this).apply {
             setContent {
                 MaterialTheme {
+                    val audioGeneration = overlayState.audioGeneration
+                    val playbackId = directPlaybackId
                     TvOverlayMenu(
                         state = overlayState,
                         onOpenMenu = { setOverlayVisible(true) },
@@ -138,9 +140,9 @@ class MainActivity : ComponentActivity(), SurfaceLayerController {
                         onToggleResolution = ::toggleResolutionPreset,
                         onToggleHevc = ::toggleHevcSetting,
                         onAdjustAudioOffset = ::adjustAudioOffset,
-                        onAudioCommand = { sessionConnection.sendDacpCommand(it.wirePath) },
-                        onVideoToggle = ::toggleVideoFromControls,
-                        onVideoSeek = ::seekVideoFromControls,
+                        onAudioCommand = { command -> sendAudioCommand(command, audioGeneration) },
+                        onVideoToggle = { toggleVideoFromControls(playbackId) },
+                        onVideoSeek = { seekVideoFromControls(playbackId, it) },
                         onVideoInteraction = ::refreshVideoControlsTimeout,
                         onDismiss = { setOverlayVisible(false) }
                     )
@@ -255,12 +257,8 @@ class MainActivity : ComponentActivity(), SurfaceLayerController {
                 cancelDirectStartupTimeout()
                 dismissVideoControls()
                 presentationCoordinator.onSessionDied()
-                overlayState = overlayState.clearAudioMetadata().copy(
-                    connectedClient = null,
-                    audioProjectionActive = false,
-                    audioControlsAvailable = false,
-                    presentationState = presentationCoordinator.state
-                )
+                overlayState = overlayState.withAudioStreamStopped().withPresentation(presentationCoordinator.state)
+                    .copy(connectedClient = null)
                 updateScreenWake()
             }
 
@@ -326,7 +324,7 @@ class MainActivity : ComponentActivity(), SurfaceLayerController {
             }
 
             override fun onAudioStreamStarted(generationId: Int) {
-                overlayState = overlayState.withAudioStreamStarted()
+                overlayState = overlayState.withAudioStreamStarted(generationId)
                 updateScreenWake()
                 audioConsumer.setGeneration(generationId)
                 if (sharedMemoryReady) {
@@ -395,7 +393,7 @@ class MainActivity : ComponentActivity(), SurfaceLayerController {
                         setDirectPlaybackIntent("toggle")
                     }
                 } else {
-                    sessionConnection.sendDacpCommand(DacpCommand.PLAY_PAUSE.wirePath)
+                    sendAudioCommand(DacpCommand.PLAY_PAUSE, overlayState.audioGeneration)
                 }
                 return true
             }
@@ -403,7 +401,7 @@ class MainActivity : ComponentActivity(), SurfaceLayerController {
                 if (inDirectMode) {
                     setDirectPlaybackIntent("play")
                 } else {
-                    sessionConnection.sendDacpCommand(DacpCommand.PLAY.wirePath)
+                    sendAudioCommand(DacpCommand.PLAY, overlayState.audioGeneration)
                 }
                 return true
             }
@@ -411,7 +409,7 @@ class MainActivity : ComponentActivity(), SurfaceLayerController {
                 if (inDirectMode) {
                     setDirectPlaybackIntent("pause")
                 } else {
-                    sessionConnection.sendDacpCommand(DacpCommand.PAUSE.wirePath)
+                    sendAudioCommand(DacpCommand.PAUSE, overlayState.audioGeneration)
                 }
                 return true
             }
@@ -421,25 +419,25 @@ class MainActivity : ComponentActivity(), SurfaceLayerController {
                         finishDirectSession(directPlaybackId)
                     }
                 } else {
-                    sessionConnection.sendDacpCommand(DacpCommand.STOP.wirePath)
+                    sendAudioCommand(DacpCommand.STOP, overlayState.audioGeneration)
                 }
                 return true
             }
             KeyEvent.KEYCODE_MEDIA_NEXT -> {
                 if (inDirectMode) return true
-                sessionConnection.sendDacpCommand(DacpCommand.NEXT.wirePath)
+                sendAudioCommand(DacpCommand.NEXT, overlayState.audioGeneration)
                 return true
             }
             KeyEvent.KEYCODE_MEDIA_PREVIOUS -> {
                 if (inDirectMode) return true
-                sessionConnection.sendDacpCommand(DacpCommand.PREVIOUS.wirePath)
+                sendAudioCommand(DacpCommand.PREVIOUS, overlayState.audioGeneration)
                 return true
             }
             KeyEvent.KEYCODE_MEDIA_FAST_FORWARD -> {
                 if (inDirectMode) {
                     seekVideoBy(10.0)
                 } else {
-                    sessionConnection.sendDacpCommand(DacpCommand.BEGIN_FF.wirePath)
+                    sendAudioCommand(DacpCommand.BEGIN_FF, overlayState.audioGeneration)
                 }
                 return true
             }
@@ -447,7 +445,7 @@ class MainActivity : ComponentActivity(), SurfaceLayerController {
                 if (inDirectMode) {
                     seekVideoBy(-10.0)
                 } else {
-                    sessionConnection.sendDacpCommand(DacpCommand.BEGIN_REW.wirePath)
+                    sendAudioCommand(DacpCommand.BEGIN_REW, overlayState.audioGeneration)
                 }
                 return true
             }
@@ -495,14 +493,19 @@ class MainActivity : ComponentActivity(), SurfaceLayerController {
         }
     }
 
-    private fun toggleVideoFromControls() {
-        if (!overlayState.showingDirectControls) return
+    private fun sendAudioCommand(command: DacpCommand, generation: Int?) {
+        if (generation == null || !overlayState.canSendAudioControl(generation)) return
+        sessionConnection.sendDacpCommand(generation, command.wirePath)
+    }
+
+    private fun toggleVideoFromControls(playbackId: Long) {
+        if (directPlaybackId != playbackId || !overlayState.showingDirectControls) return
         setDirectPlaybackIntent("toggle")
         refreshVideoControlsTimeout()
     }
 
-    private fun seekVideoFromControls(deltaSec: Double) {
-        if (!overlayState.showingDirectControls) return
+    private fun seekVideoFromControls(playbackId: Long, deltaSec: Double) {
+        if (directPlaybackId != playbackId || !overlayState.showingDirectControls) return
         seekVideoBy(deltaSec)
         refreshVideoControlsTimeout()
     }

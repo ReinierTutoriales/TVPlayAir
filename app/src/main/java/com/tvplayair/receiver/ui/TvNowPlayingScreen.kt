@@ -17,17 +17,13 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.runtime.Composable
-import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.key
 import androidx.compose.runtime.produceState
-import androidx.compose.runtime.remember
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.drawWithCache
-import androidx.compose.ui.focus.FocusRequester
-import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Brush
@@ -50,32 +46,8 @@ import androidx.tv.material3.LocalContentColor
 import androidx.tv.material3.MaterialTheme
 import androidx.tv.material3.Text
 import com.tvplayair.receiver.R
-import com.tvplayair.receiver.control.DacpCommand
-import com.tvplayair.receiver.session.RaopNowPlaying
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
-
-@Composable
-internal fun TvNowPlayingScreen(
-    metadata: RaopNowPlaying?,
-    controlsAvailable: Boolean,
-    onAudioCommand: (DacpCommand) -> Unit
-) = TvNowPlayingScreen(
-    title = metadata?.track?.title,
-    artist = metadata?.track?.artist,
-    album = metadata?.track?.album,
-    artwork = metadata?.artwork
-) {
-    if (controlsAvailable) {
-        val playFocus = remember { FocusRequester() }
-        LaunchedEffect(Unit) { playFocus.requestFocus() }
-        TvMediaControlGroup {
-            AudioControl(AudioAction.Previous, onAudioCommand)
-            AudioControl(AudioAction.PlayPause, onAudioCommand, Modifier.focusRequester(playFocus))
-            AudioControl(AudioAction.Next, onAudioCommand)
-        }
-    }
-}
 
 @Composable
 internal fun TvNowPlayingScreen(
@@ -227,32 +199,6 @@ private fun decodeCover(artwork: ByteArray, coverPixels: Int): AudioArtwork? {
     return AudioArtwork(bitmap.asImageBitmap(), tint)
 }
 
-private enum class AudioAction(val label: Int, val command: DacpCommand) {
-    Previous(R.string.audio_previous, DacpCommand.PREVIOUS),
-    PlayPause(R.string.audio_play_pause, DacpCommand.PLAY_PAUSE),
-    Next(R.string.audio_next, DacpCommand.NEXT)
-}
-
-@Composable
-private fun AudioControl(
-    action: AudioAction,
-    onAudioCommand: (DacpCommand) -> Unit,
-    modifier: Modifier = Modifier
-) {
-    TvMediaControl(
-        label = stringResource(action.label),
-        primary = action == AudioAction.PlayPause,
-        onClick = { onAudioCommand(action.command) },
-        modifier = modifier
-    ) {
-        MediaControlGlyph(when (action) {
-            AudioAction.Previous -> MediaGlyph.Previous
-            AudioAction.PlayPause -> MediaGlyph.PlayPause
-            AudioAction.Next -> MediaGlyph.Next
-        })
-    }
-}
-
 @Composable
 internal fun TvMediaControlGroup(modifier: Modifier = Modifier, content: @Composable () -> Unit) {
     Row(
@@ -269,10 +215,12 @@ internal fun TvMediaControl(
     onClick: () -> Unit,
     modifier: Modifier = Modifier,
     primary: Boolean = false,
+    enabled: Boolean = true,
     content: @Composable () -> Unit
 ) {
     IconButton(
         onClick = onClick,
+        enabled = enabled,
         modifier = modifier.size(if (primary) 64.dp else 52.dp)
             .semantics { contentDescription = label },
         shape = IconButtonDefaults.shape(shape = CircleShape),
