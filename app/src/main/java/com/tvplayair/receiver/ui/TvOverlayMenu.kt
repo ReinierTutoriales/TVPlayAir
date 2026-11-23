@@ -85,7 +85,7 @@ fun TvOverlayMenu(
                         telemetry = direct,
                         onToggle = onVideoToggle,
                         // Direct playback must never expose DACP controls from a previous audio session.
-                        onAudioCommand = remoteCommand.takeIf { direct == null }
+                        onAudioCommand = if (direct == null) remoteCommand else null
                     )
                 }
             }
@@ -245,7 +245,7 @@ private fun TvPlaybackControls(
         if (canToggle) playFocus.requestFocus()
     }
     TvMediaControlGroup(modifier) {
-        // Direct video has no previous/next transport commands. Do not render dead controls.
+        // Only expose remote transport commands when the active session supports DACP.
         if (onAudioCommand != null) {
             TvMediaControl(
                 label = stringResource(R.string.audio_previous),
