@@ -18,7 +18,6 @@ El destino es Android TV. La experiencia v1.0 abarca AirPlay de audio y vídeo d
 |---|---|---|
 | App oficial del proveedor, con control desde iPhone | Usar la función Cast del proveedor cuando la ofrezca. El proveedor elige el receptor y gestiona su sesión. | Probar el emisor y destino compatibles. Confirmar qué app o receptor se abrió y qué controles siguen disponibles. |
 | Un contenido concreto en la app oficial de Android TV | Abrir un enlace de contenido publicado por el proveedor y comprobar que lo atiende su app. Un Android App Link verificado requiere la asociación entre dominio y app del proveedor. | Confirmar app instalada, enlace, paquete resuelto e ítem abierto en el TV. El enlace por sí solo abre el contenido. Cualquier control desde iPhone requiere su propia integración. |
-| Medio reproducible en TVPlayAir desde su emisor iOS | Cast Connect de TVPlayAir recibe la carga en su propio reproductor Media3. | Registrar el Cast App ID asociado a `com.tvplayair.receiver`, configurar el emisor y habilitar el receptor. Si se prueba por instalación lateral, registrar el TV según la guía de Google. [Configuración del emisor](../ios/TVPlayAirSender/README.md) |
 | Audio o vídeo en TVPlayAir desde una app con AirPlay | El emisor selecciona TVPlayAir y entrega audio o vídeo directo según la ruta negociada. | Verificar primer audio o frame, metadatos y comandos para la sesión activa. Las órdenes de pausa o parada del emisor se aplican a esa sesión. |
 | La pantalla del iPhone en el TV | Duplicación seleccionada en iOS. TVPlayAir recibe y presenta los flujos negociados. | Verificar códec, dimensiones, audio negociado, primer frame y salida al cambiar a otro modo. |
 
@@ -54,7 +53,7 @@ En esta captura se observó duplicación con audio AAC-ELD. No se observó una s
 ## Una sola pasada de verificación por candidato
 
 1. Fijar un único SHA de APK, el modelo y SoC del destino, versión de Android, versión de iOS y app emisora. Marcar cada acción con su hora y registrar ambas salidas de audio.
-2. Ejecutar de una vez `./gradlew :app:checkDebugAarMetadata :app:testDebugUnitTest :app:lintDebug :app:assembleDebug`. La CI ejecuta también las pruebas nativas de host y comprueba Cast. El recorrido `MediaContinuityBaselineTest` forma parte de la suite JVM.
+2. Ejecutar de una vez `./gradlew :app:checkDebugAarMetadata :app:testDebugUnitTest :app:lintDebug :app:assembleDebug`. La CI ejecuta también las pruebas nativas de host. El recorrido `MediaContinuityBaselineTest` forma parte de la suite JVM.
 3. En una sesión de captura continua, ejecutar los recorridos de la tabla. Alternar escenarios de prueba en el mismo orden con la misma versión. Para duplicación usar horizontal y vertical, incluyendo el perfil de alta resolución que falló. Para audio grabar un estímulo común que permita identificar eco y sincronía en ambas salidas.
 4. Correlacionar por sesión, medio y generación. Los tiempos de solicitud a primer frame y a primer PCM se informan por separado. Normalizar la captura para quitar URLs firmadas, credenciales y material criptográfico antes de agregar una regresión.
 5. Agrupar en el mismo candidato las correcciones demostradas que comparten contrato. Repetir la suite automática completa al final. Si queda un caso abierto, registrar el primer evento ausente o incorrecto y la evidencia necesaria para resolverlo.
@@ -63,10 +62,10 @@ La JVM comprueba los contratos entre componentes mediante dobles de motor. Andro
 
 ## Referencias oficiales
 
-- AndroidX Media3 `1.11.1` es la estable publicada en la tabla consultada. `1.12.0-alpha02` queda como candidata cuando exista una mejora aplicable y verificable. [Notas de versiones](https://developer.android.com/jetpack/androidx/releases/media3)
+- AndroidX Media3 `1.11.1` es la estable publicada en la tabla consultada. `1.12.0-beta01` queda como candidata cuando exista una mejora aplicable y verificable. [Notas de versiones](https://developer.android.com/jetpack/androidx/releases/media3)
 - [Foco de audio de Android](https://developer.android.com/media/optimize/audio-focus) · [Oboe](https://developer.android.com/games/sdk/oboe/low-latency-audio) · [AAudio y MMAP](https://source.android.com/docs/core/audio/aaudio)
 - [Capacidades de MediaCodec](https://developer.android.com/reference/android/media/MediaCodecInfo.CodecCapabilities) · [Métricas de Media3](https://developer.android.com/media/media3/exoplayer/analytics) · [AIDL](https://developer.android.com/develop/background-work/services/aidl)
-- [Google Cast Connect](https://developers.google.com/cast/docs/android_tv_receiver) · [Android App Links](https://developer.android.com/training/app-links) · [Enviar YouTube al TV](https://support.google.com/youtube/answer/7640706)
+- [Android App Links](https://developer.android.com/training/app-links) · [Enviar YouTube al TV](https://support.google.com/youtube/answer/7640706)
 - [Selección de ruta AirPlay en iOS](https://developer.apple.com/documentation/avfoundation/supporting-airplay-in-your-app) · [Uso de AirPlay y duplicación](https://support.apple.com/en-us/102661)
 
 ### Diagnóstico local de cortes

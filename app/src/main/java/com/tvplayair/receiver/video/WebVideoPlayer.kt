@@ -85,11 +85,6 @@ class WebVideoPlayer(context: Context) : DirectVideoEngine {
         viewCallbacks = callbacks
     }
 
-    val platformSessionToken: android.media.session.MediaSession.Token?
-        get() = mediaSession?.platformToken
-
-    val wantsPlayback: Boolean
-        get() = player?.playWhenReady == true
     private var pendingStartFraction: Double? = null
     private var prepareStartedMs = 0L
     private val eventWindow = Timeline.Window()
@@ -347,15 +342,6 @@ class WebVideoPlayer(context: Context) : DirectVideoEngine {
 
     override fun prepare(video: DirectPlaybackStart): Boolean {
         val surface = surfaceView ?: return false
-        return prepareVideo(video, surface, keepSession = false)
-    }
-
-    internal fun prepareDetachedCast(video: DirectPlaybackStart): Boolean {
-        if (surfaceView != null || mediaSession == null || video.playbackId >= 0L) return false
-        return prepareVideo(video, null, keepSession = true)
-    }
-
-    private fun prepareVideo(video: DirectPlaybackStart, surface: SurfaceView?, keepSession: Boolean): Boolean {
         if (finishedPlaybackId == video.playbackId) return false
         val exo = ensurePlayer()
         prepareStartedMs = SystemClock.elapsedRealtime()
@@ -363,19 +349,19 @@ class WebVideoPlayer(context: Context) : DirectVideoEngine {
             exo.playbackState != Player.STATE_ENDED
         ) {
             exo.playWhenReady = video.playWhenReady
-            if (surface != null) exo.setVideoSurfaceView(surface)
+            exo.setVideoSurfaceView(surface)
             val tracks = exo.currentTracks
             if (exo.playbackState == Player.STATE_READY && tracks.isTypeSelected(C.TRACK_TYPE_AUDIO) &&
                 !tracks.containsType(C.TRACK_TYPE_VIDEO)
             ) viewCallbacks?.onMediaReady(video.playbackId)
             return true
         }
-        if (!keepSession) releaseSystemControls()
+        releaseSystemControls()
         finishedPlaybackId = null
         playbackId = video.playbackId
         firstFrameLogged = false
         diagnostics.start(video.playbackId)
-        if (surface != null) exo.setVideoSurfaceView(surface)
+        exo.setVideoSurfaceView(surface)
         pendingStartFraction = video.startFraction
         if (!video.playWhenReady) exo.playWhenReady = false
         exo.setMediaItem(

@@ -20,7 +20,7 @@ En cada cambio de implementación o publicación se revisan **todas** las versio
 ## Estado verificado 2026-11-21
 
 - Gradle: versión estable oficial **9.9.1**, SHA-256 `d8a18a7a841dd5df825d35a685fad6f2d7f12ac0c280e57b67c27b4a520ba228`; wrapper corregido desde referencia no estable 9.9.2.
-- Compose: BOM estable **2026.11.01**; requiere Kotlin >= 2.2 y `compileSdk 37.1` (https://developer.android.com/blog/posts/jetpack-compose-november-2026-release). Actualmente proyecto BOM 2026.06.01 y compileSdk 36: **migración pendiente, debe ser atómica**.
+- Compose: BOM estable **2026.11.01**; requiere Kotlin >= 2.2 y `compileSdk 37.1` (https://developer.android.com/blog/posts/jetpack-compose-november-2026-release). El catálogo y la compilación de Android se actualizan juntos a ese BOM y SDK.
 - Media3: 1.11.1 estable en catálogo; comprobar periódicamente pre-releases contra https://developer.android.com/jetpack/androidx/releases/media3 .
 - AGP 9.5.2, Kotlin 2.4.21, Activity Compose 1.13.0, TV Material 1.1.0, Oboe 1.11.0, BouncyCastle 1.87: **actualidad no certificada**; consultar versiones oficiales antes de cambiar.
 - NDK 30.0.16248370 y CMake 4.1.2: verificar compatibilidad con AGP y CI.

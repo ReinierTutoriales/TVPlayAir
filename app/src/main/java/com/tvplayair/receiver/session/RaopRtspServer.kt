@@ -207,7 +207,11 @@ internal class RaopRtspServer(
                 val activeRemote = request.header("active-remote").orEmpty()
                 val userAgent = request.header("user-agent").orEmpty().ifBlank { "Apple Device" }
                 if (dacpId.isNotEmpty() && activeRemote.isNotEmpty()) {
-                    listener.onClientConnected(userAgent, dacpId, activeRemote)
+                    synchronized(nowPlaying) {
+                        if (mirrorReceiver?.allowsAudio(source) != false) {
+                            listener.onClientConnected(userAgent, dacpId, activeRemote)
+                        }
+                    }
                 }
 
                 if (!dispatchRtsp(request, output, source)) {
