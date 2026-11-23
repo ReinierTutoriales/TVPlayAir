@@ -135,7 +135,7 @@ class AirPlayMirrorStreamReceiver(
     private var activeSetup: CipherSetup? = null
     private var pendingSetup: CipherSetup? = null
 
-    private data class CipherSetup(val owner: Any, val connectionId: Long, val state: CipherState)
+    private data class CipherSetup(val owner: AirPlayConnectionCrypto, val connectionId: Long, val state: CipherState)
 
     private class CipherState(var selected: Cipher?, var candidates: List<Pair<String, Cipher>>)
     private val directPayload: ByteBuffer = ByteBuffer.allocateDirect(
