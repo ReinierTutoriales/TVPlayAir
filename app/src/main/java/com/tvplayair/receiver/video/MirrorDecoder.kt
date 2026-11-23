@@ -111,68 +111,61 @@ class MirrorDecoder(
         val generation = generationId.get()
         val startedMs = SystemClock.elapsedRealtime()
         val format = MediaFormat.createVideoFormat(cfg.mimeType, cfg.width, cfg.height)
-        // Format changes rebuild the decoder. Adaptive maximum hints reserve extra buffers.
-        // Safe low-latency fallback on API 29+; never force KEY_OPERATING_RATE = 32767.
-        format.setInteger(MediaFormat.KEY_PRIORITY, 0)
         if (csdBytes != null && csdBytes.isNotEmpty()) {
             format.setByteBuffer("csd-0", ByteBuffer.wrap(csdBytes))
         }
-
         val decoder = runCatching {
-            val codecName = MediaCodecList(MediaCodecList.REGULAR_CODECS)
-                .findDecoderForFormat(format)
-            if (codecName != null) {
-                MediaCodec.createByCodecName(codecName)
-            } else {
-                MediaCodec.createDecoderByType(cfg.mimeType)
-            }
+            val codecName = MediaCodecList(MediaCodecList.REGULAR_CODECS).findDecoderForFormat(format)
+            if (codecName != null) MediaCodec.createByCodecName(codecName)
+            else MediaCodec.createDecoderByType(cfg.mimeType)
         }.onFailure {
             logCodecFailure("create", it)
         }.getOrNull() ?: return null
         val codecName = decoder.name
+        val lowLatencySupported = Build.VERSION.SDK_INT >= Build.VERSION_CODES.R && runCatching {
+            decoder.codecInfo.getCapabilitiesForType(cfg.mimeType)
+                .isFeatureSupported(MediaCodecInfo.CodecCapabilities.FEATURE_LowLatency)
+        }.getOrDefault(false)
 
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
-            val lowLatencySupported = runCatching {
-                decoder.codecInfo
-                    .getCapabilitiesForType(cfg.mimeType)
-                    .isFeatureSupported(MediaCodecInfo.CodecCapabilities.FEATURE_LowLatency)
-            }.getOrDefault(false)
-            if (lowLatencySupported) {
-                format.setInteger(MediaFormat.KEY_LOW_LATENCY, 1)
-            }
-            Log.i(
-                TAG,
-                "Configured $codecName (${cfg.mimeType} ${cfg.width}x${cfg.height}) " +
-                    "lowLatency=$lowLatencySupported csd=${csdBytes?.size ?: 0}B"
-            )
-        } else {
-            Log.i(
-                TAG,
-                "Configured $codecName (${cfg.mimeType} ${cfg.width}x${cfg.height}) " +
-                    "API ${Build.VERSION.SDK_INT} priority=0 csd=${csdBytes?.size ?: 0}B"
-            )
+        fun startDecoder(instance: MediaCodec, lowLatency: Boolean): MediaCodec? {
+            return runCatching {
+                instance.configure(format, surface, null, 0)
+                instance.setOnFrameRenderedListener({ activeCodec, _, _ ->
+                    synchronized(codecLock) {
+                        if (codec === activeCodec) {
+                            Log.i(PLAYBACK_DIAGNOSTICS_TAG,
+                                "route=mirror_decoder generation=$generation event=first_frame codec=$codecName " +
+                                    "elapsedMs=${SystemClock.elapsedRealtime() - startedMs}")
+                            runCatching { activeCodec.setOnFrameRenderedListener(null, null) }
+                        }
+                    }
+                }, renderListenerHandler)
+                instance.start()
+                Log.i(PLAYBACK_DIAGNOSTICS_TAG,
+                    "route=mirror_decoder generation=$generation event=codec_started codec=$codecName " +
+                        "size=${cfg.width}x${cfg.height} lowLatency=$lowLatency")
+                instance
+            }.onFailure {
+                logCodecFailure(if (lowLatency) "start_low_latency" else "start_basic", it)
+                runCatching { instance.release() }
+            }.getOrNull()
         }
 
-        return runCatching {
-            decoder.configure(format, surface, null, 0)
-            decoder.setOnFrameRenderedListener({ activeCodec, _, _ ->
-                synchronized(codecLock) {
-                    if (codec === activeCodec) {
-                        Log.i(PLAYBACK_DIAGNOSTICS_TAG,
-                            "route=mirror_decoder generation=$generation event=first_frame codec=$codecName " +
-                                "elapsedMs=${SystemClock.elapsedRealtime() - startedMs}")
-                        runCatching { activeCodec.setOnFrameRenderedListener(null, null) }
-                    }
-                }
-            }, renderListenerHandler)
-            decoder.start()
-            Log.i(PLAYBACK_DIAGNOSTICS_TAG,
-                "route=mirror_decoder generation=$generation event=codec_started codec=$codecName")
-            decoder
-        }.onFailure {
-            logCodecFailure("configure", it)
-            runCatching { decoder.release() }
-        }.getOrNull()
+        format.setInteger(MediaFormat.KEY_PRIORITY, 0)
+        if (!lowLatencySupported) return startDecoder(decoder, lowLatency = false)
+
+        format.setInteger(MediaFormat.KEY_LOW_LATENCY, 1)
+        startDecoder(decoder, lowLatency = true)?.let { return it }
+        if (!surface.isValid || generationId.get() != generation) return null
+
+        Log.i(PLAYBACK_DIAGNOSTICS_TAG,
+            "route=mirror_decoder generation=$generation event=retry_basic codec=$codecName")
+        // A failed configure/start can leave the codec unusable; reopen it with the base format.
+        format.removeKey(MediaFormat.KEY_LOW_LATENCY)
+        format.removeKey(MediaFormat.KEY_PRIORITY)
+        return runCatching { MediaCodec.createByCodecName(codecName) }.onFailure {
+            logCodecFailure("create_basic", it)
+        }.getOrNull()?.let { startDecoder(it, lowLatency = false) }
     }
 
     private fun logCodecFailure(operation: String, error: Throwable) {
