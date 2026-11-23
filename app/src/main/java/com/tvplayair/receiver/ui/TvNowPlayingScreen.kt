@@ -29,7 +29,6 @@ import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.ImageBitmap
-import androidx.compose.ui.graphics.Path
 import androidx.compose.ui.graphics.lerp
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalDensity
@@ -205,40 +204,17 @@ internal enum class MediaGlyph { Previous, PlayPause, Next, Play, Pause }
 
 @Composable
 internal fun MediaControlGlyph(glyph: MediaGlyph) {
-    val color = LocalContentColor.current
-    Canvas(Modifier.size(24.dp)) {
-        val unit = size.width / 24
-        fun triangle(left: Float, right: Float) {
-            val path = Path().apply {
-                moveTo(left * unit, 5 * unit)
-                lineTo(left * unit, 19 * unit)
-                lineTo(right * unit, 12 * unit)
-                close()
-            }
-            drawPath(path, color)
-        }
-        fun bar(x: Float, width: Float = 2f) {
-            drawRect(color, Offset(x * unit, 5 * unit), Size(width * unit, 14 * unit))
-        }
-        when (glyph) {
-            MediaGlyph.Previous -> {
-                triangle(19f, 7f)
-                bar(4f)
-            }
-            MediaGlyph.PlayPause -> {
-                triangle(4f, 14f)
-                bar(16f)
-                bar(20f)
-            }
-            MediaGlyph.Next -> {
-                triangle(5f, 17f)
-                bar(18f)
-            }
-            MediaGlyph.Play -> triangle(8f, 20f)
-            MediaGlyph.Pause -> {
-                bar(6f, 4f)
-                bar(14f, 4f)
-            }
-        }
+    val resource = when (glyph) {
+        MediaGlyph.Previous -> R.drawable.ic_tv_previous
+        MediaGlyph.PlayPause -> R.drawable.ic_tv_play_pause
+        MediaGlyph.Next -> R.drawable.ic_tv_next
+        MediaGlyph.Play -> R.drawable.ic_tv_play
+        MediaGlyph.Pause -> R.drawable.ic_tv_pause
     }
+    Image(
+        painter = androidx.compose.ui.res.painterResource(resource),
+        contentDescription = null,
+        modifier = Modifier.size(24.dp),
+        colorFilter = androidx.compose.ui.graphics.ColorFilter.tint(LocalContentColor.current)
+    )
 }
