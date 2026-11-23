@@ -404,7 +404,17 @@ class WebVideoPlayer(context: Context) : DirectVideoEngine {
 
     fun onOutputSurfaceRecreated() {
         prepareStartedMs = SystemClock.elapsedRealtime()
-        player?.let(::reportAudioReady)
+        player?.let { exo ->
+            reportAudioReady(exo)
+            val id = playbackId
+            if (id != null &&
+                exo.currentMediaItem?.mediaId == id.toString() &&
+                exo.playbackState == Player.STATE_READY &&
+                !exo.playWhenReady
+            ) {
+                viewCallbacks?.onMediaReady(id)
+            }
+        }
     }
 
     fun checkpointPositionMs(): Long? {

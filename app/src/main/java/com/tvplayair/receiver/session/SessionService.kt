@@ -128,7 +128,7 @@ class SessionService : Service() {
 
         override fun onClientConnected(clientName: String, dacpId: String, activeRemote: String) {
             synchronized(callbackLock) {
-                if (latestNowPlaying == null) {
+                if (latestNowPlaying?.remote == null) {
                     dacpController.onClientConnected(dacpId, activeRemote)
                     runCatching { callback?.onClientConnected(clientName, dacpId, activeRemote) }
                 }
@@ -303,19 +303,31 @@ class SessionService : Service() {
             hevcEnabled: Boolean,
             serviceName: String
         ) {
-            val cleanName = if (serviceName.isNotBlank()) {
-                identityStore.saveServiceName(serviceName)
-            } else {
-                advertiseConfig.serviceName
-            }
-            advertiseConfig = advertiseConfig.copy(
-                serviceName = ReceiverIdentityHelper.sanitizeServiceName(cleanName),
-                maxWidth = maxWidth,
-                maxHeight = maxHeight,
-                hevcEnabled = hevcEnabled
-            )
-            if (serverRunning) {
-                mdnsAdvertiser.start(advertiseConfig)
+            synchronized(this@SessionService) {
+                val cleanName = if (serviceName.isNotBlank()) {
+                    identityStore.saveServiceName(serviceName)
+                } else {
+                    advertiseConfig.serviceName
+                }
+                advertiseConfig = advertiseConfig.copy(
+                    serviceName = ReceiverIdentityHelper.sanitizeServiceName(cleanName),
+                    maxWidth = maxWidth,
+                    maxHeight = maxHeight,
+                    hevcEnabled = hevcEnabled
+                )
+                if (serverRunning) {
+                    protocolEngine.start(
+                        AirPlayServerConfig(
+                            airPlayPort = advertiseConfig.airPlayPort,
+                            maxWidth = advertiseConfig.maxWidth,
+                            maxHeight = advertiseConfig.maxHeight,
+                            hevcEnabled = advertiseConfig.hevcEnabled,
+                            deviceId = advertiseConfig.deviceId,
+                            ed25519PrivateKey = ed25519PrivateKey
+                        )
+                    )
+                    mdnsAdvertiser.start(advertiseConfig)
+                }
             }
         }
     }

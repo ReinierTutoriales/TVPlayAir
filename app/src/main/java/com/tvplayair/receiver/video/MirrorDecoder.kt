@@ -44,6 +44,7 @@ class MirrorDecoder(
     private val packetBuffer: ByteBuffer =
         ByteBuffer.allocateDirect(MAX_PACKET_BYTES).order(ByteOrder.LITTLE_ENDIAN)
     private val running = AtomicBoolean(false)
+    private val codecLock = Any()
     private val generationId = AtomicInteger(0)
     private val renderListenerHandler = Handler(Looper.getMainLooper())
 
@@ -155,11 +156,13 @@ class MirrorDecoder(
         return runCatching {
             decoder.configure(format, surface, null, 0)
             decoder.setOnFrameRenderedListener({ activeCodec, _, _ ->
-                if (codec === activeCodec) {
-                    Log.i(PLAYBACK_DIAGNOSTICS_TAG,
-                        "route=mirror_decoder generation=$generation event=first_frame codec=$codecName " +
-                            "elapsedMs=${SystemClock.elapsedRealtime() - startedMs}")
-                    activeCodec.setOnFrameRenderedListener(null, null)
+                synchronized(codecLock) {
+                    if (codec === activeCodec) {
+                        Log.i(PLAYBACK_DIAGNOSTICS_TAG,
+                            "route=mirror_decoder generation=$generation event=first_frame codec=$codecName " +
+                                "elapsedMs=${SystemClock.elapsedRealtime() - startedMs}")
+                        runCatching { activeCodec.setOnFrameRenderedListener(null, null) }
+                    }
                 }
             }, renderListenerHandler)
             decoder.start()
@@ -182,9 +185,11 @@ class MirrorDecoder(
     }
 
     private fun releaseCodec(activeCodec: MediaCodec, reclaimed: Boolean = false) {
-        if (codec === activeCodec) codec = null
-        if (!reclaimed) runCatching { activeCodec.stop() }
-        runCatching { activeCodec.release() }
+        synchronized(codecLock) {
+            if (codec === activeCodec) codec = null
+            if (!reclaimed) runCatching { activeCodec.stop() }
+            runCatching { activeCodec.release() }
+        }
     }
 
     private fun decodeLoop() {

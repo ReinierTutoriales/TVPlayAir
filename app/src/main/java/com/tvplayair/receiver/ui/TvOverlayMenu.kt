@@ -227,7 +227,8 @@ private fun TvPlaybackControls(
 ) {
     val playFocus = remember { FocusRequester() }
     val canToggle = telemetry != null || onAudioCommand != null
-    LaunchedEffect(canToggle) {
+    val canSeek = telemetry?.canSeek == true
+    LaunchedEffect(canToggle, canSeek) {
         if (canToggle) playFocus.requestFocus()
     }
     TvMediaControlGroup(modifier) {

@@ -15,7 +15,11 @@ object BinaryPlistWriter {
         val objects = ArrayList<Any>()
         flatten(root, objects)
 
-        val refSize = if (objects.size < 256) 1 else 2
+        val refSize = when {
+            objects.size < 256 -> 1
+            objects.size < 65536 -> 2
+            else -> 4
+        }
         val out = ByteArrayOutputStream()
         out.write(MAGIC)
 
@@ -82,9 +86,15 @@ object BinaryPlistWriter {
                 out.write(obj)
             }
             is String -> {
-                val ascii = obj.toByteArray(StandardCharsets.US_ASCII)
-                writeLengthMarker(out, 0x5, ascii.size)
-                out.write(ascii)
+                if (obj.all { it.code <= 0x7F }) {
+                    val ascii = obj.toByteArray(StandardCharsets.US_ASCII)
+                    writeLengthMarker(out, 0x5, ascii.size)
+                    out.write(ascii)
+                } else {
+                    val utf16 = obj.toByteArray(StandardCharsets.UTF_16BE)
+                    writeLengthMarker(out, 0x6, utf16.size / 2)
+                    out.write(utf16)
+                }
             }
             is List<*> -> {
                 val items = obj.filterNotNull()

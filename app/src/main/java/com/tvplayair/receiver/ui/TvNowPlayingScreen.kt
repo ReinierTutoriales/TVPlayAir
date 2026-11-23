@@ -71,9 +71,7 @@ internal fun TvNowPlayingScreen(
                 val decoded = withContext(Dispatchers.Default) {
                     decodeUniformArtwork(source, coverPixels)
                 }
-                if (decoded != null) {
-                    cover = decoded
-                }
+                cover = decoded
             }
         }
         val tint = cover?.tint ?: Color(0xFF212530)
