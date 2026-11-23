@@ -458,8 +458,13 @@ internal class MirrorFrameClock(
             lastPollNs = now
         }
         if (offsetNs == Long.MIN_VALUE) return null
-        val targetNs = senderPtsUs * 1000L + offsetNs
-        // Late frames and unrelated sender clocks should retain immediate playback.
-        return targetNs.takeIf { it > now && it - now <= 150_000_000L }
+        val ptsNs = senderPtsUs * 1000L
+        // Sender timestamps and offsets are untrusted; reject signed overflow.
+        if (offsetNs > 0 && ptsNs > Long.MAX_VALUE - offsetNs) return null
+        if (offsetNs < 0 && ptsNs < Long.MIN_VALUE - offsetNs) return null
+        val targetNs = ptsNs + offsetNs
+        // Compare against a bounded future window without overflowing subtraction.
+        if (now > Long.MAX_VALUE - 150_000_000L) return null
+        return targetNs.takeIf { it > now && it <= now + 150_000_000L }
     }
 }
