@@ -104,7 +104,10 @@ class SessionService : Service() {
             synchronized(callbackLock) {
                 val config = MirrorConfig(mimeType, width, height, generationId, codecConfig)
                 latestMirrorConfig = config
-                if (opensProjection) directPlayback = null
+                if (opensProjection) {
+                    directPlayback = null
+                    lastAutoOpenedDirectId = null
+                }
                 runCatching { callback?.let { config.sendTo(it, opensProjection) } }
             }
             if (opensProjection) {
@@ -119,6 +122,7 @@ class SessionService : Service() {
                 // Retain the active source for Activity recreation, even if a UI is bound.
                 val video = DirectPlaybackStart(url, startPosition, playbackId)
                 directPlayback = video
+                mirrorProjectionActive = false
                 runCatching { callback?.showDirectVideo(video) }
             }
             if (lastAutoOpenedDirectId != playbackId) {
@@ -131,7 +135,10 @@ class SessionService : Service() {
             synchronized(callbackLock) {
                 if (directPlayback?.playbackId != playbackId) return
                 when (command) {
-                    "stop" -> directPlayback = null
+                    "stop" -> {
+                        directPlayback = null
+                        lastAutoOpenedDirectId = null
+                    }
                     "pause", "play" -> directPlayback = directPlayback?.withPlaybackIntent(command)
                 }
                 runCatching { callback?.onDirectVideoCommand(command, value, playbackId) }
@@ -298,7 +305,10 @@ class SessionService : Service() {
         override fun finishDirectPlayback(source: ITvPlayCallback, playbackId: Long) {
             synchronized(callbackLock) {
                 if (callback?.asBinder() != source.asBinder()) return
-                if (directPlayback?.playbackId == playbackId) directPlayback = null
+                if (directPlayback?.playbackId == playbackId) {
+                    directPlayback = null
+                    lastAutoOpenedDirectId = null
+                }
             }
             protocolEngine.finishDirectPlayback(playbackId)
         }
