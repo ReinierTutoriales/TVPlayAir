@@ -244,11 +244,13 @@ private fun TvPlaybackControls(
         if (canToggle) playFocus.requestFocus()
     }
     TvMediaControlGroup(modifier) {
-        TvMediaControl(
-            label = stringResource(R.string.audio_previous),
-            enabled = onAudioCommand != null,
-            onClick = { onAudioCommand?.invoke(DacpCommand.PREVIOUS) }
-        ) { MediaControlGlyph(MediaGlyph.Previous) }
+        // Direct video has no previous/next transport commands. Do not render dead controls.
+        if (onAudioCommand != null) {
+            TvMediaControl(
+                label = stringResource(R.string.audio_previous),
+                onClick = { onAudioCommand(DacpCommand.PREVIOUS) }
+            ) { MediaControlGlyph(MediaGlyph.Previous) }
+        }
 
         val (label, glyph) = when (telemetry?.playWhenReady) {
             true -> R.string.video_pause to MediaGlyph.Pause
@@ -266,11 +268,12 @@ private fun TvPlaybackControls(
             enabled = canToggle
         ) { MediaControlGlyph(glyph) }
 
-        TvMediaControl(
-            label = stringResource(R.string.audio_next),
-            enabled = onAudioCommand != null,
-            onClick = { onAudioCommand?.invoke(DacpCommand.NEXT) }
-        ) { MediaControlGlyph(MediaGlyph.Next) }
+        if (onAudioCommand != null) {
+            TvMediaControl(
+                label = stringResource(R.string.audio_next),
+                onClick = { onAudioCommand(DacpCommand.NEXT) }
+            ) { MediaControlGlyph(MediaGlyph.Next) }
+        }
     }
 }
 
