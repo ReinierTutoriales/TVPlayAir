@@ -47,6 +47,39 @@ class VideoPresentationCoordinatorTest {
     }
 
     @Test
+    fun failedMirrorStartupHidesPresentationInsteadOfLeavingStaleSurface() {
+        val events = mutableListOf<String>()
+        val mirror = FakeMirrorEngine(events).apply { failStart = true }
+        val coordinator = VideoPresentationCoordinator(
+            mirror, FakeDirectEngine(events), FakeAudioController(events),
+            FakeSurfaceController(events)
+        )
+        assertFalse(coordinator.startMirror())
+        assertEquals(PresentationState.RECOVERING, coordinator.state)
+        assertEquals(
+            listOf("direct.release", "surface.showMirror", "mirror.start",
+                "audio.pausedForExternal(false)", "surface.hideAll"),
+            events
+        )
+    }
+
+    @Test
+    fun failedLiveMirrorReconfigurationHidesOldFrame() {
+        val events = mutableListOf<String>()
+        val mirror = FakeMirrorEngine(events)
+        val coordinator = VideoPresentationCoordinator(
+            mirror, FakeDirectEngine(events), FakeAudioController(events),
+            FakeSurfaceController(events)
+        )
+        assertTrue(coordinator.startMirror())
+        events.clear()
+        mirror.failStart = true
+        assertFalse(coordinator.startMirror(reconfigured = true))
+        assertEquals(PresentationState.RECOVERING, coordinator.state)
+        assertEquals(listOf("mirror.start", "surface.hideAll"), events)
+    }
+
+    @Test
     fun losingMirrorSurfaceClearsPresentationAndStopsDecoder() {
         val events = mutableListOf<String>()
         val coordinator = VideoPresentationCoordinator(
