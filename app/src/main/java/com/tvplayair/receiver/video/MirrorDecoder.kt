@@ -56,11 +56,14 @@ class MirrorDecoder(
     private var codec: MediaCodec? = null
     private var workerThread: Thread? = null
 
+    @Synchronized
     fun updateConfig(newConfig: MirrorVideoConfig, generation: Int, codecConfig: ByteArray): Boolean {
         if (generationId.get() == generation && config == newConfig &&
             frameGate.matchesCodecConfig(codecConfig)
         ) return false
         stopAndRelease()
+        // The previous worker must retire before its ring generation and codec config change.
+        if (workerThread?.isAlive == true) return false
         config = newConfig
         generationId.set(generation)
         frameGate.clearAll()
@@ -71,6 +74,13 @@ class MirrorDecoder(
     @Synchronized
     override fun start(discardPendingFrames: Boolean): Boolean {
         if (running.get()) return true
+        // A timed-out stop must not start another worker over the shared packet buffer.
+        if (workerThread?.isAlive == true) {
+            Log.w(PLAYBACK_DIAGNOSTICS_TAG,
+                "route=mirror_decoder generation=${generationId.get()} event=previous_worker_alive")
+            return false
+        }
+        workerThread = null
         val surface = surfaceProvider()
         if (surface == null || !surface.isValid) {
             Log.w(PLAYBACK_DIAGNOSTICS_TAG,
@@ -87,8 +97,14 @@ class MirrorDecoder(
 
         running.set(true)
         workerThread = Thread({
-            if (discardPendingFrames) NativeSharedMemory.nativeDiscardPendingVideoPackets()
-            decodeLoop()
+            try {
+                if (discardPendingFrames) NativeSharedMemory.nativeDiscardPendingVideoPackets()
+                decodeLoop()
+            } finally {
+                // The worker owns MediaCodec until its last dequeue/queue has returned.
+                running.set(false)
+                codec?.let { releaseCodec(it) }
+            }
         }, "TVPlayAir-MirrorDecoder").apply { start() }
         return true
     }
@@ -100,8 +116,13 @@ class MirrorDecoder(
             thread.interrupt()
             runCatching { thread.join(1_000L) }
         }
+        if (workerThread?.isAlive == true) {
+            // Do not release a codec that a blocked worker may still be using.
+            Log.w(PLAYBACK_DIAGNOSTICS_TAG,
+                "route=mirror_decoder generation=${generationId.get()} event=worker_stop_timeout")
+            return
+        }
         workerThread = null
-
         codec?.let { releaseCodec(it) }
     }
 
