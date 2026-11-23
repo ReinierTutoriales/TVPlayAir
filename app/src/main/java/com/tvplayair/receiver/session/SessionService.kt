@@ -69,6 +69,10 @@ class SessionService : Service() {
     @Volatile
     private var callback: ITvPlayCallback? = null
     private var directPlayback: DirectPlaybackStart? = null
+    // Only an actual new visual session may request foreground presentation.
+    // Android can still reject background activity starts; the notification remains available.
+    private var mirrorProjectionActive = false
+    private var lastAutoOpenedDirectId: Long? = null
 
     private fun ITvPlayCallback.showDirectVideo(video: DirectPlaybackStart) {
         onDirectVideoUrl(
@@ -102,7 +106,11 @@ class SessionService : Service() {
                 if (opensProjection) directPlayback = null
                 runCatching { callback?.let { config.sendTo(it, opensProjection) } }
             }
-            ensureUiForeground()
+            if (opensProjection) {
+                val newProjection = !mirrorProjectionActive
+                mirrorProjectionActive = true
+                if (newProjection) ensureUiForeground()
+            }
         }
 
         override fun onDirectVideoUrl(url: String, startPosition: Double, playbackId: Long) {
@@ -112,7 +120,10 @@ class SessionService : Service() {
                 directPlayback = video
                 runCatching { callback?.showDirectVideo(video) }
             }
-            ensureUiForeground()
+            if (lastAutoOpenedDirectId != playbackId) {
+                lastAutoOpenedDirectId = playbackId
+                ensureUiForeground()
+            }
         }
 
         override fun onDirectVideoCommand(command: String, value: Double, playbackId: Long) {
@@ -138,6 +149,7 @@ class SessionService : Service() {
         override fun onMirrorStreamEnded() {
             synchronized(callbackLock) {
                 latestMirrorConfig = null
+                mirrorProjectionActive = false
                 runCatching { callback?.onMirrorStreamEnded() }
             }
         }
@@ -178,7 +190,7 @@ class SessionService : Service() {
                 Log.i(PLAYBACK_DIAGNOSTICS_TAG, "route=raop generation=$generationId event=active")
                 runCatching { callback?.onAudioStreamStarted(generationId) }
             }
-            ensureUiForeground()
+            // Audio-only sessions must never steal focus from the current TV app.
         }
     }
 
@@ -434,6 +446,9 @@ class SessionService : Service() {
 
     private fun ensureUiForeground() {
         if (projectionVisible) return
+        // Opt-in policy: no background activity launches unless explicitly enabled.
+        if (!getSharedPreferences("receiver_presentation", MODE_PRIVATE)
+                .getBoolean("auto_open_visual", false)) return
         runCatching {
             startActivity(projectionIntent())
         }.onFailure {
