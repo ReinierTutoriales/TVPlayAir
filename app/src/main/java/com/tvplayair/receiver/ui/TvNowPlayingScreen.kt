@@ -82,8 +82,8 @@ internal fun TvNowPlayingScreen(
             modifier = Modifier.fillMaxSize()
                 .drawWithCache {
                     val backdrop = Brush.radialGradient(
-                        0f to tint,
-                        0.53f to lerp(Color.Black, tint, 0.40f),
+                        0f to lerp(Color.Black, tint, 0.82f),
+                        0.53f to lerp(Color.Black, tint, 0.28f),
                         1f to Color.Black,
                         center = Offset(size.width * 0.23f, size.height * 0.44f),
                         radius = size.width * 0.72f
@@ -135,11 +135,11 @@ internal fun TvNowPlayingScreen(
 
 @Composable
 private fun AlbumCover(image: ImageBitmap?, modifier: Modifier) {
-    val shape = RoundedCornerShape(18.dp)
+    val shape = RoundedCornerShape(16.dp)
     Box(
         modifier = modifier.clip(shape)
             .background(Color(0xFF16181E))
-            .border(1.dp, Color.White.copy(alpha = 0.14f), shape),
+            .border(1.dp, Color.White.copy(alpha = 0.08f), shape),
         contentAlignment = Alignment.Center
     ) {
         if (image != null) {
@@ -188,7 +188,8 @@ internal fun TvMediaControl(
         modifier = modifier.size(if (primary) 64.dp else 52.dp)
             .semantics { contentDescription = label },
         shape = IconButtonDefaults.shape(shape = CircleShape),
-        scale = IconButtonDefaults.scale(focusedScale = 1f),
+        // TV focus must remain visible without requiring a decorative focus ring.
+        scale = IconButtonDefaults.scale(focusedScale = 1.08f),
         colors = IconButtonDefaults.colors(
             containerColor = if (primary) Color(0xFF303743) else Color.Transparent,
             contentColor = Color.White,
