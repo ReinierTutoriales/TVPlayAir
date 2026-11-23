@@ -198,6 +198,10 @@ class SessionConnection(
         }
     }
 
+    fun setAutoOpenVisual(enabled: Boolean) {
+        runCatching { service?.setAutoOpenVisual(enabled) }
+    }
+
     fun finishDirectPlayback(playbackId: Long) {
         val source = activeCallback ?: return
         if (playbackId != 0L) runCatching { service?.finishDirectPlayback(source, playbackId) }
