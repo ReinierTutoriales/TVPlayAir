@@ -158,6 +158,10 @@ class SessionConnection(
                 val callback = callbackFor(epoch)
                 activeCallback = callback
                 service?.registerCallback(callback)
+                service?.setAutoOpenVisual(
+                    appContext.getSharedPreferences("receiver_presentation", Context.MODE_PRIVATE)
+                        .getBoolean("auto_open_visual", false)
+                )
                 service?.setProjectionVisible(projectionVisible)
                 service?.startServer()
                 Log.i(PLAYBACK_DIAGNOSTICS_TAG, "route=ipc epoch=$epoch event=bound")
@@ -182,6 +186,7 @@ class SessionConnection(
         if (closed || bound) return
         handler.removeCallbacks(reconnect)
         runCatching { SessionService.startInBackground(appContext) }
+            .onFailure { Log.w(PLAYBACK_DIAGNOSTICS_TAG, "Unable to start foreground receiver; attempting bind", it) }
         val epoch = ++bindingEpoch
         val connection = connectionFor(epoch)
         activeConnection = connection
@@ -196,6 +201,10 @@ class SessionConnection(
             activeConnection = null
             scheduleReconnect()
         }
+    }
+
+    fun setAutoOpenVisual(enabled: Boolean) {
+        runCatching { service?.setAutoOpenVisual(enabled) }
     }
 
     fun finishDirectPlayback(playbackId: Long) {

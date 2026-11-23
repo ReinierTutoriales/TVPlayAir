@@ -69,6 +69,11 @@ class SessionService : Service() {
     @Volatile
     private var callback: ITvPlayCallback? = null
     private var directPlayback: DirectPlaybackStart? = null
+    // Only an actual new visual session may request foreground presentation.
+    // Android can still reject background activity starts; the notification remains available.
+    private var mirrorProjectionActive = false
+    private var lastAutoOpenedDirectId: Long? = null
+    @Volatile private var autoOpenVisual = false
 
     private fun ITvPlayCallback.showDirectVideo(video: DirectPlaybackStart) {
         onDirectVideoUrl(
@@ -99,10 +104,17 @@ class SessionService : Service() {
             synchronized(callbackLock) {
                 val config = MirrorConfig(mimeType, width, height, generationId, codecConfig)
                 latestMirrorConfig = config
-                if (opensProjection) directPlayback = null
+                if (opensProjection) {
+                    directPlayback = null
+                    lastAutoOpenedDirectId = null
+                }
                 runCatching { callback?.let { config.sendTo(it, opensProjection) } }
             }
-            ensureUiForeground()
+            if (opensProjection) {
+                val newProjection = !mirrorProjectionActive
+                mirrorProjectionActive = true
+                if (newProjection) ensureUiForeground()
+            }
         }
 
         override fun onDirectVideoUrl(url: String, startPosition: Double, playbackId: Long) {
@@ -110,16 +122,23 @@ class SessionService : Service() {
                 // Retain the active source for Activity recreation, even if a UI is bound.
                 val video = DirectPlaybackStart(url, startPosition, playbackId)
                 directPlayback = video
+                mirrorProjectionActive = false
                 runCatching { callback?.showDirectVideo(video) }
             }
-            ensureUiForeground()
+            if (lastAutoOpenedDirectId != playbackId) {
+                lastAutoOpenedDirectId = playbackId
+                ensureUiForeground()
+            }
         }
 
         override fun onDirectVideoCommand(command: String, value: Double, playbackId: Long) {
             synchronized(callbackLock) {
                 if (directPlayback?.playbackId != playbackId) return
                 when (command) {
-                    "stop" -> directPlayback = null
+                    "stop" -> {
+                        directPlayback = null
+                        lastAutoOpenedDirectId = null
+                    }
                     "pause", "play" -> directPlayback = directPlayback?.withPlaybackIntent(command)
                 }
                 runCatching { callback?.onDirectVideoCommand(command, value, playbackId) }
@@ -138,6 +157,7 @@ class SessionService : Service() {
         override fun onMirrorStreamEnded() {
             synchronized(callbackLock) {
                 latestMirrorConfig = null
+                mirrorProjectionActive = false
                 runCatching { callback?.onMirrorStreamEnded() }
             }
         }
@@ -178,7 +198,7 @@ class SessionService : Service() {
                 Log.i(PLAYBACK_DIAGNOSTICS_TAG, "route=raop generation=$generationId event=active")
                 runCatching { callback?.onAudioStreamStarted(generationId) }
             }
-            ensureUiForeground()
+            // Audio-only sessions must never steal focus from the current TV app.
         }
     }
 
@@ -231,6 +251,12 @@ class SessionService : Service() {
             projectionVisible = visible
         }
 
+        override fun setAutoOpenVisual(enabled: Boolean) {
+            autoOpenVisual = enabled
+            getSharedPreferences("receiver_presentation", MODE_PRIVATE)
+                .edit().putBoolean("auto_open_visual", enabled).apply()
+        }
+
         override fun startServer() {
             startAirPlaySession()
         }
@@ -279,7 +305,10 @@ class SessionService : Service() {
         override fun finishDirectPlayback(source: ITvPlayCallback, playbackId: Long) {
             synchronized(callbackLock) {
                 if (callback?.asBinder() != source.asBinder()) return
-                if (directPlayback?.playbackId == playbackId) directPlayback = null
+                if (directPlayback?.playbackId == playbackId) {
+                    directPlayback = null
+                    lastAutoOpenedDirectId = null
+                }
             }
             protocolEngine.finishDirectPlayback(playbackId)
         }
@@ -336,6 +365,8 @@ class SessionService : Service() {
 
     override fun onCreate() {
         super.onCreate()
+        autoOpenVisual = getSharedPreferences("receiver_presentation", MODE_PRIVATE)
+            .getBoolean("auto_open_visual", false)
         identityStore = ReceiverIdentityStore(this)
         val identity = identityStore.loadOrCreate()
         ed25519PrivateKey = identity.ed25519PrivateKey
@@ -425,6 +456,8 @@ class SessionService : Service() {
 
     private fun ensureUiForeground() {
         if (projectionVisible) return
+        // Opt-in policy: no background activity launches unless explicitly enabled.
+        if (!autoOpenVisual) return
         runCatching {
             startActivity(projectionIntent())
         }.onFailure {

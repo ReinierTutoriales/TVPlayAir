@@ -52,6 +52,7 @@ fun TvOverlayMenu(
     onCycleReceiverName: () -> Unit,
     onToggleResolution: () -> Unit,
     onToggleHevc: () -> Unit,
+    onToggleAutoOpenVisual: () -> Unit,
     onAdjustAudioOffset: (Int) -> Unit,
     onAudioCommand: (DacpCommand) -> Unit,
     onVideoToggle: () -> Unit,
@@ -137,6 +138,7 @@ fun TvOverlayMenu(
             SettingRow("Receptor", state.receiverName, onCycleReceiverName, Modifier.focusRequester(initialFocus))
             SettingRow("Límite de resolución", state.resolutionPreset.label, onToggleResolution)
             SettingRow("Códec anunciado", if (state.hevcEnabled) "HEVC" else "H.264", onToggleHevc)
+            SettingRow("Abrir al recibir vídeo", if (state.autoOpenVisual) "Activado" else "Desactivado", onToggleAutoOpenVisual)
 
             Row(
                 modifier = Modifier.fillMaxWidth().padding(top = 8.dp),

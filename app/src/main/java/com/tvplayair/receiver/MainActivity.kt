@@ -27,6 +27,7 @@ import androidx.core.view.WindowInsetsCompat
 import androidx.core.view.WindowInsetsControllerCompat
 import androidx.tv.material3.MaterialTheme
 import com.tvplayair.receiver.diagnostics.PLAYBACK_DIAGNOSTICS_TAG
+import com.tvplayair.receiver.audio.AudioContinuityService
 import com.tvplayair.receiver.audio.OboeAudioConsumer
 import com.tvplayair.receiver.control.DacpCommand
 import com.tvplayair.receiver.control.TvRemoteHidBridge
@@ -59,6 +60,8 @@ class MainActivity : ComponentActivity(), SurfaceLayerController {
     private val webVideoPlayer: WebVideoPlayer get() = directVideoModel.player
     private lateinit var presentationCoordinator: VideoPresentationCoordinator
     private lateinit var sessionConnection: SessionConnection
+    private lateinit var sessionListener: SessionEventListener
+    private var audioHandedOff = false
     private lateinit var hidBridge: TvRemoteHidBridge
     private lateinit var identityStore: ReceiverIdentityStore
 
@@ -98,12 +101,16 @@ class MainActivity : ComponentActivity(), SurfaceLayerController {
             hide(WindowInsetsCompat.Type.systemBars())
         }
         onBackPressedDispatcher.addCallback(this, closeOverlayOnBack)
+        val retainedAudio = AudioContinuityService.claim()
+        audioConsumer = retainedAudio?.second ?: OboeAudioConsumer(applicationContext)
         identityStore = ReceiverIdentityStore(this)
         val initialIdentity = identityStore.loadOrCreate()
         overlayState = overlayState.copy(
             receiverName = initialIdentity.serviceName,
             audioOffsetMs = audioConsumer.getAudioOffsetMs(),
-            projectionHome = isProjectionHomeIntent(intent)
+            projectionHome = isProjectionHomeIntent(intent),
+            autoOpenVisual = getSharedPreferences("receiver_presentation", MODE_PRIVATE)
+                .getBoolean("auto_open_visual", false)
         )
         updateScreenWake()
 
@@ -139,6 +146,7 @@ class MainActivity : ComponentActivity(), SurfaceLayerController {
                         onCycleReceiverName = ::cycleReceiverName,
                         onToggleResolution = ::toggleResolutionPreset,
                         onToggleHevc = ::toggleHevcSetting,
+                        onToggleAutoOpenVisual = ::toggleAutoOpenVisual,
                         onAdjustAudioOffset = ::adjustAudioOffset,
                         onAudioCommand = { command -> sendAudioCommand(command, audioGeneration) },
                         onVideoToggle = { toggleVideoFromControls(directPlaybackId) },
@@ -166,7 +174,6 @@ class MainActivity : ComponentActivity(), SurfaceLayerController {
 
         val retainedPlayback = DirectPlaybackService.claim()
         retainedPlayback?.let(directVideoModel::adopt)
-        audioConsumer = OboeAudioConsumer(this)
         mirrorDecoder = MirrorDecoder(
             surfaceProvider = { mirrorSurfaceView.holder.surface },
             audioClockOffsetNs = audioConsumer::senderClockOffsetNs,
@@ -228,7 +235,7 @@ class MainActivity : ComponentActivity(), SurfaceLayerController {
         )
         hidBridge = TvRemoteHidBridge(this).apply { startIfSupported() }
 
-        val sessionListener = object : SessionEventListener {
+        sessionListener = object : SessionEventListener {
             override fun onSharedMemoryReady(generationId: Int, activeDirectPlaybackId: Long) {
                 sharedMemoryReady = true
                 awaitingDirectSnapshot = activeDirectPlaybackId != 0L
@@ -353,13 +360,19 @@ class MainActivity : ComponentActivity(), SurfaceLayerController {
                 updateScreenWake()
             }
         }
-        sessionConnection = retainedPlayback?.connection ?: SessionConnection(this)
+        sessionConnection = retainedPlayback?.connection ?: retainedAudio?.first ?: SessionConnection(this)
         sessionConnection.replaceListener(sessionListener, replay = retainedPlayback != null)
         sessionConnection.connect()
+        sessionConnection.setAutoOpenVisual(overlayState.autoOpenVisual)
     }
 
     override fun onStart() {
         super.onStart()
+        if (audioHandedOff) {
+            AudioContinuityService.claim()
+            audioHandedOff = false
+            sessionConnection.replaceListener(sessionListener, replay = true)
+        }
         screenStarted = true
         sessionConnection.setProjectionVisible(true)
         if (directPlaybackId != 0L) publishDirectPlayback()
@@ -370,6 +383,11 @@ class MainActivity : ComponentActivity(), SurfaceLayerController {
         screenStarted = false
         dismissPlaybackControls()
         sessionConnection.setProjectionVisible(false)
+        if (overlayState.audioProjectionActive && directPlaybackId == 0L) {
+            audioHandedOff = AudioContinuityService.retain(
+                this, sessionConnection, audioConsumer, overlayState.audioGeneration
+            )
+        }
         super.onStop()
     }
 
@@ -595,6 +613,14 @@ class MainActivity : ComponentActivity(), SurfaceLayerController {
         pushAdvertisingConfig(overlayState)
     }
 
+    private fun toggleAutoOpenVisual() {
+        val enabled = !overlayState.autoOpenVisual
+        overlayState = overlayState.copy(autoOpenVisual = enabled)
+        getSharedPreferences("receiver_presentation", MODE_PRIVATE)
+            .edit().putBoolean("auto_open_visual", enabled).apply()
+        sessionConnection.setAutoOpenVisual(enabled)
+    }
+
     private fun toggleResolutionPreset() {
         val next = overlayState.toggleResolution()
         overlayState = next
@@ -723,7 +749,7 @@ class MainActivity : ComponentActivity(), SurfaceLayerController {
 
     private fun updateScreenWake() {
         val state = overlayState
-        val keepScreenOn = !state.projectionHome || state.visible || state.showingAudio || !state.showStandby
+        val keepScreenOn = !state.showStandby && !state.showingDirectAudio
         val flag = WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON
         if (keepScreenOn) window.addFlags(flag) else window.clearFlags(flag)
     }
@@ -814,13 +840,19 @@ class MainActivity : ComponentActivity(), SurfaceLayerController {
         val retainedByService = !isChangingConfigurations &&
             DirectPlaybackService.retain(DirectPlaybackService.RetainedPlayback(webVideoPlayer, sessionConnection))
         if (retainedByService) directVideoModel.relinquishPlayer()
+        val audioRetained = !retainedByService && (audioHandedOff ||
+            (overlayState.audioProjectionActive && AudioContinuityService.retain(
+                this, sessionConnection, audioConsumer, overlayState.audioGeneration
+            )))
         if (retainedByService || isChangingConfigurations) {
             mirrorDecoder.stopAndRelease()
             audioConsumer.stop()
-        } else {
+        } else if (!audioRetained) {
             presentationCoordinator.onSessionDied()
+        } else {
+            mirrorDecoder.stopAndRelease()
         }
-        if (!retainedByService) sessionConnection.close()
+        if (!retainedByService && !audioRetained) sessionConnection.close()
         super.onDestroy()
     }
 }
