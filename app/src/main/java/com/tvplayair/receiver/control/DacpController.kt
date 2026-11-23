@@ -10,6 +10,7 @@ import java.net.URL
 import java.util.Locale
 import java.util.concurrent.ExecutorService
 import java.util.concurrent.Executors
+import java.util.concurrent.RejectedExecutionException
 
 enum class DacpCommand(val wirePath: String) {
     PLAY("play"),
@@ -49,6 +50,10 @@ object DacpRequestBuilder {
 
     fun hasValidClientCredentials(dacpId: String, activeRemote: String): Boolean =
         expectedServiceName(dacpId) != null && activeRemote.isNotBlank()
+
+    fun isCurrentCommand(
+        queuedGeneration: Long, activeGeneration: Long, sessionActive: Boolean
+    ): Boolean = queuedGeneration == activeGeneration && sessionActive
 
     fun buildRequest(
         host: String,
@@ -142,8 +147,9 @@ class DacpController(
         val request = DacpRequestBuilder.buildRequest(host, port, token, command) ?: return false
         val generation = targetGeneration
 
-        executor.execute {
-            if (!stillCurrent() || generation != targetGeneration) return@execute
+        try {
+            executor.execute {
+            if (!DacpRequestBuilder.isCurrentCommand(generation, targetGeneration, stillCurrent())) return@execute
             var connection: HttpURLConnection? = null
             runCatching {
                 connection = (URL(request.url).openConnection() as HttpURLConnection).apply {
@@ -159,6 +165,9 @@ class DacpController(
                 Log.w(TAG, "DACP command ${command.wirePath} failed", it)
             }
             connection?.disconnect()
+            }
+        } catch (_: RejectedExecutionException) {
+            return false
         }
         return true
     }

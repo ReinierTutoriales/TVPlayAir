@@ -10,6 +10,13 @@ import org.junit.Test
 class DacpControllerTest {
 
     @Test
+    fun queuedDacpCommandsCannotCrossSenderGenerations() {
+        assertTrue(DacpRequestBuilder.isCurrentCommand(5L, 5L, true))
+        assertFalse(DacpRequestBuilder.isCurrentCommand(5L, 6L, true))
+        assertFalse(DacpRequestBuilder.isCurrentCommand(5L, 5L, false))
+    }
+
+    @Test
     fun replacementClientWithoutDacpCredentialsInvalidatesPreviousRemote() {
         assertTrue(DacpRequestBuilder.hasValidClientCredentials("ABCD1234", "12345"))
         assertFalse(DacpRequestBuilder.hasValidClientCredentials("", "12345"))
