@@ -24,6 +24,7 @@ data class TvOverlayState(
     val audioProjectionActive: Boolean = false,
     val audioControlsAvailable: Boolean = false,
     val nowPlaying: RaopNowPlaying? = null,
+    val directAudio: DirectPlaybackTelemetry? = null,
     val videoControls: DirectPlaybackTelemetry? = null,
     private val awaitingAudioPresentation: Boolean = false,
     private val pendingNowPlaying: RaopNowPlaying? = null
@@ -39,8 +40,21 @@ data class TvOverlayState(
     val showingAudio: Boolean
         get() = showStandby && (audioProjectionActive || nowPlaying != null)
 
+    val showingDirectAudio: Boolean
+        get() = !visible && presentationState == PresentationState.DIRECT_ACTIVE && directAudio != null
+
+    val showingDirectControls: Boolean
+        get() = showingDirectAudio || showingVideoControls
+
     val showingVideoControls: Boolean
-        get() = !visible && presentationState == PresentationState.DIRECT_ACTIVE && videoControls != null
+        get() = !visible && presentationState == PresentationState.DIRECT_ACTIVE &&
+            directAudio == null && videoControls != null
+
+    fun withDirectTelemetry(telemetry: DirectPlaybackTelemetry): TvOverlayState =
+        if (presentationState != PresentationState.DIRECT_ACTIVE) this else copy(
+            directAudio = telemetry.takeIf { it.audioOnly },
+            videoControls = telemetry.takeIf { !it.audioOnly && videoControls != null }
+        )
 
     fun withPresentation(state: PresentationState): TvOverlayState {
         val showAudio = state == PresentationState.IDLE || state == PresentationState.RECOVERING
@@ -53,6 +67,7 @@ data class TvOverlayState(
             visible = visible && !enteringVideo,
             presentationState = state,
             nowPlaying = if (showAudio) pendingNowPlaying ?: nowPlaying else null,
+            directAudio = directAudio.takeIf { state == PresentationState.DIRECT_ACTIVE },
             videoControls = videoControls.takeIf { state == PresentationState.DIRECT_ACTIVE },
             awaitingAudioPresentation = awaitingAudioPresentation && !showAudio,
             pendingNowPlaying = pendingNowPlaying.takeUnless { showAudio }

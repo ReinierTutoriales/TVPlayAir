@@ -60,17 +60,35 @@ internal fun TvNowPlayingScreen(
     metadata: RaopNowPlaying?,
     controlsAvailable: Boolean,
     onAudioCommand: (DacpCommand) -> Unit
+) = TvNowPlayingScreen(
+    title = metadata?.track?.title,
+    artist = metadata?.track?.artist,
+    album = metadata?.track?.album,
+    artwork = metadata?.artwork
 ) {
-    val playFocus = remember { FocusRequester() }
-    LaunchedEffect(controlsAvailable) {
-        if (controlsAvailable) playFocus.requestFocus()
+    if (controlsAvailable) {
+        val playFocus = remember { FocusRequester() }
+        LaunchedEffect(Unit) { playFocus.requestFocus() }
+        TvMediaControlGroup {
+            AudioControl(AudioAction.Previous, onAudioCommand)
+            AudioControl(AudioAction.PlayPause, onAudioCommand, Modifier.focusRequester(playFocus))
+            AudioControl(AudioAction.Next, onAudioCommand)
+        }
     }
+}
 
+@Composable
+internal fun TvNowPlayingScreen(
+    title: String?,
+    artist: String?,
+    album: String?,
+    artwork: ByteArray?,
+    controls: @Composable () -> Unit
+) {
     BoxWithConstraints(Modifier.fillMaxSize()) {
         val coverSize = minOf(maxWidth * 0.39f, maxHeight * 0.77f, 340.dp)
         val horizontalInset = maxWidth * 0.055f
         val coverPixels = with(LocalDensity.current) { coverSize.roundToPx() }.coerceAtLeast(1)
-        val artwork = metadata?.artwork
         val cover = key(artwork, coverPixels) {
             val image by produceState<AudioArtwork?>(initialValue = null) {
                 if (artwork != null) {
@@ -83,7 +101,6 @@ internal fun TvNowPlayingScreen(
         val compact = maxHeight < 360.dp || maxWidth < 640.dp
         val titleStyle = if (compact) MaterialTheme.typography.headlineMedium
             else MaterialTheme.typography.displaySmall
-        val track = metadata?.track
 
         Row(
             modifier = Modifier.fillMaxSize()
@@ -108,14 +125,14 @@ internal fun TvNowPlayingScreen(
             ) {
                 Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
                     Text(
-                        text = track?.title ?: stringResource(R.string.audio_airplay),
+                        text = title ?: stringResource(R.string.audio_airplay),
                         style = titleStyle,
                         fontWeight = FontWeight.SemiBold,
                         color = Color.White,
                         maxLines = 2,
                         overflow = TextOverflow.Ellipsis
                     )
-                    track?.artist?.let {
+                    artist?.let {
                         Text(
                             text = it,
                             color = Color(0xFFD1D3D9),
@@ -124,7 +141,7 @@ internal fun TvNowPlayingScreen(
                             overflow = TextOverflow.Ellipsis
                         )
                     }
-                    track?.album?.takeUnless { it == track.title || it == track.artist }?.let {
+                    album?.takeUnless { it == title || it == artist }?.let {
                         Text(
                             text = it,
                             color = Color(0xFFA9ADB7),
@@ -134,13 +151,7 @@ internal fun TvNowPlayingScreen(
                         )
                     }
                 }
-                if (controlsAvailable) {
-                    TvMediaControlGroup {
-                        AudioControl(AudioAction.Previous, onAudioCommand)
-                        AudioControl(AudioAction.PlayPause, onAudioCommand, Modifier.focusRequester(playFocus))
-                        AudioControl(AudioAction.Next, onAudioCommand)
-                    }
-                }
+                controls()
             }
         }
     }

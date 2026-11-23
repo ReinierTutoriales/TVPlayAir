@@ -67,6 +67,7 @@ class MainActivity : ComponentActivity(), SurfaceLayerController {
     private var destroyingView = false
     private var screenStarted = false
     private var mirrorRequested = false
+    private var directAspectRatio: Double? = null
     private var directPlaybackId = 0L
     private var directStartupTimeout: Runnable? = null
     private var directRequestedAtMs = 0L
@@ -154,6 +155,11 @@ class MainActivity : ComponentActivity(), SurfaceLayerController {
         root.addView(directSurfaceView, FrameLayout.LayoutParams(matchParent))
         root.addView(directStartupCover, FrameLayout.LayoutParams(matchParent))
         root.addView(overlayComposeView, FrameLayout.LayoutParams(matchParent))
+        root.addOnLayoutChangeListener { _, left, top, right, bottom, oldLeft, oldTop, oldRight, oldBottom ->
+            if (right - left != oldRight - oldLeft || bottom - top != oldBottom - oldTop) {
+                updateDirectSurfaceAspectRatio()
+            }
+        }
         setContentView(root)
 
         val retainedPlayback = DirectPlaybackService.claim()
@@ -166,11 +172,10 @@ class MainActivity : ComponentActivity(), SurfaceLayerController {
         webVideoPlayer.attachView(directSurfaceView, object : WebVideoPlayer.ViewCallbacks {
             override fun onTelemetryChanged(telemetry: DirectPlaybackTelemetry) {
                 if (::presentationCoordinator.isInitialized &&
-                    presentationCoordinator.state == PresentationState.DIRECT_ACTIVE &&
-                    overlayState.showingVideoControls) {
-                    val intentChanged = overlayState.videoControls?.playWhenReady != telemetry.playWhenReady
-                    overlayState = overlayState.copy(videoControls = telemetry)
-                    if (intentChanged) refreshVideoControlsTimeout()
+                    presentationCoordinator.state == PresentationState.DIRECT_ACTIVE) {
+                    val previousIntent = overlayState.videoControls?.playWhenReady
+                    overlayState = overlayState.withDirectTelemetry(telemetry)
+                    if (previousIntent != overlayState.videoControls?.playWhenReady) refreshVideoControlsTimeout()
                 }
                 if (::presentationCoordinator.isInitialized &&
                     canReportDirectPlayback() &&
@@ -181,11 +186,18 @@ class MainActivity : ComponentActivity(), SurfaceLayerController {
                 }
             }
 
+            override fun onVideoAspectChanged(playbackId: Long, aspectRatio: Double) {
+                if (directPlaybackId != playbackId) return
+                directAspectRatio = aspectRatio
+                updateDirectSurfaceAspectRatio()
+            }
+
             override fun onMediaReady(playbackId: Long) {
                 if (presentationCoordinator.onDirectMediaReady(playbackId)) {
                     val elapsedMs = SystemClock.elapsedRealtime() - directRequestedAtMs
                     Log.i("TVPlayAir", "direct_startup outcome=ready playbackId=$playbackId elapsedMs=$elapsedMs")
                     syncPresentationState()
+                    if (!overlayState.visible && !overlayState.showingDirectAudio) showVideoControls()
                     webVideoPlayer.exposeSystemControls(playbackId)
                     if (screenStarted) publishDirectPlayback()
                     saveDirectCheckpoint()
@@ -373,7 +385,7 @@ class MainActivity : ComponentActivity(), SurfaceLayerController {
 
         val inDirectMode = presentationCoordinator.hasDirectPlayback
         if (presentationCoordinator.state == PresentationState.DIRECT_ACTIVE &&
-            !overlayState.showingVideoControls &&
+            !overlayState.showingDirectControls &&
             handleHiddenVideoControlsKey(keyCode, event)
         ) return true
         when (keyCode) {
@@ -484,13 +496,13 @@ class MainActivity : ComponentActivity(), SurfaceLayerController {
     }
 
     private fun toggleVideoFromControls() {
-        if (!overlayState.showingVideoControls) return
+        if (!overlayState.showingDirectControls) return
         setDirectPlaybackIntent("toggle")
         refreshVideoControlsTimeout()
     }
 
     private fun seekVideoFromControls(deltaSec: Double) {
-        if (!overlayState.showingVideoControls) return
+        if (!overlayState.showingDirectControls) return
         seekVideoBy(deltaSec)
         refreshVideoControlsTimeout()
     }
@@ -595,7 +607,9 @@ class MainActivity : ComponentActivity(), SurfaceLayerController {
         if (video.url.isBlank() || !video.airPlayPosition.isFinite() || id <= 0L) return false
         if (directPlaybackId == id && presentationCoordinator.hasDirectPlayback) return true
         dismissVideoControls()
-        overlayState = overlayState.clearAudioMetadata().copy(visible = false)
+        overlayState = overlayState.clearAudioMetadata().copy(visible = false, directAudio = null)
+        directAspectRatio = null
+        updateDirectSurfaceAspectRatio()
         cancelDirectStartupTimeout()
         directPlaybackId = id
         directRequestedAtMs = SystemClock.elapsedRealtime()
@@ -666,6 +680,9 @@ class MainActivity : ComponentActivity(), SurfaceLayerController {
         if (overlayState.presentationState != state) {
             overlayState = overlayState.withPresentation(state)
         }
+        if (state == PresentationState.DIRECT_ACTIVE) {
+            overlayState = overlayState.withDirectTelemetry(presentationCoordinator.directTelemetry())
+        }
         closeOverlayOnBack.isEnabled = overlayState.visible ||
             overlayState.showingVideoControls ||
             state == PresentationState.MIRROR_ACTIVE
@@ -679,25 +696,28 @@ class MainActivity : ComponentActivity(), SurfaceLayerController {
         if (keepScreenOn) window.addFlags(flag) else window.clearFlags(flag)
     }
 
+    private fun updateDirectSurfaceAspectRatio() = fitSurface(directSurfaceView, directAspectRatio)
+
     private fun updateMirrorSurfaceAspectRatio(videoWidth: Int, videoHeight: Int) {
-        if (!::mirrorSurfaceView.isInitialized || videoWidth <= 0 || videoHeight <= 0) return
-        val parent = mirrorSurfaceView.parent as? View
+        if (videoWidth > 0 && videoHeight > 0) {
+            fitSurface(mirrorSurfaceView, videoWidth.toDouble() / videoHeight)
+        }
+    }
+
+    private fun fitSurface(surface: SurfaceView, aspectRatio: Double?) {
+        val parent = surface.parent as? View
         val containerW = parent?.width?.takeIf { it > 0 } ?: resources.displayMetrics.widthPixels
         val containerH = parent?.height?.takeIf { it > 0 } ?: resources.displayMetrics.heightPixels
-        if (containerW <= 0 || containerH <= 0) return
-
-        val fitW: Int
-        val fitH: Int
-        if (videoWidth.toLong() * containerH >= videoHeight.toLong() * containerW) {
-            fitW = containerW
-            fitH = ((containerW.toLong() * videoHeight) / videoWidth).toInt().coerceAtLeast(1)
+        val (width, height) = if (aspectRatio == null || containerW <= 0 || containerH <= 0) {
+            ViewGroup.LayoutParams.MATCH_PARENT to ViewGroup.LayoutParams.MATCH_PARENT
+        } else if (aspectRatio >= containerW.toDouble() / containerH) {
+            containerW to (containerW / aspectRatio).toInt().coerceAtLeast(1)
         } else {
-            fitH = containerH
-            fitW = ((containerH.toLong() * videoWidth) / videoHeight).toInt().coerceAtLeast(1)
+            (containerH * aspectRatio).toInt().coerceAtLeast(1) to containerH
         }
-        val currentParams = mirrorSurfaceView.layoutParams as? FrameLayout.LayoutParams
-        if (currentParams == null || currentParams.width != fitW || currentParams.height != fitH) {
-            mirrorSurfaceView.layoutParams = FrameLayout.LayoutParams(fitW, fitH, Gravity.CENTER)
+        val params = surface.layoutParams as? FrameLayout.LayoutParams
+        if (params?.width != width || params.height != height) {
+            surface.layoutParams = FrameLayout.LayoutParams(width, height, Gravity.CENTER)
         }
     }
 
@@ -727,10 +747,10 @@ class MainActivity : ComponentActivity(), SurfaceLayerController {
         override fun surfaceCreated(holder: SurfaceHolder) {
             if (destroyingView || !::presentationCoordinator.isInitialized) return
             if (isDirectSurface && presentationCoordinator.onDirectSurfaceCreated()) {
-                webVideoPlayer.onOutputSurfaceRecreated()
                 directRequestedAtMs = SystemClock.elapsedRealtime()
                 scheduleDirectStartupTimeout(directPlaybackId)
                 syncPresentationState()
+                webVideoPlayer.onOutputSurfaceRecreated()
             }
             if (!isDirectSurface && sharedMemoryReady && mirrorRequested && !awaitingDirectSnapshot) {
                 presentationCoordinator.onMirrorSurfaceCreated()

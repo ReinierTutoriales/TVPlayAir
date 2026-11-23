@@ -15,6 +15,7 @@ import androidx.media3.common.MediaItem
 import androidx.media3.common.PlaybackException
 import androidx.media3.common.Player
 import androidx.media3.common.Timeline
+import androidx.media3.common.VideoSize
 import androidx.media3.common.util.UnstableApi
 import androidx.media3.datasource.DefaultHttpDataSource
 import androidx.media3.datasource.HttpDataSource.InvalidResponseCodeException
@@ -41,6 +42,7 @@ class WebVideoPlayer(context: Context) : DirectVideoEngine {
     interface ViewCallbacks {
         fun onTelemetryChanged(telemetry: DirectPlaybackTelemetry)
         fun onMediaReady(playbackId: Long)
+        fun onVideoAspectChanged(playbackId: Long, aspectRatio: Double) = Unit
         fun onPlaybackFinished(playbackId: Long)
         fun onSystemPlaybackIntent(playbackId: Long, playWhenReady: Boolean)
     }
@@ -114,6 +116,11 @@ class WebVideoPlayer(context: Context) : DirectVideoEngine {
                     "route=direct id=$id event=first_frame elapsedMs=${renderTimeMs - prepareStartedMs}")
             }
             viewCallbacks?.onMediaReady(id)
+        }
+
+        override fun onVideoSizeChanged(eventTime: AnalyticsListener.EventTime, videoSize: VideoSize) {
+            val id = playbackIdFor(eventTime) ?: return
+            reportVideoSize(id, videoSize)
         }
 
         override fun onLoadError(
@@ -201,16 +208,18 @@ class WebVideoPlayer(context: Context) : DirectVideoEngine {
             if (playbackState == Player.STATE_READY || playbackState == Player.STATE_BUFFERING) {
                 mainHandler.postDelayed(telemetryTicker, TELEMETRY_INTERVAL_MS)
             }
-            if (playbackState == Player.STATE_READY) {
-                val tracks = player?.currentTracks
-                if (tracks != null && tracks.isTypeSelected(C.TRACK_TYPE_AUDIO) &&
-                    !tracks.containsType(C.TRACK_TYPE_VIDEO)
-                ) playbackId?.let { viewCallbacks?.onMediaReady(it) }
-            }
             if (playbackState == Player.STATE_ENDED) {
                 diagnostics.finish("ended")
                 notifyPlaybackFinished()
             }
+        }
+
+        override fun onEvents(player: Player, events: Player.Events) {
+            if (!events.containsAny(Player.EVENT_TRACKS_CHANGED, Player.EVENT_PLAYBACK_STATE_CHANGED,
+                    Player.EVENT_MEDIA_METADATA_CHANGED)
+            ) return
+            viewCallbacks?.onTelemetryChanged(currentTelemetry())
+            reportAudioReady(player)
         }
 
         override fun onPlayWhenReadyChanged(playWhenReady: Boolean, reason: Int) {
@@ -233,6 +242,23 @@ class WebVideoPlayer(context: Context) : DirectVideoEngine {
             viewCallbacks?.onTelemetryChanged(currentTelemetry())
             notifyPlaybackFinished()
         }
+    }
+
+    private fun reportAudioReady(player: Player) {
+        val id = playbackId ?: return
+        if (player.currentMediaItem?.mediaId == id.toString() &&
+            player.playbackState == Player.STATE_READY && isAudioOnly(player)
+        ) viewCallbacks?.onMediaReady(id)
+    }
+
+    private fun isAudioOnly(player: Player): Boolean =
+        player.currentTracks.isTypeSelected(C.TRACK_TYPE_AUDIO) &&
+            !player.currentTracks.containsType(C.TRACK_TYPE_VIDEO)
+
+    private fun reportVideoSize(id: Long, size: VideoSize) {
+        if (size.width <= 0 || size.height <= 0 || size.pixelWidthHeightRatio <= 0f) return
+        val aspectRatio = size.width.toDouble() * size.pixelWidthHeightRatio / size.height
+        if (aspectRatio.isFinite()) viewCallbacks?.onVideoAspectChanged(id, aspectRatio)
     }
 
     private fun notifyPlaybackFinished() {
@@ -346,10 +372,8 @@ class WebVideoPlayer(context: Context) : DirectVideoEngine {
         ) {
             exo.playWhenReady = video.playWhenReady
             exo.setVideoSurfaceView(surface)
-            val tracks = exo.currentTracks
-            if (exo.playbackState == Player.STATE_READY && tracks.isTypeSelected(C.TRACK_TYPE_AUDIO) &&
-                !tracks.containsType(C.TRACK_TYPE_VIDEO)
-            ) viewCallbacks?.onMediaReady(video.playbackId)
+            reportVideoSize(video.playbackId, exo.videoSize)
+            reportAudioReady(exo)
             return true
         }
         releaseSystemControls()
@@ -372,6 +396,7 @@ class WebVideoPlayer(context: Context) : DirectVideoEngine {
 
     fun onOutputSurfaceRecreated() {
         prepareStartedMs = SystemClock.elapsedRealtime()
+        player?.let(::reportAudioReady)
     }
 
     fun checkpointPositionMs(): Long? {
@@ -443,6 +468,8 @@ class WebVideoPlayer(context: Context) : DirectVideoEngine {
             isBuffering = false
         )
         val hasCurrentItem = playbackId?.let { exo.currentMediaItem?.mediaId == it.toString() } == true
+        val metadata = exo.mediaMetadata.takeIf { hasCurrentItem }
+        val audioOnly = hasCurrentItem && isAudioOnly(exo)
         val rawDuration = exo.duration
         val durationSec = if (rawDuration == C.TIME_UNSET || rawDuration < 0L) {
             0.0
@@ -458,11 +485,14 @@ class WebVideoPlayer(context: Context) : DirectVideoEngine {
             isPlaying = playing,
             isBuffering = exo.playbackState == Player.STATE_BUFFERING,
             isReady = exo.playbackState == Player.STATE_READY,
-            title = if (hasCurrentItem) exo.mediaMetadata.title?.toString()?.trim()?.takeIf(String::isNotEmpty)
-                else null,
+            title = metadata?.title?.toString()?.trim()?.takeIf(String::isNotEmpty),
             canSeek = hasCurrentItem && exo.isCurrentMediaItemSeekable &&
                 exo.isCommandAvailable(Player.COMMAND_SEEK_IN_CURRENT_MEDIA_ITEM),
-            playWhenReady = hasCurrentItem && exo.playWhenReady
+            playWhenReady = hasCurrentItem && exo.playWhenReady,
+            audioOnly = audioOnly,
+            artist = metadata?.artist?.toString()?.takeIf { audioOnly && it.isNotBlank() },
+            album = metadata?.albumTitle?.toString()?.takeIf { audioOnly && it.isNotBlank() },
+            artwork = metadata?.artworkData?.takeIf { audioOnly }
         )
     }
 

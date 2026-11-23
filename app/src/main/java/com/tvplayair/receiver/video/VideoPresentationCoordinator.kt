@@ -19,7 +19,11 @@ data class DirectPlaybackTelemetry(
     val isReady: Boolean = isPlaying || durationSec > 0.0,
     val title: String? = null,
     val canSeek: Boolean = false,
-    val playWhenReady: Boolean = isPlaying
+    val playWhenReady: Boolean = isPlaying,
+    val audioOnly: Boolean = false,
+    val artist: String? = null,
+    val album: String? = null,
+    val artwork: ByteArray? = null
 )
 
 interface AudioHandoffController {

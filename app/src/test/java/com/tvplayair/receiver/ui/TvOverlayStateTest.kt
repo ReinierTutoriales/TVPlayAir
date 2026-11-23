@@ -35,6 +35,30 @@ class TvOverlayStateTest {
     }
 
     @Test
+    fun directAudioKeepsItsOwnControlsAfterTheVideoHudCloses() {
+        val webAudio = DirectPlaybackTelemetry(120.0, 30.0, 1f, true, false,
+            title = "Safari", audioOnly = true, artwork = byteArrayOf(1))
+        val video = webAudio.copy(audioOnly = false, title = "Video", artwork = null)
+        val direct = TvOverlayState(presentationState = PresentationState.DIRECT_ACTIVE, videoControls = video)
+
+        val audio = direct.withDirectTelemetry(webAudio).copy(videoControls = null)
+        assertTrue(audio.showingDirectAudio)
+        assertTrue(audio.showingDirectControls)
+        assertFalse(audio.showingVideoControls)
+        assertEquals(webAudio, audio.directAudio)
+        assertFalse(audio.copy(visible = true).showingDirectControls)
+        assertTrue(audio.withDirectTelemetry(webAudio.copy(playWhenReady = false)).showingDirectControls)
+
+        val switching = audio.withPresentation(PresentationState.SWITCHING_TO_DIRECT)
+        assertNull(switching.withDirectTelemetry(webAudio).directAudio)
+        val nextVideo = switching.withPresentation(PresentationState.DIRECT_ACTIVE)
+            .copy(videoControls = video).withDirectTelemetry(video)
+        assertTrue(nextVideo.showingVideoControls)
+        assertNull(nextVideo.directAudio)
+        assertNull(audio.withPresentation(PresentationState.MIRROR_ACTIVE).directAudio)
+    }
+
+    @Test
     fun switchingAppsNeverRestoresArtworkOrVideoControlsFromThePreviousMode() {
         val oldTrack = RaopNowPlaying(RaopTrack("Anterior", null, null), byteArrayOf(1))
         val newTrack = RaopNowPlaying(RaopTrack("Actual", null, null), byteArrayOf(2))
