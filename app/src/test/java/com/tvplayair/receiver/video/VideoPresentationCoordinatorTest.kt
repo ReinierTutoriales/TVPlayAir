@@ -9,6 +9,15 @@ import org.junit.Test
 class VideoPresentationCoordinatorTest {
 
     @Test
+    fun retainedPlaybackCallbacksAreBoundToTheirOriginalHandoff() {
+        val original = Any()
+        val replacement = Any()
+        assertTrue(isCurrentRetainedHandoff(original, original))
+        assertFalse(isCurrentRetainedHandoff(replacement, original))
+        assertFalse(isCurrentRetainedHandoff(null, original))
+    }
+
+    @Test
     fun retainedDirectPlaybackRejectsInvalidSeekPositions() {
         assertFalse(validDirectSeekPosition(Double.NaN))
         assertFalse(validDirectSeekPosition(Double.POSITIVE_INFINITY))
