@@ -29,13 +29,16 @@ internal data class MirrorDisplayProfile(
                         minOf(mode.physicalWidth, mode.physicalHeight) >= profile.height &&
                         mode.refreshRate >= profile.fps - 0.1f
                 }
-                val mime = if (profile.hevc) MediaFormat.MIMETYPE_VIDEO_HEVC else MediaFormat.MIMETYPE_VIDEO_AVC
-                fitsDisplay && decoders.any { decoder ->
+                fun supports(mime: String, width: Int, height: Int): Boolean = decoders.any { decoder ->
                     decoder.supportedTypes.any { it.equals(mime, ignoreCase = true) } && runCatching {
                         decoder.getCapabilitiesForType(mime).videoCapabilities
-                            ?.areSizeAndRateSupported(profile.width, profile.height, profile.fps.toDouble()) == true
+                            ?.areSizeAndRateSupported(width, height, profile.fps.toDouble()) == true
                     }.getOrDefault(false)
                 }
+                val avcWidth = minOf(profile.width, 1920)
+                val avcHeight = minOf(profile.height, 1080)
+                fitsDisplay && supports(MediaFormat.MIMETYPE_VIDEO_AVC, avcWidth, avcHeight) &&
+                    (!profile.hevc || supports(MediaFormat.MIMETYPE_VIDEO_HEVC, profile.width, profile.height))
             }
         }
 

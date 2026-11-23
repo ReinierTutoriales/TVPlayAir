@@ -344,10 +344,7 @@ class SessionService : Service() {
                     maxHeight = maxHeight,
                     hevcEnabled = hevcEnabled
                 )
-                if (serverRunning) {
-                    protocolEngine.start(serverConfig())
-                    mdnsAdvertiser.start(advertiseConfig)
-                }
+                if (serverRunning) startAirPlayEndpoints()
             }
         }
     }
@@ -491,11 +488,14 @@ class SessionService : Service() {
             Log.e(TAG, "AirPlay cannot start without video and audio shared memory")
             return
         }
-        val started = protocolEngine.start(serverConfig())
-        if (started) {
-            mdnsAdvertiser.start(advertiseConfig)
-            serverRunning = true
-        }
+        serverRunning = startAirPlayEndpoints()
+    }
+
+    private fun startAirPlayEndpoints(): Boolean {
+        val config = serverConfig()
+        if (!protocolEngine.start(config)) return false
+        mdnsAdvertiser.start(advertiseConfig.copy(hevcEnabled = config.hevcEnabled))
+        return true
     }
 
     @Synchronized

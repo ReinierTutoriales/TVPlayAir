@@ -35,7 +35,7 @@ interface AudioHandoffController {
 
 interface MirrorVideoEngine {
     fun start(discardPendingFrames: Boolean = false): Boolean
-    fun stopAndRelease()
+    fun stopAndRelease(): Boolean
 }
 
 interface DirectVideoEngine {
@@ -62,6 +62,7 @@ internal fun initialDirectPositionMs(startPosition: Double, durationMs: Long): L
 }
 
 interface SurfaceLayerController {
+    fun hasMirrorSurface(): Boolean
     fun showMirrorSurface()
     fun showDirectSurface()
     fun revealDirectSurface()
@@ -81,6 +82,7 @@ class VideoPresentationCoordinator(
     var state: PresentationState = PresentationState.IDLE
         private set
     private var resumeMirrorAfterDirect = false
+    private var discardMirrorFrames = false
     private var directPlaybackId: Long? = null
 
     val hasDirectPlayback: Boolean
@@ -109,10 +111,10 @@ class VideoPresentationCoordinator(
             return false
         }
         if (state == PresentationState.MIRROR_ACTIVE) {
-            if (!reconfigured || mirrorEngine.start()) return true
-            surfaceController.hideAllSurfaces()
-            state = PresentationState.RECOVERING
-            return false
+            if (!reconfigured) return true
+            state = PresentationState.SWITCHING_TO_MIRROR
+            surfaceController.showMirrorSurface()
+            return startOnMirrorSurface()
         }
         return switchToMirror()
     }
@@ -121,13 +123,18 @@ class VideoPresentationCoordinator(
         if (video.url.isBlank() || !video.airPlayPosition.isFinite()) return false
         val playbackId = video.playbackId
         val replacingDirect = hasDirectPlayback
-        if (state == PresentationState.MIRROR_ACTIVE || mirrorAvailable) resumeMirrorAfterDirect = true
+        if (isMirrorRequested() || mirrorAvailable) resumeMirrorAfterDirect = true
         state = PresentationState.SWITCHING_TO_DIRECT
         directPlaybackId = playbackId
         if (!replacingDirect) {
             audioController.setPausedForExternalPlayer(true)
-            // Hard VPU rule: release mirror MediaCodec before preparing ExoPlayer.
-            mirrorEngine.stopAndRelease()
+            if (!mirrorEngine.stopAndRelease()) {
+                directPlaybackId = null
+                state = PresentationState.RECOVERING
+                audioController.setPausedForExternalPlayer(false)
+                surfaceController.hideAllSurfaces()
+                return false
+            }
         }
         surfaceController.showDirectSurface()
         val prepared = directEngine.prepare(video)
@@ -157,10 +164,18 @@ class VideoPresentationCoordinator(
         resumeMirrorAfterDirect = false
         directPlaybackId = null
         state = PresentationState.SWITCHING_TO_MIRROR
+        discardMirrorFrames = discardPendingFrames
         directEngine.stopAndClear(releasePlayer = true)
         surfaceController.showMirrorSurface()
-        val started = mirrorEngine.start(discardPendingFrames)
+        val started = startOnMirrorSurface()
         audioController.setPausedForExternalPlayer(false)
+        return started
+    }
+
+    private fun startOnMirrorSurface(): Boolean {
+        if (!surfaceController.hasMirrorSurface()) return true
+        val started = mirrorEngine.start(discardMirrorFrames)
+        discardMirrorFrames = false
         if (!started) surfaceController.hideAllSurfaces()
         state = if (started) PresentationState.MIRROR_ACTIVE else PresentationState.RECOVERING
         return started
@@ -182,7 +197,7 @@ class VideoPresentationCoordinator(
 
     fun onMirrorDisconnected() {
         resumeMirrorAfterDirect = false
-        if (state != PresentationState.MIRROR_ACTIVE && state != PresentationState.RECOVERING) return
+        if (!isMirrorRequested() && state != PresentationState.RECOVERING) return
         mirrorEngine.stopAndRelease()
         surfaceController.hideAllSurfaces()
         state = PresentationState.IDLE
@@ -200,8 +215,12 @@ class VideoPresentationCoordinator(
     }
 
     fun onMirrorSurfaceCreated() {
-        if (!hasDirectPlayback && state != PresentationState.SWITCHING_TO_MIRROR) startMirror()
+        if (state == PresentationState.SWITCHING_TO_MIRROR) startOnMirrorSurface()
+        else if (!hasDirectPlayback) startMirror()
     }
+
+    private fun isMirrorRequested(): Boolean =
+        state == PresentationState.MIRROR_ACTIVE || state == PresentationState.SWITCHING_TO_MIRROR
 
     fun onDirectSurfaceCreated(): Boolean {
         if (state != PresentationState.DIRECT_WITHOUT_SURFACE) return false

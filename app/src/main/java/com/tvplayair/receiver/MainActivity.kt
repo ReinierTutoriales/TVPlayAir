@@ -53,7 +53,7 @@ import com.tvplayair.receiver.video.WebVideoPlayer
 class MainActivity : ComponentActivity(), SurfaceLayerController {
     private lateinit var mirrorSurfaceView: SurfaceView
     private lateinit var directSurfaceView: SurfaceView
-    private lateinit var directStartupCover: View
+    private lateinit var videoStartupCover: View
     private lateinit var audioConsumer: OboeAudioConsumer
     private lateinit var mirrorDecoder: MirrorDecoder
     private val directVideoModel: DirectVideoViewModel by viewModels()
@@ -74,6 +74,7 @@ class MainActivity : ComponentActivity(), SurfaceLayerController {
     private var mirrorAspectRatio: Double? = null
     private var directPlaybackId = 0L
     private var directStartupTimeout: Runnable? = null
+    private var mirrorSurfaceTimeout: Runnable? = null
     private var directRequestedAtMs = 0L
     private var overlayState by mutableStateOf(TvOverlayState())
 
@@ -131,7 +132,7 @@ class MainActivity : ComponentActivity(), SurfaceLayerController {
             visibility = View.INVISIBLE
             holder.addCallback(surfaceCallback(isDirectSurface = true))
         }
-        directStartupCover = View(this).apply {
+        videoStartupCover = View(this).apply {
             setBackgroundColor(Color.BLACK)
             visibility = View.GONE
             importantForAccessibility = View.IMPORTANT_FOR_ACCESSIBILITY_NO
@@ -163,7 +164,7 @@ class MainActivity : ComponentActivity(), SurfaceLayerController {
         )
         root.addView(mirrorSurfaceView, matchParent)
         root.addView(directSurfaceView, FrameLayout.LayoutParams(matchParent))
-        root.addView(directStartupCover, FrameLayout.LayoutParams(matchParent))
+        root.addView(videoStartupCover, FrameLayout.LayoutParams(matchParent))
         root.addView(overlayComposeView, FrameLayout.LayoutParams(matchParent))
         root.addOnLayoutChangeListener { _, left, top, right, bottom, oldLeft, oldTop, oldRight, oldBottom ->
             if (right - left != oldRight - oldLeft || bottom - top != oldBottom - oldTop) {
@@ -179,6 +180,16 @@ class MainActivity : ComponentActivity(), SurfaceLayerController {
             surfaceProvider = { mirrorSurfaceView.holder.surface },
             audioClockOffsetNs = audioConsumer::senderClockOffsetNs,
             onVideoSizeChanged = ::updateMirrorSurfaceAspectRatio,
+            onFirstFrameRendered = {
+                if (!destroyingView && presentationCoordinator.state == PresentationState.MIRROR_ACTIVE) {
+                    videoStartupCover.visibility = View.GONE
+                }
+            },
+            onRecovering = {
+                if (!destroyingView && presentationCoordinator.state == PresentationState.MIRROR_ACTIVE) {
+                    videoStartupCover.visibility = View.VISIBLE
+                }
+            },
             onRecoveryTimeout = ::finishMirrorPresentation
         )
         webVideoPlayer.attachView(directSurfaceView, object : WebVideoPlayer.ViewCallbacks {
@@ -738,6 +749,21 @@ class MainActivity : ComponentActivity(), SurfaceLayerController {
     private fun syncPresentationState() {
         val state = presentationCoordinator.state
         if (state != PresentationState.SWITCHING_TO_DIRECT) cancelDirectStartupTimeout()
+        if (state == PresentationState.SWITCHING_TO_MIRROR) {
+            if (mirrorSurfaceTimeout == null) {
+                val timeout = Runnable {
+                    mirrorSurfaceTimeout = null
+                    if (presentationCoordinator.state == PresentationState.SWITCHING_TO_MIRROR) {
+                        finishMirrorPresentation()
+                    }
+                }
+                mirrorSurfaceTimeout = timeout
+                mainHandler.postDelayed(timeout, 5_000L)
+            }
+        } else {
+            mirrorSurfaceTimeout?.let(mainHandler::removeCallbacks)
+            mirrorSurfaceTimeout = null
+        }
         if ((state != PresentationState.DIRECT_ACTIVE && overlayState.videoControls != null) ||
             (state != PresentationState.MIRROR_ACTIVE && overlayState.mirrorControlsVisible)
         ) {
@@ -788,26 +814,28 @@ class MainActivity : ComponentActivity(), SurfaceLayerController {
         }
     }
 
+    override fun hasMirrorSurface(): Boolean = mirrorSurfaceView.holder.surface.isValid
+
     override fun showMirrorSurface() {
         directSurfaceView.visibility = View.INVISIBLE
+        videoStartupCover.visibility = View.VISIBLE
         mirrorSurfaceView.visibility = View.VISIBLE
-        directStartupCover.visibility = View.GONE
     }
 
     override fun showDirectSurface() {
-        directStartupCover.visibility = View.VISIBLE
+        videoStartupCover.visibility = View.VISIBLE
         mirrorSurfaceView.visibility = View.INVISIBLE
         directSurfaceView.visibility = View.VISIBLE
     }
 
     override fun revealDirectSurface() {
-        directStartupCover.visibility = View.GONE
+        videoStartupCover.visibility = View.GONE
     }
 
     override fun hideAllSurfaces() {
         mirrorSurfaceView.visibility = View.INVISIBLE
         directSurfaceView.visibility = View.INVISIBLE
-        directStartupCover.visibility = View.GONE
+        videoStartupCover.visibility = View.GONE
     }
 
     private fun surfaceCallback(isDirectSurface: Boolean) = object : SurfaceHolder.Callback {
@@ -828,10 +856,12 @@ class MainActivity : ComponentActivity(), SurfaceLayerController {
         override fun surfaceChanged(holder: SurfaceHolder, format: Int, width: Int, height: Int) = Unit
 
         override fun surfaceDestroyed(holder: SurfaceHolder) {
-            if (destroyingView || (isDirectSurface && isChangingConfigurations)) return
+            if (destroyingView || !::presentationCoordinator.isInitialized ||
+                (isDirectSurface && isChangingConfigurations)
+            ) return
             if (isDirectSurface && presentationCoordinator.hasDirectPlayback) {
                 saveDirectCheckpoint()
-                directStartupCover.visibility = View.VISIBLE
+                videoStartupCover.visibility = View.VISIBLE
             }
             presentationCoordinator.onSurfaceDestroyed(isDirectSurface)
             syncPresentationState()
@@ -841,6 +871,8 @@ class MainActivity : ComponentActivity(), SurfaceLayerController {
     override fun onDestroy() {
         saveDirectCheckpoint()
         destroyingView = true
+        mirrorSurfaceTimeout?.let(mainHandler::removeCallbacks)
+        mirrorSurfaceTimeout = null
         cancelDirectStartupTimeout()
         mainHandler.removeCallbacks(hidePlaybackControls)
         hidBridge.release()

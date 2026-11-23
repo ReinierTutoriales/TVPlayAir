@@ -24,14 +24,25 @@ data class AirPlayAdvertiseConfig(
 object MdnsTxtRecords {
     const val AIRPLAY_SERVICE_TYPE = "_airplay._tcp."
     const val RAOP_SERVICE_TYPE = "_raop._tcp."
-    const val AIRPLAY_FEATURES = "0x5A7FFFF3,0x1C"
+    private const val AIRPLAY_FEATURES = (0x1CL shl 32) or 0x5A7FFFF3L
+    private const val SCREEN_MULTI_CODEC = 1L shl 42
+
+    fun airPlayFeatures(hevcEnabled: Boolean): Long =
+        if (hevcEnabled) AIRPLAY_FEATURES or SCREEN_MULTI_CODEC else AIRPLAY_FEATURES
+
+    private fun featureTxt(hevcEnabled: Boolean): String {
+        val features = airPlayFeatures(hevcEnabled)
+        val low = (features and 0xFFFFFFFFL).toString(16).uppercase()
+        val high = (features ushr 32).toString(16).uppercase()
+        return "0x$low,0x$high"
+    }
     const val AIRPLAY_FLAGS = "0x44"
     const val AIRPLAY_MODEL = "AppleTV3,2"
 
     fun buildAirPlayTxt(config: AirPlayAdvertiseConfig): Map<String, String> = linkedMapOf(
         "acl" to "0",
         "deviceid" to config.deviceId,
-        "features" to AIRPLAY_FEATURES,
+        "features" to featureTxt(config.hevcEnabled),
         "flags" to AIRPLAY_FLAGS,
         "model" to AIRPLAY_MODEL,
         "overscanned" to "0",
@@ -53,7 +64,7 @@ object MdnsTxtRecords {
         "cn" to "0,2,3",
         "da" to "true",
         "et" to "0,3,5",
-        "ft" to AIRPLAY_FEATURES,
+        "ft" to featureTxt(config.hevcEnabled),
         "md" to "0,1,2",
         "pk" to config.publicKeyHex,
         "pw" to "false",
@@ -200,6 +211,7 @@ class MdnsAdvertiser(context: Context) {
         a.deviceId == b.deviceId &&
         a.airPlayPort == b.airPlayPort &&
         a.raopPort == b.raopPort &&
+        a.hevcEnabled == b.hevcEnabled &&
         a.piUuid == b.piUuid &&
         a.publicKeyHex == b.publicKeyHex
 

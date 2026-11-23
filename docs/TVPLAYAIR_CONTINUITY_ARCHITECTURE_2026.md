@@ -144,3 +144,39 @@ decodificador llegue a renderizar. Esta corrección resuelve el estado visual
 obsoleto al fallar el arranque; la negociación AirPlay de resoluciones no
 soportadas y la detección de ausencia de primer fotograma requieren validación
 independiente. Sin pruebas con hardware no se certifica la solución de pantalla negra.
+
+### Confirmación de mirroring y negociación de pantalla
+
+La cubierta de arranque permanece sobre la SurfaceView hasta que MediaCodec
+confirma un fotograma en la superficie del decodificador vigente. El watchdog
+usa ese mismo evento como progreso. Android puede retrasar u omitir avisos
+individuales, por lo que el watchdog tolera pérdidas aisladas durante un
+stream activo. El arranque sin paquetes tiene un plazo de cinco segundos.
+Con trabajo pendiente sin renderizar, el watchdog inicia recuperación tras
+dos segundos y concede hasta cinco segundos para un fotograma confirmado.
+La recuperación conserva la configuración, vuelve a esperar un fotograma clave
+y da prioridad a otro decodificador compatible si el anterior se estancó.
+[AOSP MediaCodec](https://android.googlesource.com/platform/frameworks/base/+/refs/heads/main/media/java/android/media/MediaCodec.java) ·
+[OnFrameRenderedListener](https://developer.android.com/reference/android/media/MediaCodec.OnFrameRenderedListener)
+
+La Activity espera a que exista la superficie de mirroring y cancela la espera
+tras cinco segundos. Al pasar a vídeo directo, Media3 solo se prepara tras
+confirmar que el worker de mirroring liberó el decodificador.
+[SurfaceHolder.Callback](https://developer.android.com/reference/android/view/SurfaceHolder.Callback)
+
+El perfil anunciado cruza el límite configurado con los modos de pantalla y
+las capacidades de tamaño y tasa del decodificador. El perfil HEVC exige además
+la ruta AVC hasta 1080p a la tasa anunciada. Si la detección no encuentra ningún
+perfil, se conserva la oferta de compatibilidad 720p30 AVC. El plist '/info'
+publica dimensiones de pantalla, periodo de refresco en segundos y 'maxFPS',
+y el bit 42 ScreenMultiCodec coincide con mDNS. La oferta solicita un perfil al
+emisor. El receptor conserva las dimensiones y el formato recibidos para
+seleccionar MediaCodec, incluso si difieren del anuncio.
+[UxPlay, opciones de mirroring](https://github.com/FDH2/UxPlay#usage) ·
+[RPiPlay, respuesta /info](https://github.com/FD-/RPiPlay/blob/master/lib/raop_handlers.h#L119) ·
+[Android VideoCapabilities](https://developer.android.com/reference/android/media/MediaCodecInfo.VideoCapabilities)
+
+Queda pendiente repetir con iPhone y Realtek el caso 1320 × 2868, rotar la
+pantalla y probar el regreso de reproducción directa a mirroring. La
+confirmación del callback cubre la Surface y la comprobación visual en el
+panel requiere una prueba física.

@@ -58,7 +58,7 @@ class VideoPresentationCoordinatorTest {
         assertEquals(PresentationState.RECOVERING, coordinator.state)
         assertEquals(
             listOf("direct.release", "surface.showMirror", "mirror.start",
-                "audio.pausedForExternal(false)", "surface.hideAll"),
+                "surface.hideAll", "audio.pausedForExternal(false)"),
             events
         )
     }
@@ -76,7 +76,7 @@ class VideoPresentationCoordinatorTest {
         mirror.failStart = true
         assertFalse(coordinator.startMirror(reconfigured = true))
         assertEquals(PresentationState.RECOVERING, coordinator.state)
-        assertEquals(listOf("mirror.start", "surface.hideAll"), events)
+        assertEquals(listOf("surface.showMirror", "mirror.start", "surface.hideAll"), events)
     }
 
     @Test
@@ -234,6 +234,7 @@ class VideoPresentationCoordinatorTest {
 
     private class FakeMirrorEngine(private val events: MutableList<String>) : MirrorVideoEngine {
         var failStart = false
+        var failStop = false
         var discardedPendingFrames = false
 
         override fun start(discardPendingFrames: Boolean): Boolean {
@@ -242,8 +243,9 @@ class VideoPresentationCoordinatorTest {
             return !failStart
         }
 
-        override fun stopAndRelease() {
+        override fun stopAndRelease(): Boolean {
             events += "mirror.stopAndRelease"
+            return !failStop
         }
     }
 
@@ -300,6 +302,9 @@ class VideoPresentationCoordinatorTest {
     private class FakeSurfaceController(
         private val events: MutableList<String>
     ) : SurfaceLayerController {
+        var mirrorSurfaceAvailable = true
+        override fun hasMirrorSurface(): Boolean = mirrorSurfaceAvailable
+
         override fun showMirrorSurface() {
             events += "surface.showMirror"
         }
@@ -345,6 +350,43 @@ class VideoPresentationCoordinatorTest {
     }
 
     @Test
+    fun mirrorWaitsForSurfaceCreationWithoutTearingItDown() {
+        val events = mutableListOf<String>()
+        val surfaces = FakeSurfaceController(events).apply { mirrorSurfaceAvailable = false }
+        val coordinator = VideoPresentationCoordinator(
+            FakeMirrorEngine(events), FakeDirectEngine(events), FakeAudioController(events), surfaces
+        )
+        assertTrue(coordinator.startMirror())
+        assertEquals(PresentationState.SWITCHING_TO_MIRROR, coordinator.state)
+        assertFalse("mirror.start" in events)
+        assertFalse("surface.hideAll" in events)
+
+        surfaces.mirrorSurfaceAvailable = true
+        coordinator.onMirrorSurfaceCreated()
+        assertEquals(PresentationState.MIRROR_ACTIVE, coordinator.state)
+        assertEquals(1, events.count { it == "mirror.start" })
+    }
+
+    @Test
+    fun directPreparationWaitsForMirrorDecoderToRelease() {
+        val events = mutableListOf<String>()
+        val mirror = FakeMirrorEngine(events).apply { failStop = true }
+        val direct = FakeDirectEngine(events)
+        val coordinator = VideoPresentationCoordinator(
+            mirror, direct, FakeAudioController(events), FakeSurfaceController(events)
+        )
+        assertTrue(coordinator.startMirror())
+        val video = DirectPlaybackStart("https://example.com/video.m3u8", 0.0, playbackId = 1)
+        assertFalse(coordinator.switchToDirectVideo(video))
+        assertEquals(PresentationState.RECOVERING, coordinator.state)
+        assertNull(direct.preparedVideo)
+
+        mirror.failStop = false
+        assertTrue(coordinator.switchToDirectVideo(video))
+        assertEquals(video, direct.preparedVideo)
+    }
+
+    @Test
     fun changedCodecRestartsMirrorWithoutActivatingTheDirectEngine() {
         val events = mutableListOf<String>()
         val mirror = FakeMirrorEngine(events)
@@ -358,7 +400,7 @@ class VideoPresentationCoordinatorTest {
         assertTrue(coordinator.startMirror())
         events.clear()
         assertTrue(coordinator.startMirror(reconfigured = true))
-        assertEquals(listOf("mirror.start"), events)
+        assertEquals(listOf("surface.showMirror", "mirror.start"), events)
 
         mirror.failStart = true
         assertFalse(coordinator.startMirror(reconfigured = true))

@@ -153,7 +153,10 @@ class MediaContinuityBaselineTest {
             assertTrue(mirrorGate.shouldSubmitFrame(0))
         }
 
-        override fun stopAndRelease() { mirrorRunning = false }
+        override fun stopAndRelease(): Boolean {
+            mirrorRunning = false
+            return true
+        }
         override fun prepare(video: DirectPlaybackStart): Boolean {
             assertFalse(mirrorRunning)
             assertTrue(audioPaused)
@@ -168,6 +171,7 @@ class MediaContinuityBaselineTest {
         override fun currentTelemetry() = DirectPlaybackTelemetry(30.0, 0.0, 1f, true, false)
         override fun setPausedForExternalPlayer(paused: Boolean) { audioPaused = paused }
         override fun stop() = Unit
+        override fun hasMirrorSurface(): Boolean = true
         override fun showMirrorSurface() { visibleVideo = null }
         override fun showDirectSurface() { visibleVideo = null }
         override fun revealDirectSurface() { visibleVideo = checkNotNull(preparedVideo) }

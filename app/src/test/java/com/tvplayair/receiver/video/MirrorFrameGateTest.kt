@@ -57,7 +57,7 @@ class MirrorFrameGateTest {
     }
 
     @Test
-    fun recoveryDeadlineDoesNotSlideAndClearsWhenOutputReturns() {
+    fun recoveryDeadlineDoesNotSlideAndClearsWhenRenderingReturns() {
         var nowMs = 100L
         val watchdog = MirrorOutputWatchdog { nowMs }
         nowMs += 30_000
@@ -70,38 +70,48 @@ class MirrorFrameGateTest {
         nowMs++
         assertTrue(watchdog.recoveryExpired())
 
-        watchdog.onOutputReleased()
+        watchdog.onFrameRendered()
         assertFalse(watchdog.recoveryExpired())
     }
 
     @Test
-    fun outputRecoveryRequiresQueuedWorkAndRearmsOnlyAfterOutputReturns() {
+    fun oneQueuedFrameWithoutRenderConfirmationTriggersStartupRecovery() {
         var nowMs = 0L
         val watchdog = MirrorOutputWatchdog { nowMs }
-        nowMs += 10_000
-        assertFalse(watchdog.takeRecovery())
-        repeat(3) { watchdog.onFrameQueued() }
-        nowMs += 3_000
-        assertFalse(watchdog.takeRecovery())
-
-        watchdog.clearQueuedFrames()
-        repeat(4) { watchdog.onFrameQueued() }
-        nowMs += 1_999
-        assertFalse(watchdog.takeRecovery())
-        nowMs += 1
-        assertTrue(watchdog.takeRecovery())
-
-        repeat(4) { watchdog.onFrameQueued() }
-        nowMs += 2_000
-        assertFalse(watchdog.takeRecovery())
-        watchdog.onOutputReleased()
+        watchdog.awaitFirstFrame()
         watchdog.onFrameQueued()
-        nowMs += 1_999
-        assertFalse(watchdog.takeRecovery())
-        nowMs += 1
-        assertTrue(watchdog.takeRecovery())
+        nowMs = 1_999
+        assertFalse(watchdog.renderStalled())
+        nowMs++
+        assertTrue(watchdog.renderStalled())
+        watchdog.beginRecovery()
+        repeat(4) { watchdog.onFrameQueued() }
+        nowMs += 4_999
+        assertFalse(watchdog.recoveryExpired())
+        nowMs++
+        assertTrue(watchdog.recoveryExpired())
     }
 
+    @Test
+    fun startupWithoutAnyPacketsExpiresAndRenderedStreamCanStayIdle() {
+        var nowMs = 0L
+        val watchdog = MirrorOutputWatchdog { nowMs }
+        watchdog.awaitFirstFrame()
+        nowMs += 5_000
+        assertTrue(watchdog.recoveryExpired())
+
+        watchdog.onFrameRendered()
+        repeat(3) { watchdog.onFrameQueued() }
+        nowMs += 30_000
+        assertFalse(watchdog.renderStalled())
+        assertFalse(watchdog.recoveryExpired())
+
+        repeat(4) { watchdog.onFrameQueued() }
+        watchdog.onFrameRendered()
+        repeat(4) { watchdog.onFrameQueued() }
+        nowMs += 2_000
+        assertTrue(watchdog.renderStalled())
+    }
 
     @Test
     fun dropsNonIdrFramesUntilKeyframeArrives() {
