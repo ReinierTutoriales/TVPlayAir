@@ -34,11 +34,10 @@ class AudioContinuityService : Service() {
         }
 
         override fun onAudioStreamStarted(generationId: Int) {
+            if (!ownsCurrentHandoff()) return
             audioGeneration = generationId
-            if (ownsCurrentHandoff()) {
-                consumer?.setGeneration(generationId)
-                consumer?.start(generationId)
-            }
+            consumer?.setGeneration(generationId)
+            consumer?.start(generationId)
         }
 
         override fun onAudioStreamStopped() {
