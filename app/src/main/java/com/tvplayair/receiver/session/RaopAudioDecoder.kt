@@ -197,10 +197,11 @@ class RaopAudioDecoder {
 
         var candidate: MediaCodec? = null
         mediaCodec = try {
-            candidate = MediaCodec.createDecoderByType(MediaFormat.MIMETYPE_AUDIO_AAC)
-            candidate.configure(format, null, null, 0)
-            candidate.start()
-            candidate
+            val created = MediaCodec.createDecoderByType(MediaFormat.MIMETYPE_AUDIO_AAC)
+            candidate = created
+            created.configure(format, null, null, 0)
+            created.start()
+            created
         } catch (error: Exception) {
             Log.e(TAG, "Failed to configure AAC decoder ($codec @ $inputSampleRate Hz)", error)
             candidate?.let { runCatching { it.release() } }
