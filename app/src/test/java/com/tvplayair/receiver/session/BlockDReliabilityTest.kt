@@ -26,7 +26,10 @@ class BlockDReliabilityTest {
         var startedId = 0L
         val playKey = AirPlayPlaybackEvents.SessionKey("192.168.1.50", "ios-session-1")
         assertTrue(events.start(playKey) { startedId = it })
-        events.updateState(startedId, AirPlayPlaybackEvents.State.PLAYING)
+        events.update(
+            startedId,
+            DirectPlaybackTelemetry(10.0, 0.0, 1f, isPlaying = true, isBuffering = false)
+        )
 
         val queued = mutableListOf<AirPlayPlaybackEvents.State>()
         while (true) {
