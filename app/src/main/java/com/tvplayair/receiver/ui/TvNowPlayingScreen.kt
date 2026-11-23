@@ -152,14 +152,12 @@ private fun AlbumCover(image: ImageBitmap?, modifier: Modifier) {
                 contentScale = ContentScale.Crop
             )
         } else {
-            Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
-                Canvas(Modifier.size(44.dp)) {
-                    val note = Color(0xFFA6A9B3)
-                    val unit = size.width / 12f
-                    drawLine(note, Offset(7f * unit, 2f * unit), Offset(7f * unit, 9f * unit), unit)
-                    drawLine(note, Offset(7f * unit, 2f * unit), Offset(10f * unit, 3.5f * unit), unit)
-                    drawOval(note, Offset(3f * unit, 8f * unit), Size(4.5f * unit, 3f * unit))
-                }
+            Canvas(Modifier.size(44.dp)) {
+                val note = Color(0xFFA6A9B3)
+                val unit = size.width / 12f
+                drawLine(note, Offset(7f * unit, 2f * unit), Offset(7f * unit, 9f * unit), unit)
+                drawLine(note, Offset(7f * unit, 2f * unit), Offset(10f * unit, 3.5f * unit), unit)
+                drawOval(note, Offset(3f * unit, 8f * unit), Size(4.5f * unit, 3f * unit))
             }
         }
     }
