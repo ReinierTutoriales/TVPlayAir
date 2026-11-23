@@ -2,6 +2,7 @@ package com.tvplayair.receiver.session
 
 import android.util.Log
 import java.io.BufferedInputStream
+import java.io.IOException
 import java.net.DatagramPacket
 import java.net.DatagramSocket
 import java.net.ServerSocket
@@ -110,9 +111,14 @@ class AirPlayTimingAndEventServers {
     private fun runTimingLoop(udp: DatagramSocket) {
         val rx = ByteArray(128)
         val packet = DatagramPacket(rx, rx.size)
-        while (running.get()) {
-            val ok = runCatching { udp.receive(packet); true }.getOrDefault(false)
-            if (!ok) continue
+        while (running.get() && !udp.isClosed) {
+            packet.length = rx.size
+            try {
+                udp.receive(packet)
+            } catch (error: IOException) {
+                if (!udp.isClosed) Log.w(TAG, "Timing socket read failed", error)
+                break
+            }
             val reply = AirPlayTimingPacket.buildResponse(rx, packet.length) ?: continue
             runCatching {
                 udp.send(DatagramPacket(reply, reply.size, packet.address, packet.port))
@@ -121,33 +127,40 @@ class AirPlayTimingAndEventServers {
     }
 
     private fun runEventAcceptLoop(server: ServerSocket) {
-        while (running.get()) {
-            val client = runCatching { server.accept() }.getOrNull() ?: continue
-            Thread({ handleEventClient(client) }, "TVPlayAir-EventClient").apply {
+        while (running.get() && !server.isClosed) {
+            val client = runCatching { server.accept() }.getOrNull() ?: break
+            Thread({ handleEventClient(client, server) }, "TVPlayAir-EventClient").apply {
                 isDaemon = true
                 start()
             }
         }
     }
 
-    private fun handleEventClient(client: Socket) {
+    private fun handleEventClient(client: Socket, server: ServerSocket) {
         client.use { sock ->
-            sock.soTimeout = EVENT_SO_TIMEOUT_MS
-            val input = BufferedInputStream(sock.getInputStream())
-            val output = sock.getOutputStream()
-            val buf = ByteArray(2048)
-            while (running.get()) {
-                val read = runCatching { input.read(buf) }.getOrDefault(-1)
-                if (read <= 0) break
-                val text = String(buf, 0, read, StandardCharsets.US_ASCII)
-                if (text.startsWith("POST ") || text.startsWith("GET ")) {
-                    val okResp = "HTTP/1.1 200 OK\r\nContent-Length: 0\r\n\r\n"
-                    runCatching {
-                        output.write(okResp.toByteArray(StandardCharsets.US_ASCII))
+            try {
+                sock.soTimeout = EVENT_SO_TIMEOUT_MS
+                val input = BufferedInputStream(sock.getInputStream())
+                val output = sock.getOutputStream()
+                while (running.get() && !server.isClosed) {
+                    val method = readAirPlayEventMethod(input) ?: break
+                    if (method == "POST" || method == "GET") {
+                        val ok = "HTTP/1.1 200 OK\r\nContent-Length: 0\r\n\r\n"
+                        output.write(ok.toByteArray(StandardCharsets.US_ASCII))
                         output.flush()
                     }
                 }
+            } catch (error: IOException) {
+                Log.i(TAG, "Event connection ended (${error.javaClass.simpleName})")
             }
         }
     }
+}
+
+internal fun readAirPlayEventMethod(input: BufferedInputStream): String? {
+    val header = readAirPlayHttpHeader(input, allowIdleTimeout = true) ?: return null
+    val lines = header.toString(StandardCharsets.US_ASCII).split("\r\n")
+    val length = airPlayContentLength(lines, 2 * 1024 * 1024) ?: return null
+    if (!drainAirPlayBody(input, length)) return null
+    return lines.first().substringBefore(' ')
 }

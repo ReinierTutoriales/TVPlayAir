@@ -79,3 +79,17 @@ adb logcat -v threadtime -d -s TVPlayAirDiag TVPlayAirOboe RaopAudioRtpReceiver
 - Duplicación usa `generation` para enlazar configuración y cierre TCP con errores y primer fotograma del decodificador. El cierre separa `rtsp_teardown` de `rtsp_peer_eof`, timeout y error de E/S. Tras `await_keyframe`, `codec_started` confirma que el decodificador arrancó. El siguiente `first_frame` confirma que volvió a haber imagen.
 - `default_lost` registra lo que Android observó sobre la ruta de red predeterminada del televisor. Es contexto temporal, no prueba de que la conexión con el iPhone usara esa red. Los eventos de IPC muestran la vinculación y reconexión del servicio. Los eventos de RAOP identifican la generación de audio; Oboe conserva su registro de recuperación.
 - Las líneas `TVPlayAirDiag` omiten IP, URL completa, tokens, claves y metadatos del contenido. Los demás tags de aplicación o Android pueden incluir datos de red.
+
+### Auditoría de continuidad y transporte
+
+La referencia del onn. 4K es el Run #212. Registró vídeo directo interrumpido por FCUP, un espejo sin recuperación de imagen confirmada y dos EOF del control RTSP. Las pruebas nativas reproducen el descarte anterior de un fotograma clave que llevaba parámetros del códec en el mismo paquete. El test de encuadre comprueba ahora solicitudes consecutivas, lectura fragmentada y cuerpos cortos o con longitud inválida.
+
+| Capa | Acción y evidencia pendiente |
+|---|---|
+| HTTP AirPlay y canal de eventos | Encuadrar mensajes por cabecera y longitud conforme a RFC 9112. Los registros del Run #212 no vinculan una solicitud mal encuadrada con los EOF observados. |
+| Duplicación y VPU | Conservar el fotograma clave junto con los parámetros del códec (referencia UxPlay). Medir cuánto tarda el primer fotograma después de `await_keyframe` y observar la recuperación en el decodificador Realtek. |
+| Vídeo directo | Correlacionar cada 502/504 con el estado FCUP del emisor y el resultado de Media3. UxPlay documenta su ruta HLS para YouTube iOS, así que esa compatibilidad no prueba las demás apps. |
+| Audio y reloj | Medir underruns, atraso al cambiar de ruta y sincronía. El receptor actual procesa RTP por secuencia y descarta mensajes de sincronía/retransmisión en el ingreso de audio. Shairport Sync es una referencia para estudiar reloj y búfer. La sincronía AirPlay 2 completa sigue sin verificar. |
+| Descubrimiento, IPC y mando | Medir redescubrimiento tras Wi-Fi y colisión de nombres NSD. Incluir muerte del proceso de sesión, restablecimiento del Binder, retorno de superficie y foco D-pad en la prueba de continuidad. |
+
+Referencias [HTTP/1.1 RFC 9112](https://www.rfc-editor.org/rfc/rfc9112.html) · [Android MediaCodec](https://developer.android.com/reference/android/media/MediaCodec) · [UxPlay](https://github.com/FDH2/UxPlay/releases) · [Shairport Sync](https://github.com/mikebrady/shairport-sync).

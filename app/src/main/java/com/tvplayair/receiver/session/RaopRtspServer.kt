@@ -117,8 +117,8 @@ internal class RaopRtspServer(
     }
 
     private fun acceptLoop(socket: ServerSocket) {
-        while (running.get()) {
-            val client = runCatching { socket.accept() }.getOrNull() ?: continue
+        while (running.get() && !socket.isClosed) {
+            val client = runCatching { socket.accept() }.getOrNull() ?: break
             Thread({ handleSession(client) }, "TVPlayAir-RtspClient").apply {
                 isDaemon = true
                 start()

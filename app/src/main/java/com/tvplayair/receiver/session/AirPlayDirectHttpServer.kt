@@ -154,8 +154,8 @@ class AirPlayDirectHttpServer(
     override fun currentGenerationId(): Int = generationId.get()
 
     private fun acceptLoop(socket: ServerSocket) {
-        while (running.get()) {
-            val client = runCatching { socket.accept() }.getOrNull() ?: continue
+        while (running.get() && !socket.isClosed) {
+            val client = runCatching { socket.accept() }.getOrNull() ?: break
             Thread({
                 try {
                     handleClient(client)
@@ -232,14 +232,18 @@ class AirPlayDirectHttpServer(
                 listener.onClientConnected(userAgent, dacpId, activeRemote)
             }
 
-            val contentLength = headers["content-length"]?.toIntOrNull()?.coerceIn(0, MAX_BODY_BYTES) ?: 0
-            val body = if (contentLength > 0) readExactBytes(input, contentLength) else ByteArray(0)
-            if (body.size != contentLength) break
             val contentType = headers["content-type"].orEmpty()
             val isRtsp = RtspMessageParser.isRtspRequestLine(firstLine)
             val cseq = headers["cseq"]
             currentRequestProtocol.set(if (isRtsp) "RTSP/1.0" else "HTTP/1.1")
             currentRequestCSeq.set(cseq)
+            val contentLength = airPlayContentLength(lines, MAX_BODY_BYTES)
+            if (contentLength == null) {
+                writeResponse(output, 400, "Bad Request")
+                break
+            }
+            val body = if (contentLength > 0) readExactBytes(input, contentLength) else ByteArray(0)
+            if (body.size != contentLength) break
             Log.i(TAG, "<- $peer $method $path (proto=${if (isRtsp) "RTSP/1.0" else "HTTP/1.1"} cseq=${cseq ?: "-"} ct=$contentType len=${body.size})")
 
             val sessionId = headers["x-apple-session-id"]?.takeIf { value ->
@@ -308,14 +312,8 @@ class AirPlayDirectHttpServer(
                     break
                 }
                 fcup?.markAcknowledged()
-                val ackLen = acknowledgement.lineSequence()
-                    .firstOrNull { it.startsWith("Content-Length:", ignoreCase = true) }
-                    ?.substringAfter(':')
-                    ?.trim()
-                    ?.toIntOrNull() ?: 0
-                if (ackLen > 0) {
-                    readExactBytes(input, ackLen.coerceAtMost(MAX_BODY_BYTES))
-                }
+                val ackLen = airPlayContentLength(acknowledgement.split("\r\n"), MAX_BODY_BYTES) ?: break
+                if (!drainAirPlayBody(input, ackLen)) break
                 if (event.closeAfterDelivery) break
             }
         } finally {
@@ -843,4 +841,34 @@ internal fun hasFcupPlaylistHeader(data: ByteArray): Boolean {
     val header = "#EXTM3U"
     return start >= 0 && data.size - start >= header.length &&
         header.indices.all { data[start + it] == header[it].code.toByte() }
+}
+
+
+/** AirPlay's HTTP-like endpoints receive fixed-length bodies. */
+internal fun airPlayContentLength(lines: List<String>, limit: Int): Int? {
+    var length: Int? = null
+    for (index in 1 until lines.size) {
+        val line = lines[index]
+        val name = line.substringBefore(':').trim()
+        if (name.equals("Transfer-Encoding", ignoreCase = true)) return null
+        if (!name.equals("Content-Length", ignoreCase = true)) continue
+        val value = line.substringAfter(':', "").trim()
+        if (value.isEmpty() || value.any { it !in '0'..'9' }) return null
+        val parsed = value.toIntOrNull()?.takeIf { it <= limit } ?: return null
+        if (length != null && length != parsed) return null
+        length = parsed
+    }
+    return length ?: 0
+}
+
+internal fun drainAirPlayBody(input: BufferedInputStream, length: Int): Boolean {
+    if (length == 0) return true
+    val scratch = ByteArray(minOf(length, 8192))
+    var remaining = length
+    while (remaining > 0) {
+        val count = input.read(scratch, 0, minOf(remaining, scratch.size))
+        if (count <= 0) return false
+        remaining -= count
+    }
+    return true
 }
