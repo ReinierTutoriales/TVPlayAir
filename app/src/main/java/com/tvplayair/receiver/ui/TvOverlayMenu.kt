@@ -56,6 +56,7 @@ fun TvOverlayMenu(
     onAdjustAudioOffset: (Int) -> Unit,
     onAudioCommand: (DacpCommand) -> Unit,
     onVideoToggle: () -> Unit,
+    onSeekBy: (Double) -> Unit,
     onPlaybackInteraction: () -> Unit,
     onDismiss: () -> Unit
 ) {
@@ -84,6 +85,7 @@ fun TvOverlayMenu(
                     TvPlaybackControls(
                         telemetry = direct,
                         onToggle = onVideoToggle,
+                        onSeekBy = onSeekBy,
                         // Direct playback must never expose DACP controls from a previous audio session.
                         onAudioCommand = if (direct == null) remoteCommand else null
                     )
@@ -105,7 +107,7 @@ fun TvOverlayMenu(
                 }
             }
             state.showingVideoControls -> {
-                state.videoControls?.let { TvVideoControls(it, onVideoToggle, onPlaybackInteraction) }
+                state.videoControls?.let { TvVideoControls(it, onVideoToggle, onSeekBy, onPlaybackInteraction) }
             }
             state.showStandby && !state.projectionHome -> TvStandbyScreen(state, onOpenMenu)
         }
@@ -170,6 +172,7 @@ fun TvOverlayMenu(
 private fun TvVideoControls(
     telemetry: DirectPlaybackTelemetry,
     onToggle: () -> Unit,
+    onSeekBy: (Double) -> Unit,
     onInteraction: () -> Unit
 ) {
     val hasDuration = telemetry.durationSec.isFinite() && telemetry.durationSec > 0.0
@@ -209,7 +212,7 @@ private fun TvVideoControls(
                 }
             }
             if (hasDuration) PlaybackProgress(telemetry)
-            TvPlaybackControls(telemetry, onToggle, Modifier.align(Alignment.CenterHorizontally))
+            TvPlaybackControls(telemetry, onToggle, Modifier.align(Alignment.CenterHorizontally), onSeekBy = onSeekBy)
             if (telemetry.isBuffering) {
                 Text(
                     stringResource(R.string.video_loading),
@@ -237,7 +240,8 @@ private fun TvPlaybackControls(
     telemetry: DirectPlaybackTelemetry?,
     onToggle: () -> Unit,
     modifier: Modifier = Modifier,
-    onAudioCommand: ((DacpCommand) -> Unit)? = null
+    onAudioCommand: ((DacpCommand) -> Unit)? = null,
+    onSeekBy: ((Double) -> Unit)? = null
 ) {
     val playFocus = remember { FocusRequester() }
     val canToggle = telemetry != null || onAudioCommand != null
@@ -251,6 +255,12 @@ private fun TvPlaybackControls(
                 label = stringResource(R.string.audio_previous),
                 onClick = { onAudioCommand(DacpCommand.PREVIOUS) }
             ) { MediaControlGlyph(MediaGlyph.Previous) }
+        }
+
+        if (telemetry?.canSeek == true && onSeekBy != null) {
+            TvMediaControl(label = "Retroceder 10 segundos", onClick = { onSeekBy(-10.0) }) {
+                Text("−10", style = MaterialTheme.typography.labelLarge)
+            }
         }
 
         val (label, glyph) = when (telemetry?.playWhenReady) {
@@ -268,6 +278,12 @@ private fun TvPlaybackControls(
             primary = true,
             enabled = canToggle
         ) { MediaControlGlyph(glyph) }
+
+        if (telemetry?.canSeek == true && onSeekBy != null) {
+            TvMediaControl(label = "Avanzar 10 segundos", onClick = { onSeekBy(10.0) }) {
+                Text("+10", style = MaterialTheme.typography.labelLarge)
+            }
+        }
 
         if (onAudioCommand != null) {
             TvMediaControl(
