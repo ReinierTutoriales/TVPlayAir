@@ -21,6 +21,31 @@ manifest = (MAIN / "AndroidManifest.xml").read_text(encoding="utf-8")
 cmake = (CPP / "CMakeLists.txt").read_text(encoding="utf-8")
 source_text = "\n".join(kotlin.values())
 
+# Detect exact duplicate imports, declarations and build entries without
+# guessing whether reflection, JNI or IPC consumers exist.
+for path, body in kotlin.items():
+    imports = re.findall(r"^import\\s+([^\\n]+)$", body, re.M)
+    for name in sorted(set(imports)):
+        check(imports.count(name) == 1,
+              f"Duplicate Kotlin import: {path.relative_to(ROOT)}: {name}")
+
+for path, body in xml.items():
+    if path.parent.name != "values":
+        continue
+    names = re.findall(r'<(?:string|color|dimen|style|bool|integer|array|string-array|plurals)\\s+name="([^"]+)"', body)
+    for name in sorted(set(names)):
+        check(names.count(name) == 1,
+              f"Duplicate Android resource declaration: {path.relative_to(ROOT)}: {name}")
+
+# CMake lists source paths as literal relative filenames. Count only
+# translation-unit references; header inclusion is not compilation.
+native_units = [p for p in CPP.rglob("*") if p.suffix in (".cpp", ".c")]
+for path in native_units:
+    relative = path.relative_to(CPP).as_posix()
+    occurrences = len(re.findall(r"(?<![A-Za-z0-9_./-])" + re.escape(relative) + r"(?![A-Za-z0-9_./-])", cmake))
+    check(occurrences == 1,
+          f"Native source must appear exactly once in CMake ({occurrences}): {relative}")
+
 # Only check resources referenced by generated R names; framework/manifest
 # resources are accounted for separately.
 for p in (RES / "drawable").glob("*.xml"):
