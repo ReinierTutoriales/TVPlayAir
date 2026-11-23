@@ -37,4 +37,28 @@ class PcmResamplerQualityTest {
         // Midpoint frame ~240 should be close to 220 * 50 = 11000
         assertTrue(abs(dst[240 * 2] - 11_000) < 250)
     }
+
+    @Test
+    fun `computeDriftPpm applies vernier adjustment outside deadband`() {
+        assertEquals(0, PcmResampler.computeDriftPpm(-1))
+        assertEquals(150, PcmResampler.computeDriftPpm(0))
+        assertEquals(150, PcmResampler.computeDriftPpm(3))
+        assertEquals(0, PcmResampler.computeDriftPpm(4))
+        assertEquals(0, PcmResampler.computeDriftPpm(39))
+        assertEquals(-150, PcmResampler.computeDriftPpm(40))
+        assertEquals(-150, PcmResampler.computeDriftPpm(100))
+    }
+
+    @Test
+    fun `driftPpm adjusts 48kHz output frame count smoothly`() {
+        val srcFrames = 4_800
+        val src = ShortArray(srcFrames * 2) { ((it / 2) * 3).toShort() }
+        val dstFast = ShortArray(5_000 * 2)
+        val dstSlow = ShortArray(5_000 * 2)
+        val fastOut = PcmResampler().resampleStereoI16(src, srcFrames, 48_000, dstFast, driftPpm = 500)
+        val slowOut = PcmResampler().resampleStereoI16(src, srcFrames, 48_000, dstSlow, driftPpm = -500)
+        assertTrue(fastOut > srcFrames - 2)
+        assertTrue(slowOut < srcFrames)
+        assertTrue(fastOut > slowOut)
+    }
 }

@@ -219,6 +219,15 @@ public:
         return valid() ? header_->droppedPackets.load(std::memory_order_relaxed) : 0;
     }
 
+    int32_t fillPercent() const {
+        if (!valid() || header_->capacity == 0) return -1;
+        const uint32_t read = header_->readPos.load(std::memory_order_acquire);
+        const uint32_t write = header_->writePos.load(std::memory_order_relaxed);
+        const uint32_t pending = write - read;
+        const uint32_t clamped = pending > header_->capacity ? header_->capacity : pending;
+        return static_cast<int32_t>((clamped * 100u) / header_->capacity);
+    }
+
 private:
     static size_t alignUp(size_t value) {
         return (value + kCacheLine - 1) & ~(kCacheLine - 1);

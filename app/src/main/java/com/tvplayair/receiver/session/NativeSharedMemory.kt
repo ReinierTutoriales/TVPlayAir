@@ -33,8 +33,7 @@ object NativeSharedMemory {
         generationId: Int,
         senderTimeUs: Long
     ): Int
-    external fun nativeGetVideoDroppedPackets(): Long
-    external fun nativeGetAudioDroppedPackets(): Long
+    external fun nativeGetAudioRingFillPercent(): Int
     external fun nativeConfigureAlac(samplesPerFrame: Int, sampleRate: Int): Boolean
     external fun nativeDecodeAlacToPcm(
         alacPacket: ByteArray,

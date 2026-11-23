@@ -251,6 +251,20 @@ static void testMuteAndDuck() {
     assert(pipeline.underrunCount() == 0);
 }
 
+static void testFillPercentTracking() {
+    SharedRingBuffer ring;
+    initAudioRing(ring);
+    assert(ring.fillPercent() == 0);
+
+    std::array<int16_t, 64 * kAudioChannels> pkt{};
+    pkt.fill(42);
+    for (int i = 0; i < 16; ++i) {
+        assert(ring.writePacket(pkt.data(), sizeof(pkt), 1) == RingResult::Ok);
+    }
+    // 16 / 64 = 25%
+    assert(ring.fillPercent() == 25);
+}
+
 int main() {
     static_assert(kAudioBytesPerFrame == 4, "Expected 16-bit stereo PCM");
     testPacketBoundariesAndStreaming();
@@ -261,5 +275,6 @@ int main() {
     testOffsetClampingAndPositiveDelay();
     testNegativeOffsetAdvancesStream();
     testMuteAndDuck();
+    testFillPercentTracking();
     std::puts("Audio PCM pipeline host tests passed: packet boundaries, underrun silence, stale generation, bounded offset, mute and duck.");
 }
