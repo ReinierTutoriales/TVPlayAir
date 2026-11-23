@@ -30,12 +30,19 @@ Read `AGENTS.md`, `docs/TVPLAYAIR_CONTINUITY_ARCHITECTURE_2026.md`, `docs/ENGINE
 9. Disconnect, binder death, replaced session and rapid app switching release/reattach resources safely. Do not treat `playWhenReady` alone as effective playback.
 10. Keep a record of observable limitations: app-specific AirPlay, DRM, iOS routing, hardware HDR and codec support.
 
-## Implementation sequence
+## Evidence-to-fix workflow
 
-- Use [the stabilization baseline](../../../docs/BASELINE_ESTABILIZACION.md) to audit the Android TV destination, direct AirPlay and mirroring as a complete sequence. Record the exact APK SHA, action, identity and first missing or incorrect event. Distinguish the sender's route from the receiver's output.
-- Replay complete sequences in `MediaContinuityBaselineTest`. Extend the scenario or add a focused assertion when a fault escapes. Cover stale responses and the return path before grouping demonstrated fixes into a candidate.
-- Use official releases and platform contracts to choose an implementation. For undocumented AirPlay behavior, preserve a redacted trace and explicitly distinguish observation from inference.
-- Run the focused tests, then the complete Android and native CI once on the candidate SHA. Keep the scenario and assertions reproducible. Record actual hardware output and timings before claiming A/V or routing stability.
+1. Start from the current branch SHA and the user's expected outcome. Trace one complete source-to-TV route through discovery, negotiation, session ownership, transport, decoding, presentation and cleanup. Mark the first divergence with its event, clock domain and generation. Use the [stabilization baseline](../../../docs/BASELINE_ESTABILIZACION.md) and preserve only the redacted evidence needed to reproduce it.
+2. Consult official platform and provider documentation for supported APIs. For undocumented behavior, compare maintained implementations with a similar route and platform. Start with CastBay for Android TV integration, UxPlay for AirPlay mirroring and FCUP, and Shairport Sync for RAOP timing. Look for newer relevant candidates and verify the exact tag or commit, code path, release notes, tests and observed device coverage. Treat project claims and protocol hypotheses as such. Check license compatibility before reuse.
+3. Use the comparison to choose the smallest portable fix. Prefer runtime display, codec and audio capabilities and bounded fallbacks across Android TV devices. Keep a device report as evidence for its own configuration. Reuse project APIs and group fixes that share the same failure mechanism. Remove code only after tracing its production entry points and callers.
+4. Encode the failure, affected transition and recovery using a focused regression. Run it and the relevant neighboring checks, then verify CI against the exact candidate SHA. Follow [Testing Discipline](../testing-discipline/SKILL.md) for closure. When implementation is authorized, carry a demonstrated correction through delivery and verification.
+
+## Apply the method to media failures
+
+- **Mirroring:** offer the intersection of the user limit and detected display/decoder capabilities. Treat an advertised codec feature as eligibility and retain a basic startup fallback. Preserve codec config and wait for a valid keyframe on recovery with a bounded deadline. Trace first rendered frame and keep RTSP silence, EOF and explicit TEARDOWN distinct.
+- **Direct video:** distinguish manifest exchange, transport response, Media3 load and first frame. Carry FCUP scope and status through the proxy and correlate by playback and request ID. Keep sender-facing live position continuous across sliding HLS windows while the local TV controls retain window coordinates.
+- **A/V timing:** follow the sender timestamp through reorder, decode and PCM transport to the audio device's monotonic presentation clock. Check generation, clock domain and freshness before scheduling video. Keep timing queries outside the real-time callback and keep immediate presentation available when the mapping cannot be used.
+- **UI and controls:** use shared presentation components and keep command meaning consistent. Validate availability and route by the active session. Clear stale artwork, controls and frames on replacement.
 
 ## Mandatory scenarios
 - Same app next track, same transport; old artwork response arrives last.

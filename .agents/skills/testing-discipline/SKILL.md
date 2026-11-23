@@ -14,13 +14,14 @@ description: Use for TVPlayAir product changes, dependency/build fixes and miles
 
 ## Mandatory multimedia continuity regression matrix
 
-For changes affecting playback, transport, metadata, UI or process boundaries, read `../media-continuity/SKILL.md`. Add deterministic tests for: audio A->audio B (same transport and new transport), audio->video->audio, video A->video B, mirror->video->mirror, rapid app switching, delayed artwork, reordered metadata, duplicated stop/flush, outdated reverse-channel commands, first-frame timeout, disconnect/reconnect, binder death, background/foreground and D-pad long-press. Assert that no stale generation can update the UI or receive controls; no state can remain in Preparing/Recovering forever.
+For changes affecting playback, transport, metadata, UI or process boundaries, read `../media-continuity/SKILL.md`. Reuse the continuity suite and add deterministic coverage for affected scenarios: audio A->audio B (same transport and new transport), audio->video->audio, video A->video B, mirror->video->mirror, rapid app switching, delayed artwork, reordered metadata, duplicated stop/flush, outdated reverse-channel commands, first-frame timeout, disconnect/reconnect, binder death, background/foreground and D-pad long-press. Assert that no stale generation can update the UI or receive controls; no state can remain in Preparing/Recovering forever.
 
 Instrument request-to-first-frame, first-audio, artwork freshness, A/V drift, dropped frames, underruns, p50/p95/p99 transition latency and error recovery. The JVM suite runs a 100-cycle `MediaContinuityBaselineTest` across RAOP, mirroring, direct playback, stale FCUP, and the return to audio. Follow the single-candidate capture and verification workflow in [the stabilization baseline](../../../docs/BASELINE_ESTABILIZACION.md). Record actual measurements for latency claims.
 
 ## Required verification
 
-- Run the focused test first, then affected neighboring suites.
+- Run the smallest regression first and show that it distinguishes the faulty behavior from the corrected behavior where practical. Use a fake clock for sliding windows, timeouts and drift logic. Exercise stale generations and absent-capability fallbacks when the change crosses a session, codec or IPC boundary.
+- Batch affected neighboring suites and verify one complete CI run for the exact candidate. Re-run failed checks after fixing the underlying cause.
 - Run `testDebugUnitTest`, `lintDebug` and `assembleDebug` when supported locally; state clearly when unavailable.
 - Inspect the exact GitHub Actions run and SHA. A queued, in-progress, cancelled, failed or older-SHA run is not a pass.
 - Integration gate: dependency metadata, JVM unit tests, Android native build and native host suites on exact PR HEAD.
@@ -37,7 +38,7 @@ CI and emulators cannot prove hardware decoder behavior, VPU coexistence, HDR pa
 - measured frame drops, latency, audio offset, memory and crash/recovery behavior;
 - pass/fail and reproducible steps.
 
-If hardware was not tested, mark it pending. Never convert a target requirement into a claim of device support.
+Use an Android TV capability matrix for physical validation when the claim spans devices. Cover representative OS versions, decoder backends and sender routes. If hardware was not tested, mark that evidence as pending and report exactly what the automated checks established.
 
 ## Failure-to-regression workflow
 

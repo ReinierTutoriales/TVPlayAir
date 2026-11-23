@@ -63,7 +63,7 @@ Hardware validation is a separate gate for claims CI cannot prove: codec/VPU tra
 
 ## Working method
 
-1. Read the product goal, relevant skill, implementation, configuration and tests. Check official platform and provider documentation for the exact source-to-TV route before proposing code.
+1. Read the product goal, relevant skill, implementation, configuration and tests. Check official platform and provider documentation for the exact source-to-TV route. For undocumented behavior, use the comparison method in [Media Continuity](.agents/skills/media-continuity/SKILL.md).
 2. Record the base SHA, expected outcome, first failing or missing behavior, route owner and applicable API/configuration. Use the provider's supported integration when it already delivers the outcome. Inspect and reuse the implementation already in the repo.
 3. Distinguish a project defect from missing external integration, configuration, dependency resolution, a test fixture or a runner/device issue. For undocumented behavior, distinguish a reproducible observation from a hypothesis.
 4. Trace the affected entry points and shared lifecycle once. Group changes that fix the same contract in a reviewable candidate. Add the smallest regression that would have caught the failure.
