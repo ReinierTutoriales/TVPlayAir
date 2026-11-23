@@ -8,7 +8,6 @@ import android.app.Service
 import android.content.Context
 import android.content.Intent
 import android.content.pm.ServiceInfo
-import android.os.Build
 import android.os.IBinder
 import android.util.Log
 import com.tvplayair.receiver.MainActivity
@@ -77,11 +76,7 @@ class AudioContinuityService : Service() {
             .setContentIntent(launch)
             .setOngoing(true)
             .build()
-        if (Build.VERSION.SDK_INT >= 29) {
-            startForeground(1002, notification, ServiceInfo.FOREGROUND_SERVICE_TYPE_MEDIA_PLAYBACK)
-        } else {
-            startForeground(1002, notification)
-        }
+        startForeground(1002, notification, ServiceInfo.FOREGROUND_SERVICE_TYPE_MEDIA_PLAYBACK)
         ownsHandoff = true
         connection?.replaceListener(listener, replay = true)
         return START_NOT_STICKY
