@@ -176,6 +176,23 @@ public:
         return RingResult::Ok;
     }
 
+    // Consumer only: inspect committed packets without advancing the read cursor.
+    bool hasPendingFrames(uint32_t generation, uint32_t frames, uint32_t bytesPerFrame) const {
+        if (!valid() || bytesPerFrame == 0) return false;
+        uint32_t read = header_->readPos.load(std::memory_order_relaxed);
+        const uint32_t write = header_->writePos.load(std::memory_order_acquire);
+        while (read != write) {
+            const PacketHeader* packet = packetAt(read++);
+            if (packet->generationId != generation) break;
+            const uint32_t size = packet->payloadSize;
+            if (size > header_->payloadCapacity) continue;
+            const uint32_t available = size / bytesPerFrame;
+            if (available >= frames) return true;
+            frames -= available;
+        }
+        return false;
+    }
+
     // Consumer only: discard the backlog present at this instant without copying it.
     void discardPending() {
         if (!valid()) return;
