@@ -281,16 +281,27 @@ class RaopAudioDecoder {
                         .getOrDefault(MediaCodec.INFO_TRY_AGAIN_LATER)
                     if (outIdx < 0) break
                     val outBuf = decoder.getOutputBuffer(outIdx)
-                    if (outBuf != null && info.size >= 4) {
-                        outBuf.position(info.offset)
-                        outBuf.limit(info.offset + info.size)
-                        val frameCount = (info.size / 4).coerceAtMost(MAX_PCM_FRAMES)
-                        outBuf.order(ByteOrder.LITTLE_ENDIAN).asShortBuffer()
-                            .get(srcSamples, 0, frameCount * 2)
-                        val outputTimeUs = aacTimestamps.remove(info.presentationTimeUs)
-                        publishResampled(frameCount, generationId, outputTimeUs ?: 0L)
+                    try {
+                        if (outBuf != null && info.size >= 4) {
+                            val validRange = info.offset >= 0 &&
+                                info.offset <= outBuf.capacity() &&
+                                info.size <= outBuf.capacity() - info.offset
+                            if (validRange) {
+                                val frameCount = (info.size / 4).coerceAtMost(MAX_PCM_FRAMES)
+                                outBuf.clear()
+                                outBuf.position(info.offset)
+                                outBuf.limit(info.offset + frameCount * 4)
+                                outBuf.order(ByteOrder.LITTLE_ENDIAN).asShortBuffer()
+                                    .get(srcSamples, 0, frameCount * 2)
+                                val outputTimeUs = aacTimestamps.remove(info.presentationTimeUs)
+                                publishResampled(frameCount, generationId, outputTimeUs ?: 0L)
+                            } else {
+                                decodeFailures++
+                            }
+                        }
+                    } finally {
+                        decoder.releaseOutputBuffer(outIdx, false)
                     }
-                    decoder.releaseOutputBuffer(outIdx, false)
                 }
             }
         }
