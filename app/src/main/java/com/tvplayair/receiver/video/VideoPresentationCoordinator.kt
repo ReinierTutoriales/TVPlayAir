@@ -164,7 +164,7 @@ class VideoPresentationCoordinator(
         resumeMirrorAfterDirect = false
         directPlaybackId = null
         state = PresentationState.IDLE
-        directEngine.stopAndClear()
+        directEngine.stopAndClear(releasePlayer = true)
         if (senderStop) audioController.resumeAfterSenderStop()
         else audioController.setPausedForExternalPlayer(false)
         surfaceController.hideAllSurfaces()
@@ -185,7 +185,7 @@ class VideoPresentationCoordinator(
     fun onSessionDied() {
         resumeMirrorAfterDirect = false
         directPlaybackId = null
-        directEngine.stopAndClear()
+        directEngine.stopAndClear(releasePlayer = true)
         mirrorEngine.stopAndRelease()
         audioController.stop()
         audioController.setPausedForExternalPlayer(false)

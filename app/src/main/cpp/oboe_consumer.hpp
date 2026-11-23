@@ -64,6 +64,7 @@ private:
     std::atomic<int32_t> grantedSampleRate_{0};
     std::atomic<int32_t> grantedFramesPerBurst_{0};
     std::atomic<bool> exclusiveMode_{false};
+    bool preferSharedMode_ = false;
 };
 
 OboeConsumer& oboeConsumer();

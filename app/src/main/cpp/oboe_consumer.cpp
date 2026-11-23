@@ -106,7 +106,7 @@ oboe::Result OboeConsumer::openWithFallbackLocked(
     oboe::AudioStreamBuilder builder;
     builder.setDirection(oboe::Direction::Output)
         ->setPerformanceMode(oboe::PerformanceMode::LowLatency)
-        ->setSharingMode(oboe::SharingMode::Exclusive)
+        ->setSharingMode(preferSharedMode_ ? oboe::SharingMode::Shared : oboe::SharingMode::Exclusive)
         ->setFormat(oboe::AudioFormat::I16)
         ->setChannelCount(oboe::ChannelCount::Stereo)
         ->setSampleRate(kAudioSampleRate)
@@ -116,12 +116,13 @@ oboe::Result OboeConsumer::openWithFallbackLocked(
         ->setErrorCallback(this);
 
     oboe::Result result = builder.openStream(outStream);
-    if (result != oboe::Result::OK) {
+    if (result != oboe::Result::OK && !preferSharedMode_) {
         __android_log_print(
             ANDROID_LOG_WARN,
             kLogTag,
-            "Exclusive LowLatency openStream failed (%s); retrying with SharingMode::Shared",
+            "Exclusive LowLatency openStream failed (%s); switching to SharingMode::Shared",
             oboe::convertToText(result));
+        preferSharedMode_ = true;
         outStream.reset();
         builder.setSharingMode(oboe::SharingMode::Shared);
         result = builder.openStream(outStream);

@@ -40,7 +40,7 @@ class AirPlayDirectHttpServer(
         private const val MAX_BODY_BYTES = 2 * 1024 * 1024
         private const val CLIENT_SO_TIMEOUT_MS = 30_000
         private const val EVENT_ACK_TIMEOUT_MS = 5_000
-        private const val FCUP_TIMEOUT_MS = 4_000L
+        private const val FCUP_TIMEOUT_MS = 8_000L
     }
 
     private val running = AtomicBoolean(false)
@@ -348,7 +348,7 @@ class AirPlayDirectHttpServer(
 
     private fun handleFcupResponsePlist(bodyBytes: ByteArray): Boolean {
         val root = BinaryPlistParser.parse(bodyBytes) as? Map<*, *> ?: return false
-        val params = (root["params"] as? Map<*, *>) ?: root
+        val params = (root["params"] as? Map<*, *>) ?: (root["request"] as? Map<*, *>) ?: root
         val reqId = ((params["FCUP_Response_RequestID"]
             ?: params["FCUP_Response_ID"]
             ?: params["requestID"]
@@ -364,6 +364,7 @@ class AirPlayDirectHttpServer(
             root.containsKey("FCUP_Response_ID") ||
             params.containsKey("FCUP_Response_URL") || root.containsKey("FCUP_Response_URL")
         val senderStatus = ((params["FCUP_Response_StatusCode"]
+            ?: params["statusCode"]
             ?: root["FCUP_Response_StatusCode"]) as? Number)?.toInt()?.takeIf { it in 400..599 }
         if (senderStatus != null && identifiedFcupResponse) {
             if (!fcupRequests.complete(reqId, respUrl, null, senderStatus)) {
