@@ -24,6 +24,19 @@ class MirrorFrameGateTest {
     }
 
     @Test
+    fun frameClockRejectsOverflowedSenderClockArithmetic() {
+        val nearMaxPts = Long.MAX_VALUE / 1000L
+        val positiveOverflow = MirrorFrameClock({ Long.MAX_VALUE - 1L }, { 100L })
+        assertNull(positiveOverflow.renderTimeNs(nearMaxPts))
+
+        val negativeOverflow = MirrorFrameClock({ Long.MIN_VALUE + 1L }, { 100L })
+        assertNull(negativeOverflow.renderTimeNs(nearMaxPts))
+
+        val nearMaxNow = MirrorFrameClock({ 0L }, { Long.MAX_VALUE - 10L })
+        assertNull(nearMaxNow.renderTimeNs(nearMaxPts))
+    }
+
+    @Test
     fun duplicateCodecConfigDoesNotReplaceTheCachedBytes() {
         val gate = MirrorFrameGate()
         val config = byteArrayOf(1, 2, 3)
