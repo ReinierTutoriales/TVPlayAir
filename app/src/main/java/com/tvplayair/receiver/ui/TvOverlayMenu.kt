@@ -181,7 +181,7 @@ private fun TvVideoControls(
     ) {
         Column(
             modifier = Modifier.fillMaxWidth()
-                .background(Brush.verticalGradient(listOf(Color.Transparent, Color(0xF5000000))))
+                .background(Brush.verticalGradient(listOf(Color.Transparent, Color(0xE8000000))))
                 .padding(horizontal = 48.dp)
                 .padding(top = 72.dp, bottom = 32.dp),
             verticalArrangement = Arrangement.spacedBy(12.dp)
@@ -225,8 +225,9 @@ private fun TvVideoControls(
 private fun PlaybackProgress(telemetry: DirectPlaybackTelemetry) {
     val progress = (telemetry.positionSec / telemetry.durationSec).toFloat()
         .takeIf { it.isFinite() }?.coerceIn(0f, 1f) ?: 0f
-    Box(Modifier.fillMaxWidth().height(4.dp).background(Color.White.copy(alpha = 0.28f))) {
-        Box(Modifier.fillMaxWidth(progress).height(4.dp).background(FocusColor))
+    val trackShape = RoundedCornerShape(50)
+    Box(Modifier.fillMaxWidth().height(4.dp).background(Color.White.copy(alpha = 0.24f), trackShape)) {
+        Box(Modifier.fillMaxWidth(progress).height(4.dp).background(FocusColor, trackShape))
     }
 }
 
