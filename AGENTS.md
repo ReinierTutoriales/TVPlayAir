@@ -26,11 +26,11 @@ Only implement the six v1.0 milestones: (1) deterministic Android baseline/CI, (
 ## Deterministic build baseline
 
 Pin and keep aligned in Gradle and CI:
-- `minSdk = 29`, `compileSdk = 36`, `targetSdk = 35`
+- `minSdk = 29`, `compileSdk = 37.1`, `targetSdk = 35`
 - NDK `30.0.16248370`
 - CMake `4.1.2`
 - Oboe `1.11.0`
-- Compose BOM `2026.06.01` (API 36-compatible baseline)
+- Compose BOM `2026.11.01`
 
 No floating versions, dynamic versions, unreviewed upgrades or dependency that requires API 37+. Before changing a pin, inspect release notes and the dependency graph. Confirm the resolved artifacts, not just declared coordinates. Use `dependencyInsight` for unexpected Compose/AndroidX versions. Do not upgrade the SDK to conceal an incompatible transitive dependency; first identify the dependency introducing it and assess a compatible stable version.
 

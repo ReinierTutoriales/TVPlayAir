@@ -25,7 +25,9 @@ internal class AirPlayPlaybackEvents {
     data class Event(
         val state: State,
         val playbackId: Long,
-        val customXmlBody: String? = null
+        val customXmlBody: String? = null,
+        val closeAfterDelivery: Boolean = false,
+        val fcupRequestId: Int? = null
     ) {
         fun request(appleSessionId: String?): ByteArray {
             val body = (customXmlBody ?: """
@@ -75,6 +77,8 @@ internal class AirPlayPlaybackEvents {
     private var currentEvent: Event? = null
     private var playbackId = 0L
     private var stopRequested = false
+    private var mirrorActive = false
+    private var retiredDirectSession: SessionKey? = null
     private var reverseReady = CompletableFuture<Unit>()
 
     @Synchronized
@@ -100,7 +104,21 @@ internal class AirPlayPlaybackEvents {
     }
 
     @Synchronized
-    fun start(key: SessionKey, onStart: (Long) -> Unit = {}) {
+    fun start(
+        key: SessionKey,
+        explicit: Boolean = true,
+        onMirrorRetired: () -> Unit = {},
+        onStart: (Long) -> Unit = {}
+    ): Boolean {
+        val retired = retiredDirectSession
+        val fromRetiredSession = retired != null && key.peer == retired.peer &&
+            (key.appleSessionId == null || retired.appleSessionId == null || key == retired)
+        if (!explicit && (mirrorActive || fromRetiredSession)) return false
+        if (fromRetiredSession) retiredDirectSession = null
+        if (mirrorActive) {
+            mirrorActive = false
+            onMirrorRetired()
+        }
         if (activeSession != key) {
             if (currentEvent?.state != State.STOPPED) publish(State.STOPPED)
             val previous = channel
@@ -121,6 +139,33 @@ internal class AirPlayPlaybackEvents {
         currentEvent = null
         publish(State.LOADING)
         onStart(playbackId)
+        return true
+    }
+
+    @Synchronized
+    fun openMirror(onDirectRetired: (Long) -> Unit) {
+        mirrorActive = true
+        val active = activeSession ?: return
+        retiredDirectSession = active
+        val previousChannel = activeReverse()
+        if (channel === previousChannel) channel = null
+        if (standbyChannel === previousChannel) standbyChannel = null
+        activeSession = null
+        stopRequested = true
+        currentEvent = null
+        reverseReady.cancel(false)
+        onDirectRetired(playbackId)
+        previousChannel?.let {
+            it.events.clear()
+            it.offer(Event(State.STOPPED, playbackId, closeAfterDelivery = true))
+        }
+    }
+
+    @Synchronized
+    fun finishMirror(onEnded: () -> Unit) {
+        if (!mirrorActive) return
+        mirrorActive = false
+        onEnded()
     }
 
     @Synchronized
@@ -217,7 +262,7 @@ internal class AirPlayPlaybackEvents {
             </dict>
             </plist>
         """.trimIndent()
-        activeChannel.offer(Event(State.LOADING, sid, customXmlBody = xml))
+        activeChannel.offer(Event(State.LOADING, sid, customXmlBody = xml, fcupRequestId = requestId))
         return true
     }
 
@@ -229,6 +274,8 @@ internal class AirPlayPlaybackEvents {
         standbyChannel = null
         activeSession = null
         currentEvent = null
+        mirrorActive = false
+        retiredDirectSession = null
         reverseReady.cancel(false)
         reverseReady = CompletableFuture()
     }

@@ -9,7 +9,9 @@ import java.io.IOException
 @OptIn(UnstableApi::class)
 internal class FcupLoadErrorHandlingPolicy : DefaultLoadErrorHandlingPolicy() {
     override fun isEligibleForFallback(exception: IOException): Boolean {
-        if (exception is InvalidResponseCodeException && exception.responseCode == 504) {
+        if (exception is InvalidResponseCodeException &&
+            (exception.responseCode == 502 || exception.responseCode == 504)
+        ) {
             val uri = exception.dataSpec.uri
             return isFcupPlaylist(uri.host, uri.path)
         }

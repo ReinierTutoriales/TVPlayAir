@@ -8,6 +8,8 @@ import android.os.Handler
 import android.os.IBinder
 import android.os.Looper
 import android.os.ParcelFileDescriptor
+import android.util.Log
+import com.tvplayair.receiver.diagnostics.PLAYBACK_DIAGNOSTICS_TAG
 import com.tvplayair.receiver.ipc.ITvPlayCallback
 import com.tvplayair.receiver.ipc.ITvPlaySession
 import com.tvplayair.receiver.video.DirectPlaybackStart
@@ -158,6 +160,7 @@ class SessionConnection(
                 service?.registerCallback(callback)
                 service?.setProjectionVisible(projectionVisible)
                 service?.startServer()
+                Log.i(PLAYBACK_DIAGNOSTICS_TAG, "route=ipc epoch=$epoch event=bound")
                 retryDelayMs = 250L
             } catch (_: Exception) {
                 handleBinderDeath(epoch)
@@ -237,6 +240,7 @@ class SessionConnection(
             return
         }
         if (!isCurrent(epoch)) return
+        Log.w(PLAYBACK_DIAGNOSTICS_TAG, "route=ipc epoch=$epoch event=unavailable retryMs=$retryDelayMs")
         bindingEpoch++
         detach()
         scheduleReconnect()

@@ -1,6 +1,7 @@
 package com.tvplayair.receiver.session
 
 import org.junit.Assert.assertArrayEquals
+import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNotEquals
 import org.junit.Assert.assertNull
@@ -31,6 +32,29 @@ class FcupRequestsTest {
     }
 
     @Test
+    fun identifiedResponseWithoutDataFailsOnlyItsOwnRequest() {
+        val requests = FcupRequests()
+        requests.reset(1)
+        val audio = requests.acquire(1, audioUrl) { true }!!
+        val video = requests.acquire(1, videoUrl) { true }!!
+
+        assertFalse(requests.complete(audio.id, videoUrl, null))
+        assertSame(audio, requests.pending(audio.id))
+        assertTrue(requests.complete(audio.id, audioUrl, null))
+        assertNull(requests.pending(audio.id))
+        val failure = runCatching { audio.result.join() }.exceptionOrNull()
+        assertTrue(failure?.cause is FcupRequests.MissingResponseData)
+        assertSame(video, requests.pending(video.id))
+
+        val retry = requests.acquire(1, audioUrl) { true }!!
+        assertNotEquals(audio.id, retry.id)
+        assertFalse(requests.complete(audio.id, audioUrl, byteArrayOf(1)))
+        assertFalse(retry.result.isDone)
+        assertTrue(requests.complete(video.id, videoUrl, byteArrayOf(2)))
+        assertArrayEquals(byteArrayOf(2), video.result.join())
+    }
+
+    @Test
     fun concurrentReadersShareARequestButLaterReloadGetsFreshPlaylist() {
         val requests = FcupRequests()
         requests.reset(1)
@@ -52,6 +76,20 @@ class FcupRequestsTest {
         assertNull(requests.acquire(1, videoUrl) { false })
         val retry = requests.acquire(1, videoUrl) { true }!!
         assertTrue(requests.complete(retry.id, videoUrl, byteArrayOf(1)))
+    }
+
+    @Test
+    fun reverseDeliveryStateIsSpecificToEachRequest() {
+        val requests = FcupRequests()
+        requests.reset(1)
+        val audio = requests.acquire(1, audioUrl) { true }!!
+        val video = requests.acquire(1, videoUrl) { true }!!
+        assertEquals(FcupRequests.Delivery.QUEUED, audio.delivery)
+        audio.markWritten()
+        assertEquals(FcupRequests.Delivery.WRITTEN, audio.delivery)
+        audio.markAcknowledged()
+        assertEquals(FcupRequests.Delivery.ACKNOWLEDGED, audio.delivery)
+        assertEquals(FcupRequests.Delivery.QUEUED, video.delivery)
     }
 
     @Test

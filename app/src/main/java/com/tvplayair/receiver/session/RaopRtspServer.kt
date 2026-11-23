@@ -3,13 +3,16 @@ package com.tvplayair.receiver.session
 import android.graphics.Bitmap
 import android.graphics.BitmapFactory
 import android.util.Log
+import com.tvplayair.receiver.diagnostics.PLAYBACK_DIAGNOSTICS_TAG
 import java.io.BufferedInputStream
 import java.io.ByteArrayOutputStream
+import java.io.EOFException
 import java.io.IOException
 import java.io.OutputStream
 import java.net.InetSocketAddress
 import java.net.ServerSocket
 import java.net.Socket
+import java.net.SocketTimeoutException
 import java.nio.charset.StandardCharsets
 import java.util.Locale
 import java.util.concurrent.atomic.AtomicBoolean
@@ -139,14 +142,22 @@ internal class RaopRtspServer(
     ) {
         val peer = socket.inetAddress?.hostAddress ?: "unknown"
         val source = crypto
+        var endReason = "rtsp_server_stopped"
         try {
             socket.soTimeout = CLIENT_SO_TIMEOUT_MS
             val output = socket.getOutputStream()
             var pendingHeader = firstHeader
             while (running.get()) {
-                val headerText = pendingHeader
-                    ?: readUntilHeaderEnd(input)?.toString(StandardCharsets.UTF_8)
-                    ?: break
+                val headerText = pendingHeader ?: readRtspControlHeader(input, MAX_HEADER_BYTES) {
+                    val keepControl = running.get() && mirrorReceiver?.hasRecentVideo(source) == true
+                    if (keepControl) Log.i(TAG, "RTSP control idle while its mirror transport is producing video")
+                    keepControl
+                }?.toString(StandardCharsets.UTF_8)
+                if (headerText == null) {
+                    endReason = "rtsp_peer_eof"
+                    nowPlaying.withOwner(source) { Log.i(TAG, "Active RTSP audio control reached EOF") }
+                    break
+                }
                 pendingHeader = null
 
                 val firstLine = headerText.substringBefore("\r\n")
@@ -155,19 +166,34 @@ internal class RaopRtspServer(
                     (!RtspMessageParser.isRtspRequestLine(firstLine) ||
                         isDirectVideoControlRequest(firstLine))
                 ) {
+                    endReason = "rtsp_http_handoff"
                     httpDelegate.invoke(socket, input, crypto, headerText)
                     return
                 }
 
-                val preliminary = RtspMessageParser.parseRequest(headerText) ?: break
+                val preliminary = RtspMessageParser.parseRequest(headerText) ?: run {
+                    endReason = "rtsp_invalid_request"
+                    return
+                }
                 val lengthHeader = preliminary.header("content-length")
                 val contentLength = if (lengthHeader == null) 0 else {
-                    lengthHeader.toIntOrNull()?.takeIf { it in 0..MAX_DRAIN_BODY_BYTES } ?: break
+                    lengthHeader.toIntOrNull()?.takeIf { it in 0..MAX_DRAIN_BODY_BYTES } ?: run {
+                        endReason = "rtsp_invalid_length"
+                        return
+                    }
                 }
                 val body = if (contentLength <= MAX_BUFFERED_BODY_BYTES) {
-                    readExact(input, contentLength).also { if (it.size != contentLength) return }
+                    readExact(input, contentLength).also {
+                        if (it.size != contentLength) {
+                            endReason = "rtsp_incomplete_body"
+                            return
+                        }
+                    }
                 } else {
-                    if (!drainExact(input, contentLength)) break
+                    if (!drainExact(input, contentLength)) {
+                        endReason = "rtsp_incomplete_body"
+                        break
+                    }
                     ByteArray(0)
                 }
                 val request = preliminary.copy(body = body)
@@ -181,18 +207,28 @@ internal class RaopRtspServer(
                 val activeRemote = request.header("active-remote").orEmpty()
                 val userAgent = request.header("user-agent").orEmpty().ifBlank { "Apple Device" }
                 if (dacpId.isNotEmpty() && activeRemote.isNotEmpty()) {
-                    listener.onClientConnected(userAgent, dacpId, activeRemote)
+                    synchronized(nowPlaying) {
+                        if (mirrorReceiver?.allowsAudio(source) != false) {
+                            listener.onClientConnected(userAgent, dacpId, activeRemote)
+                        }
+                    }
                 }
 
-                if (!dispatchRtsp(request, output, source)) break
+                if (!dispatchRtsp(request, output, source)) {
+                    endReason = "rtsp_teardown"
+                    break
+                }
             }
         } catch (error: IOException) {
+            endReason = when (error) {
+                is SocketTimeoutException -> "rtsp_io_timeout"
+                is EOFException -> "rtsp_incomplete_header"
+                else -> "rtsp_io_error"
+            }
             Log.i(TAG, "RTSP connection ended for $peer (${error.javaClass.simpleName})")
         } finally {
-            nowPlaying.withOwner(source) {
-                nowPlaying.clear(source)
-                stopAudioStream()
-            }
+            mirrorReceiver?.closeStreamForOwner(source, endReason)
+            stopAudioForOwner(source)
         }
     }
 
@@ -226,9 +262,7 @@ internal class RaopRtspServer(
                 }
             }
             "ANNOUNCE" -> {
-                synchronized(nowPlaying) {
-                    configureFromSdp(String(request.body, StandardCharsets.UTF_8))
-                }
+                source.announcedAudioSdp = String(request.body, StandardCharsets.UTF_8)
                 output.write(RtspMessageParser.formatResponse(200, "OK", cseq))
             }
             "POST" -> {
@@ -292,10 +326,24 @@ internal class RaopRtspServer(
                     handleBinaryPlistSetup(request, output, source)
                 } else {
                     val transport = RtspMessageParser.parseTransport(request.header("transport"))
-                    synchronized(nowPlaying) {
-                        if (audioReceiver.start(RaopAudioRtpReceiver.DEFAULT_AUDIO_PORT)) {
-                            activateAudioSource(source, request)
+                    val accepted = synchronized(nowPlaying) {
+                        if (mirrorReceiver?.allowsAudio(source) == false) {
+                            rejectConcurrentAudio(output, cseq)
+                            false
+                        } else {
+                            source.announcedAudioSdp?.let(::configureFromSdp)
+                            if (audioReceiver.start(RaopAudioRtpReceiver.DEFAULT_AUDIO_PORT)) {
+                                activateAudioSource(source, request)
+                                true
+                            } else {
+                                output.write(RtspMessageParser.formatResponse(503, "Service Unavailable", cseq))
+                                false
+                            }
                         }
+                    }
+                    if (!accepted) {
+                        output.flush()
+                        return true
                     }
                     val responseTransport = buildString {
                         append("RTP/AVP/UDP;unicast;mode=record")
@@ -348,7 +396,7 @@ internal class RaopRtspServer(
                         nowPlaying.artwork(source, timestamp, it)
                     }
                     "image/none" -> nowPlaying.artwork(source, timestamp, null)
-                    "text/parameters", null -> updateVolume(request.body)
+                    "text/parameters", null -> nowPlaying.withOwner(source) { updateVolume(request.body) }
                 }
                 output.write(RtspMessageParser.formatResponse(200, "OK", cseq))
             }
@@ -360,9 +408,15 @@ internal class RaopRtspServer(
                 output.write(RtspMessageParser.formatResponse(200, "OK", cseq))
             }
             "TEARDOWN" -> {
+                val scope = airPlayTeardownScope(request.body)
                 output.write(RtspMessageParser.formatResponse(200, "OK", cseq))
                 output.flush()
-                return false
+                when (scope) {
+                    AirPlayTeardownScope.AUDIO -> stopAudioForOwner(source)
+                    AirPlayTeardownScope.MIRROR -> mirrorReceiver?.closeStreamForOwner(source, "rtsp_mirror_teardown")
+                    AirPlayTeardownScope.SESSION -> Unit
+                }
+                return scope != AirPlayTeardownScope.SESSION
             }
             else -> {
                 output.write(RtspMessageParser.formatResponse(200, "OK", cseq))
@@ -370,6 +424,13 @@ internal class RaopRtspServer(
         }
         output.flush()
         return true
+    }
+
+    private fun stopAudioForOwner(source: AirPlayConnectionCrypto) {
+        nowPlaying.withOwner(source) {
+            nowPlaying.clear(source)
+            stopAudioStream()
+        }
     }
 
     private fun stopAudioStream() {
@@ -463,8 +524,15 @@ internal class RaopRtspServer(
                 "timingPort" to RaopAudioRtpReceiver.DEFAULT_TIMING_PORT.toLong()
             )
         } else synchronized(nowPlaying) {
-            val responses = streams.mapNotNull { configureStream(it, request, source) }
-            mapOf("streams" to responses)
+            // Apply mirror ownership before offering a companion audio port, even if audio is listed first.
+            val videoResponses = streams.filter { it["type"] == 110L }
+                .mapNotNull { configureStream(it, request, source) }
+            val audioStreams = streams.filter { it["type"] == 96L }
+            if (audioStreams.isNotEmpty() && mirrorReceiver?.allowsAudio(source) == false) {
+                rejectConcurrentAudio(output, cseq)
+                return
+            }
+            mapOf("streams" to (videoResponses + audioStreams.mapNotNull { configureStream(it, request, source) }))
         }
 
         val encoded = BinaryPlistWriter.encode(responseMap)
@@ -477,6 +545,11 @@ internal class RaopRtspServer(
         )
     }
 
+    private fun rejectConcurrentAudio(output: OutputStream, cseq: String) {
+        Log.i(PLAYBACK_DIAGNOSTICS_TAG, "route=raop event=setup_rejected reason=mirror_owns_audio")
+        output.write(RtspMessageParser.formatResponse(455, "Method Not Valid in This State", cseq))
+    }
+
     private fun configureStream(
         stream: Map<*, *>,
         request: RtspRequest,
@@ -487,7 +560,7 @@ internal class RaopRtspServer(
             val ecdhSecret = source.pairing.sharedSecret
             val key16 = source.fairplayAesKey ?: ecdhSecret?.takeIf { it.size >= 16 }?.copyOfRange(0, 16)
             if (key16 != null && connId != 0L) {
-                mirrorReceiver?.configureStreamCipherCandidates(key16, ecdhSecret, connId)
+                mirrorReceiver?.configureStreamCipherCandidates(source, key16, ecdhSecret, connId)
                 if (nowPlaying.retireAudioForMirror(source)) stopAudioStream()
                 Log.i(TAG, "Configured mirror AES-CTR stream cipher candidates (connId=$connId hasEcdh=${ecdhSecret != null})")
             }
@@ -556,24 +629,6 @@ internal class RaopRtspServer(
         audioReceiver.configureSession(codec = codec, sampleRate = rate)
     }
 
-    private fun readUntilHeaderEnd(input: BufferedInputStream): ByteArray? {
-        val out = ByteArrayOutputStream()
-        var matched = 0
-        while (out.size() < MAX_HEADER_BYTES) {
-            val b = input.read()
-            if (b == -1) return null
-            out.write(b)
-            matched = when {
-                (matched == 0 || matched == 2) && b == '\r'.code -> matched + 1
-                (matched == 1 || matched == 3) && b == '\n'.code -> matched + 1
-                b == '\r'.code -> 1
-                else -> 0
-            }
-            if (matched == 4) return out.toByteArray()
-        }
-        return null
-    }
-
     private fun readExact(input: BufferedInputStream, length: Int): ByteArray {
         val buf = ByteArray(length)
         var offset = 0
@@ -602,3 +657,47 @@ internal fun airPlaySetupStreams(plist: Map<*, *>?): List<Map<*, *>> =
         .filterIsInstance<Map<*, *>>()
         .filter { it["type"] == 96L || it["type"] == 110L }
         .distinctBy { it["type"] }
+
+
+internal enum class AirPlayTeardownScope { AUDIO, MIRROR, SESSION }
+
+internal fun airPlayTeardownScope(body: ByteArray): AirPlayTeardownScope {
+    val plist = BinaryPlistParser.parse(body) as? Map<*, *> ?: return AirPlayTeardownScope.SESSION
+    val streams = plist["streams"] as? List<*> ?: return AirPlayTeardownScope.SESSION
+    val types = streams.map { (it as? Map<*, *>)?.get("type") }.toSet()
+    return when (types) {
+        setOf(96L) -> AirPlayTeardownScope.AUDIO
+        setOf(110L) -> AirPlayTeardownScope.MIRROR
+        else -> AirPlayTeardownScope.SESSION
+    }
+}
+
+internal fun readRtspControlHeader(
+    input: BufferedInputStream,
+    maxBytes: Int,
+    keepIdleControl: () -> Boolean
+): ByteArray? {
+    val out = ByteArrayOutputStream()
+    var matched = 0
+    while (out.size() < maxBytes) {
+        val b = try {
+            input.read()
+        } catch (error: SocketTimeoutException) {
+            if (out.size() == 0 && keepIdleControl()) continue
+            throw error
+        }
+        if (b == -1) {
+            if (out.size() != 0) throw EOFException("Incomplete RTSP header")
+            return null
+        }
+        out.write(b)
+        matched = when {
+            (matched == 0 || matched == 2) && b == '\r'.code -> matched + 1
+            (matched == 1 || matched == 3) && b == '\n'.code -> matched + 1
+            b == '\r'.code -> 1
+            else -> 0
+        }
+        if (matched == 4) return out.toByteArray()
+    }
+    throw IOException("RTSP header exceeds size limit")
+}

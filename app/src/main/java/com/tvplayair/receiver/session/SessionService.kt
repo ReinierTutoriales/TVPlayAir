@@ -8,6 +8,8 @@ import android.app.Service
 import android.content.Context
 import android.content.Intent
 import android.content.pm.ServiceInfo
+import android.net.ConnectivityManager
+import android.net.Network
 import android.os.Build
 import android.os.Handler
 import android.os.IBinder
@@ -17,6 +19,7 @@ import android.util.Log
 import com.tvplayair.receiver.MainActivity
 import com.tvplayair.receiver.control.DacpController
 import com.tvplayair.receiver.control.DacpRequestBuilder
+import com.tvplayair.receiver.diagnostics.PLAYBACK_DIAGNOSTICS_TAG
 import com.tvplayair.receiver.ipc.ITvPlayCallback
 import com.tvplayair.receiver.ipc.ITvPlaySession
 import com.tvplayair.receiver.network.AirPlayAdvertiseConfig
@@ -96,6 +99,7 @@ class SessionService : Service() {
             synchronized(callbackLock) {
                 val config = MirrorConfig(mimeType, width, height, generationId, codecConfig)
                 latestMirrorConfig = config
+                if (opensProjection) directPlayback = null
                 runCatching { callback?.let { config.sendTo(it, opensProjection) } }
             }
             ensureUiForeground()
@@ -159,6 +163,9 @@ class SessionService : Service() {
 
         override fun onAudioStreamStopped() {
             synchronized(callbackLock) {
+                activeAudioGeneration?.let {
+                    Log.i(PLAYBACK_DIAGNOSTICS_TAG, "route=raop generation=$it event=stopped")
+                }
                 activeAudioGeneration = null
                 runCatching { callback?.onAudioStreamStopped() }
             }
@@ -168,6 +175,7 @@ class SessionService : Service() {
             synchronized(callbackLock) {
                 if (activeAudioGeneration == generationId) return
                 activeAudioGeneration = generationId
+                Log.i(PLAYBACK_DIAGNOSTICS_TAG, "route=raop generation=$generationId event=active")
                 runCatching { callback?.onAudioStreamStarted(generationId) }
             }
             ensureUiForeground()
@@ -303,6 +311,17 @@ class SessionService : Service() {
         }
     }
 
+    private var connectivity: ConnectivityManager? = null
+    private val networkCallback = object : ConnectivityManager.NetworkCallback() {
+        override fun onAvailable(network: Network) {
+            Log.i(PLAYBACK_DIAGNOSTICS_TAG, "route=network event=default_available handle=${network.networkHandle}")
+        }
+
+        override fun onLost(network: Network) {
+            Log.i(PLAYBACK_DIAGNOSTICS_TAG, "route=network event=default_lost handle=${network.networkHandle}")
+        }
+    }
+
     override fun onCreate() {
         super.onCreate()
         identityStore = ReceiverIdentityStore(this)
@@ -323,6 +342,15 @@ class SessionService : Service() {
             }
         }
         protocolEngine = AirPlayDirectHttpServer(protocolListener)
+        getSystemService(ConnectivityManager::class.java)?.let { manager ->
+            try {
+                manager.registerDefaultNetworkCallback(networkCallback)
+                connectivity = manager
+            } catch (error: RuntimeException) {
+                Log.w(PLAYBACK_DIAGNOSTICS_TAG,
+                    "route=network event=observer_unavailable error=${error.javaClass.simpleName}")
+            }
+        }
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
@@ -447,6 +475,8 @@ class SessionService : Service() {
     override fun onBind(intent: Intent?): IBinder = binder
 
     override fun onDestroy() {
+        connectivity?.unregisterNetworkCallback(networkCallback)
+        connectivity = null
         stopAirPlaySession()
         dacpController.release()
         callback = null

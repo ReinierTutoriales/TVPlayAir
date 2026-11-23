@@ -6,20 +6,78 @@ import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
+import org.junit.Assert.assertThrows
 import org.junit.Test
+import java.io.BufferedInputStream
+import java.io.InputStream
+import java.net.SocketTimeoutException
 import java.nio.ByteBuffer
 import javax.crypto.Cipher
 import javax.crypto.spec.IvParameterSpec
 import javax.crypto.spec.SecretKeySpec
 
 class RtspAndRtpParserTest {
+    @Test
+    fun mirrorAdmitsCompanionAudioButBlocksIndependentAudioTakeover() {
+        val mirror = AirPlayConnectionCrypto { ByteArray(32) }
+        val separate = AirPlayConnectionCrypto { ByteArray(32) }
+
+        assertTrue(canUseRaopDuringMirroring(null, separate))
+        assertTrue(canUseRaopDuringMirroring(mirror, mirror))
+        assertFalse(canUseRaopDuringMirroring(mirror, separate))
+
+        mirror.mediaSessionId = "projection"
+        separate.mediaSessionId = "music"
+        assertFalse(canUseRaopDuringMirroring(mirror, separate))
+        separate.mediaSessionId = "projection"
+        assertTrue(canUseRaopDuringMirroring(mirror, separate))
+    }
+
+
+    @Test
+    fun distinguishesAudioOnlyMirrorOnlyAndFullTeardown() {
+        fun body(vararg types: Long) = BinaryPlistWriter.encode(
+            mapOf("streams" to types.map { mapOf("type" to it) })
+        )
+        assertEquals(AirPlayTeardownScope.AUDIO, airPlayTeardownScope(body(96L)))
+        assertEquals(AirPlayTeardownScope.MIRROR, airPlayTeardownScope(body(110L)))
+        assertEquals(AirPlayTeardownScope.SESSION, airPlayTeardownScope(body(96L, 110L)))
+        assertEquals(AirPlayTeardownScope.SESSION, airPlayTeardownScope(byteArrayOf()))
+    }
+
+    @Test
+    fun idleControlCanResumeButAPartialHeaderTimeoutStillTerminates() {
+        val header = "OPTIONS * RTSP/1.0\r\nCSeq: 2\r\n\r\n".toByteArray()
+        fun inputWithTimeout(at: Int): BufferedInputStream {
+            val input = object : InputStream() {
+                private var offset = 0
+                private var timedOut = false
+                override fun read(): Int {
+                    if (offset == at && !timedOut) {
+                        timedOut = true
+                        throw SocketTimeoutException()
+                    }
+                    return if (offset < header.size) header[offset++].toInt() else -1
+                }
+            }
+            return BufferedInputStream(input, 1)
+        }
+        assertArrayEquals(header, readRtspControlHeader(inputWithTimeout(0), 1024) { true })
+        assertThrows(SocketTimeoutException::class.java) {
+            readRtspControlHeader(inputWithTimeout(0), 1024) { false }
+        }
+        assertThrows(SocketTimeoutException::class.java) {
+            readRtspControlHeader(inputWithTimeout(1), 1024) { error("Partial header is not idle") }
+        }
+    }
+
 
     @Test
     fun mirroringRetiresPriorAudioButPreservesAudioNegotiatedOnTheSameConnection() {
         val updates = mutableListOf<RaopNowPlaying?>()
         val playback = RaopNowPlayingSession { updates += it }
         val previous = Any()
-        val mirror = Any()
+        val mirror = AirPlayConnectionCrypto { ByteArray(32) }
         playback.activate(previous)
         playback.track(previous, 90L, RaopTrack("Previous audio", null, null))
         assertTrue(playback.retireAudioForMirror(mirror))
@@ -251,15 +309,34 @@ class RtspAndRtpParserTest {
     }
 
     @Test
-    fun resamples44k1StereoTo48kWithExactFrameRatio() {
-        val srcFrames = 441
-        val src = ShortArray(srcFrames * 2) { 1000 }
-        val dst = ShortArray(1024 * 2)
+    fun resamples44k1StereoIdenticallyAcrossPacketBoundaries() {
+        val sourceFrames = 44_100
+        val source = ShortArray(sourceFrames * 2) { ((it * 17) % 20_000 - 10_000).toShort() }
+        val contiguous = ShortArray(48_000 * 2)
+        val frames = PcmResampler().resampleStereoI16(source, sourceFrames, 44_100, contiguous)
+        assertEquals(47_999, frames) // The last fractional sample waits for the next input frame.
 
-        val outFrames = PcmResampler.resampleStereoI16(src, srcFrames, 44100, dst, 48000)
-        assertEquals(480, outFrames)
-        assertEquals(1000.toShort(), dst[0])
-        assertEquals(1000.toShort(), dst[(outFrames - 1) * 2])
+        val streaming = PcmResampler()
+        val packetOutput = ShortArray(600 * 2)
+        val output = ShortArray(contiguous.size)
+        var inputOffset = 0
+        var outputOffset = 0
+        while (inputOffset < sourceFrames) {
+            val packetFrames = minOf(480, sourceFrames - inputOffset)
+            val packet = source.copyOfRange(inputOffset * 2, (inputOffset + packetFrames) * 2)
+            val produced = streaming.resampleStereoI16(packet, packetFrames, 44_100, packetOutput)
+            packetOutput.copyInto(output, outputOffset * 2, endIndex = produced * 2)
+            inputOffset += packetFrames
+            outputOffset += produced
+        }
+        assertEquals(frames, outputOffset)
+        assertArrayEquals(contiguous, output)
+
+        val nextFrame = shortArrayOf(111, -222)
+        streaming.reset()
+        assertEquals(1, streaming.resampleStereoI16(nextFrame, 1, 44_100, packetOutput))
+        assertEquals(111.toShort(), packetOutput[0])
+        assertEquals((-222).toShort(), packetOutput[1])
     }
 
     @Test

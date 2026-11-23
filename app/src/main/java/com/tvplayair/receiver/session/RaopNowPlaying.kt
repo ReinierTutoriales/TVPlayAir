@@ -108,13 +108,9 @@ internal class RaopNowPlayingSession(private val publish: (RaopNowPlaying?) -> U
     }
 
     @Synchronized
-    fun retireAudioForMirror(mirrorSource: Any): Boolean {
+    fun retireAudioForMirror(mirrorSource: AirPlayConnectionCrypto): Boolean {
         val active = owner ?: return false
-        if (active === mirrorSource) return false
-        val mirrorSessionId = (mirrorSource as? AirPlayConnectionCrypto)?.mediaSessionId
-        if (mirrorSessionId != null && (active as? AirPlayConnectionCrypto)?.mediaSessionId == mirrorSessionId) {
-            return false
-        }
+        if (canUseRaopDuringMirroring(mirrorSource, active)) return false
         clear()
         return true
     }
