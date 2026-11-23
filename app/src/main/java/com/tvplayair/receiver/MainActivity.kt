@@ -98,6 +98,7 @@ class MainActivity : ComponentActivity(), SurfaceLayerController {
             hide(WindowInsetsCompat.Type.systemBars())
         }
         onBackPressedDispatcher.addCallback(this, closeOverlayOnBack)
+        audioConsumer = OboeAudioConsumer(applicationContext)
         identityStore = ReceiverIdentityStore(this)
         val initialIdentity = identityStore.loadOrCreate()
         overlayState = overlayState.copy(
@@ -167,7 +168,6 @@ class MainActivity : ComponentActivity(), SurfaceLayerController {
 
         val retainedPlayback = DirectPlaybackService.claim()
         retainedPlayback?.let(directVideoModel::adopt)
-        audioConsumer = OboeAudioConsumer(this)
         mirrorDecoder = MirrorDecoder(
             surfaceProvider = { mirrorSurfaceView.holder.surface },
             onVideoSizeChanged = ::updateMirrorSurfaceAspectRatio
@@ -714,7 +714,7 @@ class MainActivity : ComponentActivity(), SurfaceLayerController {
 
     private fun updateScreenWake() {
         val state = overlayState
-        val keepScreenOn = !state.projectionHome || state.visible || state.showingAudio || !state.showStandby
+        val keepScreenOn = !state.showStandby && !state.showingDirectAudio
         val flag = WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON
         if (keepScreenOn) window.addFlags(flag) else window.clearFlags(flag)
     }
