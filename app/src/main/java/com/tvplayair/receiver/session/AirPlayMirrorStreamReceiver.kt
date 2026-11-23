@@ -252,8 +252,11 @@ class AirPlayMirrorStreamReceiver(
         }
     }
 
+    @Synchronized
     fun start(port: Int = DEFAULT_MIRROR_PORT): Boolean {
         if (running.get()) return true
+        // A retired accept thread still owns the reusable buffers and the SPSC producer.
+        if (acceptThread?.isAlive == true) return false
         val socket = runCatching {
             ServerSocket().apply {
                 reuseAddress = true
@@ -273,6 +276,7 @@ class AirPlayMirrorStreamReceiver(
         return true
     }
 
+    @Synchronized
     fun stop() {
         running.set(false)
         runCatching { serverSocket?.close() }
@@ -282,7 +286,7 @@ class AirPlayMirrorStreamReceiver(
             it.interrupt()
             runCatching { it.join(500L) }
         }
-        acceptThread = null
+        if (acceptThread?.isAlive != true) acceptThread = null
         synchronized(streamLock) { pendingSetup = null }
     }
 
@@ -375,6 +379,7 @@ class AirPlayMirrorStreamReceiver(
                     trace.reason = "payload_eof"
                     break
                 }
+                if (sock.isClosed) break
                 if (isConfig) {
                     val payload = AirPlayMirrorHeaderParser.unwrapCodecConfig(directPayload) ?: continue
                     val isHevc = AirPlayMirrorHeaderParser.isHevcCodecConfig(payload) ?: continue

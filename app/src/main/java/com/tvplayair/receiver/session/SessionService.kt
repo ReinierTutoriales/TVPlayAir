@@ -235,10 +235,6 @@ class SessionService : Service() {
             startAirPlaySession()
         }
 
-        override fun stopServer() {
-            stopAirPlaySession()
-        }
-
         override fun updatePlaybackTelemetry(
             source: ITvPlayCallback,
             playbackId: Long,
