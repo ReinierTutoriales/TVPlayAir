@@ -73,6 +73,7 @@ class SessionService : Service() {
     // Android can still reject background activity starts; the notification remains available.
     private var mirrorProjectionActive = false
     private var lastAutoOpenedDirectId: Long? = null
+    @Volatile private var autoOpenVisual = false
 
     private fun ITvPlayCallback.showDirectVideo(video: DirectPlaybackStart) {
         onDirectVideoUrl(
@@ -243,6 +244,12 @@ class SessionService : Service() {
             projectionVisible = visible
         }
 
+        override fun setAutoOpenVisual(enabled: Boolean) {
+            autoOpenVisual = enabled
+            getSharedPreferences("receiver_presentation", MODE_PRIVATE)
+                .edit().putBoolean("auto_open_visual", enabled).apply()
+        }
+
         override fun startServer() {
             startAirPlaySession()
         }
@@ -357,6 +364,8 @@ class SessionService : Service() {
 
     override fun onCreate() {
         super.onCreate()
+        autoOpenVisual = getSharedPreferences("receiver_presentation", MODE_PRIVATE)
+            .getBoolean("auto_open_visual", false)
         identityStore = ReceiverIdentityStore(this)
         val identity = identityStore.loadOrCreate()
         ed25519PrivateKey = identity.ed25519PrivateKey
@@ -447,8 +456,7 @@ class SessionService : Service() {
     private fun ensureUiForeground() {
         if (projectionVisible) return
         // Opt-in policy: no background activity launches unless explicitly enabled.
-        if (!getSharedPreferences("receiver_presentation", MODE_PRIVATE)
-                .getBoolean("auto_open_visual", false)) return
+        if (!autoOpenVisual) return
         runCatching {
             startActivity(projectionIntent())
         }.onFailure {
