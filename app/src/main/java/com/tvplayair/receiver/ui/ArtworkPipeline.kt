@@ -68,6 +68,8 @@ private fun normalizeSquareBitmap(source: Bitmap, targetPixels: Int): Bitmap {
     }
 }
 
+internal val DefaultArtworkTint = Color(0xFF212530)
+
 private fun extractDominantTint(bitmap: Bitmap): Color {
     val grid = 7
     var red = 0
@@ -91,7 +93,7 @@ private fun extractDominantTint(bitmap: Bitmap): Color {
             totalWeight += weight
         }
     }
-    return if (totalWeight == 0) Color(0xFF212530) else Color(
+    return if (totalWeight == 0) DefaultArtworkTint else Color(
         red = 18 + red * 57 / (255 * totalWeight),
         green = 19 + green * 57 / (255 * totalWeight),
         blue = 24 + blue * 57 / (255 * totalWeight)

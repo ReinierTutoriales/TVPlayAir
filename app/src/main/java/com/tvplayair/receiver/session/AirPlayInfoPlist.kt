@@ -3,8 +3,8 @@ package com.tvplayair.receiver.session
 import com.tvplayair.receiver.network.MdnsTxtRecords
 
 /**
- * Generates AirPlay GET /info and GET /server-info XML plist capability responses
- * advertising live display resolution (4K/1080p) and audio capabilities.
+ * Generates AirPlay GET /info (binary bplist00) and GET /server-info (XML plist)
+ * capability responses advertising display resolution and audio capabilities.
  */
 object AirPlayInfoPlist {
     // 0x5A7FFFF3,0x1C combined as 64-bit integer (clears VideoFairPlay bit 2 and VideoV2 bit 33

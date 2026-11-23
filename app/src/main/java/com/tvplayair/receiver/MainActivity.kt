@@ -594,33 +594,27 @@ class MainActivity : ComponentActivity(), SurfaceLayerController {
         )
         val saved = identityStore.saveServiceName(nextName)
         overlayState = overlayState.copy(receiverName = saved)
-        sessionConnection.configureAdvertising(
-            overlayState.resolutionPreset.width,
-            overlayState.resolutionPreset.height,
-            overlayState.hevcEnabled,
-            saved
-        )
+        pushAdvertisingConfig(overlayState)
     }
 
     private fun toggleResolutionPreset() {
         val next = overlayState.toggleResolution()
         overlayState = next
-        sessionConnection.configureAdvertising(
-            next.resolutionPreset.width,
-            next.resolutionPreset.height,
-            next.hevcEnabled,
-            next.receiverName
-        )
+        pushAdvertisingConfig(next)
     }
 
     private fun toggleHevcSetting() {
         val next = overlayState.toggleHevc()
         overlayState = next
+        pushAdvertisingConfig(next)
+    }
+
+    private fun pushAdvertisingConfig(state: TvOverlayState) {
         sessionConnection.configureAdvertising(
-            next.resolutionPreset.width,
-            next.resolutionPreset.height,
-            next.hevcEnabled,
-            next.receiverName
+            state.resolutionPreset.width,
+            state.resolutionPreset.height,
+            state.hevcEnabled,
+            state.receiverName
         )
     }
 

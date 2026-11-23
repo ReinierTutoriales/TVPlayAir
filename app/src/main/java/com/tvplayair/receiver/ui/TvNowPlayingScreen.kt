@@ -74,7 +74,7 @@ internal fun TvNowPlayingScreen(
                 cover = decoded
             }
         }
-        val tint = cover?.tint ?: Color(0xFF212530)
+        val tint = cover?.tint ?: DefaultArtworkTint
         val compact = maxHeight < 360.dp || maxWidth < 640.dp
         val titleStyle = if (compact) MaterialTheme.typography.headlineMedium
             else MaterialTheme.typography.displaySmall

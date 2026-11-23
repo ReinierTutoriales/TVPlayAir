@@ -48,24 +48,12 @@ public:
         generationId_.store(generationId, std::memory_order_relaxed);
     }
 
-    uint32_t generationId() const {
-        return generationId_.load(std::memory_order_relaxed);
-    }
-
     void setMuted(bool muted) {
         muted_.store(muted, std::memory_order_relaxed);
     }
 
-    bool isMuted() const {
-        return muted_.load(std::memory_order_relaxed);
-    }
-
     void setDucked(bool ducked) {
         ducked_.store(ducked, std::memory_order_relaxed);
-    }
-
-    bool isDucked() const {
-        return ducked_.load(std::memory_order_relaxed);
     }
 
     uint64_t underrunCount() const {

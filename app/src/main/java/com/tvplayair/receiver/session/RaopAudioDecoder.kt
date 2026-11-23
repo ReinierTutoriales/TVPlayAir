@@ -77,8 +77,9 @@ internal class PcmResampler {
 }
 
 /**
- * Decodes incoming RAOP audio payloads (AAC-LC / AAC-ELD via MediaCodec or L16 PCM)
- * inside :session and writes normalized 16-bit / 48 kHz stereo PCM into gProducerAudio.
+ * Decodes incoming RAOP audio payloads (ALAC via native Apple decoder, AAC-LC / AAC-ELD via
+ * MediaCodec, or L16 PCM) inside :session and writes normalized 16-bit / 48 kHz stereo PCM
+ * into gProducerAudio.
  */
 class RaopAudioDecoder {
     companion object {

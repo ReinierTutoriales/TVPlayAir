@@ -104,7 +104,7 @@ object AirPlayMirrorHeaderParser {
 /**
  * Receives AirPlay Mirroring TCP video stream packets (default port 7100) inside :session
  * and feeds length-prefixed H.265/H.264 NAL units into the native SPSC video SharedRingBuffer
- * using a single reusable DirectByteBuffer (zero per-frame heap allocations).
+ * using a reusable DirectByteBuffer.
  */
 class AirPlayMirrorStreamReceiver(
     private val onCodecConfigReady: (

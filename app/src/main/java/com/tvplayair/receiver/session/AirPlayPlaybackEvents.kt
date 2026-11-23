@@ -224,14 +224,14 @@ internal class AirPlayPlaybackEvents(
     }
 
     @Synchronized
-    fun sendFcupRequest(url: String, requestId: Int, sessionIdOverride: Long? = null): Boolean {
+    fun sendFcupRequest(url: String, requestId: Int): Boolean {
         val activeChannel = activeReverse() ?: return false
         val escapedUrl = url
             .replace("&", "&amp;")
             .replace("<", "&lt;")
             .replace(">", "&gt;")
             .replace("\"", "&quot;")
-        val sid = sessionIdOverride ?: playbackId.coerceAtLeast(1L)
+        val sid = playbackId.coerceAtLeast(1L)
         val sessionUuid = activeChannel.key.appleSessionId ?: activeSession?.appleSessionId ?: "11111111-2222-3333-4444-555555555555"
         val xml = """
             <?xml version="1.0" encoding="UTF-8"?>

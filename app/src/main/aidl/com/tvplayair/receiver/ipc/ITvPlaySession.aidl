@@ -1,6 +1,5 @@
 package com.tvplayair.receiver.ipc;
 
-import android.os.ParcelFileDescriptor;
 import com.tvplayair.receiver.ipc.ITvPlayCallback;
 
 interface ITvPlaySession {

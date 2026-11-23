@@ -91,8 +91,6 @@ internal class RaopRtspServer(
     private var currentVolumeDb: Float = 0.0f
     private var acceptThread: Thread? = null
 
-    fun currentGenerationId(): Int = generationId.get()
-
     fun start(port: Int = DEFAULT_RAOP_PORT): Boolean {
         if (running.get()) return true
         val socket = runCatching {

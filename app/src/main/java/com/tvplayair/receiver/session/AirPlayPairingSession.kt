@@ -39,12 +39,6 @@ class AirPlayPairingSession(
         Ed25519.generatePublicKey(edPrivateKey, 0, edPublicKey, 0)
     }
 
-    fun setEdPrivateKey(privateKey32: ByteArray) {
-        if (privateKey32.size != Ed25519.SECRET_KEY_SIZE) return
-        System.arraycopy(privateKey32, 0, edPrivateKey, 0, Ed25519.SECRET_KEY_SIZE)
-        Ed25519.generatePublicKey(edPrivateKey, 0, edPublicKey, 0)
-    }
-
     fun serverEdPublicKey(): ByteArray = edPublicKey.copyOf()
 
     /**

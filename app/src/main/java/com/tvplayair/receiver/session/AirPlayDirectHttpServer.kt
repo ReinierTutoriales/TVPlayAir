@@ -508,6 +508,17 @@ class AirPlayDirectHttpServer(
         }
     }
 
+    private fun rewriteM3u8EntryUrl(baseUrl: String, rawUri: String, playbackId: Long): String {
+        val resolved = resolveRelativeFcupUri(baseUrl, rawUri)
+        return if (resolved.startsWith("http://", ignoreCase = true) ||
+            resolved.startsWith("https://", ignoreCase = true)
+        ) {
+            resolved
+        } else {
+            buildLocalFcupProxyUrl(resolved, playbackId)
+        }
+    }
+
     private fun rewriteM3u8ForFcupProxy(m3u8Text: String, baseUrl: String, playbackId: Long): String {
         val expandedText = expandYtCondensedM3u8(m3u8Text)
         val uriAttrRegex = Regex("""URI="([^"]+)"""")
@@ -520,26 +531,11 @@ class AirPlayDirectHttpServer(
                 }
                 if (line.startsWith("#")) {
                     val rewrittenTag = uriAttrRegex.replace(rawLine) { match ->
-                        val rawUri = match.groupValues[1]
-                        val resolved = resolveRelativeFcupUri(baseUrl, rawUri)
-                        if (resolved.startsWith("http://", ignoreCase = true) ||
-                            resolved.startsWith("https://", ignoreCase = true)
-                        ) {
-                            """URI="$resolved""""
-                        } else {
-                            """URI="${buildLocalFcupProxyUrl(resolved, playbackId)}""""
-                        }
+                        """URI="${rewriteM3u8EntryUrl(baseUrl, match.groupValues[1], playbackId)}""""
                     }
                     append(rewrittenTag).append("\n")
                 } else {
-                    val resolved = resolveRelativeFcupUri(baseUrl, line)
-                    if (resolved.startsWith("http://", ignoreCase = true) ||
-                        resolved.startsWith("https://", ignoreCase = true)
-                    ) {
-                        append(resolved).append("\n")
-                    } else {
-                        append(buildLocalFcupProxyUrl(resolved, playbackId)).append("\n")
-                    }
+                    append(rewriteM3u8EntryUrl(baseUrl, line, playbackId)).append("\n")
                 }
             }
         }
@@ -553,8 +549,8 @@ class AirPlayDirectHttpServer(
         output: OutputStream,
         sessionKey: AirPlayPlaybackEvents.SessionKey,
         crypto: AirPlayConnectionCrypto,
-        isLoopback: Boolean = false,
-        peer: String = "unknown"
+        isLoopback: Boolean,
+        peer: String
     ) {
         when {
             method == "GET" && path.startsWith("/__fcup/") -> {

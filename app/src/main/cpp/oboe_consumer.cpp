@@ -212,7 +212,6 @@ oboe::DataCallbackResult OboeConsumer::onAudioReady(
 }
 
 void OboeConsumer::onErrorBeforeClose(oboe::AudioStream* /* oboeStream */, oboe::Result error) {
-    errorCount_.fetch_add(1, std::memory_order_relaxed);
     running_.store(false, std::memory_order_release);
     __android_log_print(
         ANDROID_LOG_WARN,
