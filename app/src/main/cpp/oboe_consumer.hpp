@@ -48,7 +48,7 @@ private:
     oboe::Result openWithFallbackLocked(std::shared_ptr<oboe::AudioStream>& outStream);
 
     SharedRingBuffer& ring_;
-    AudioPcmPipeline pipeline_;
+    AudioPcmPipeline pipeline_{50 * kAudioFramesPerMs};
 
     mutable std::mutex streamMutex_;
     std::shared_ptr<oboe::AudioStream> stream_;

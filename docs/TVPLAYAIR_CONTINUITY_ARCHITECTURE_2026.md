@@ -221,3 +221,14 @@ El log 45251354159 muestra paquetes de la generacion 5 despues de
 recovery_timeout y VIDEO_WRITE_RING_FULL. Se debe repetir ese escenario
 en el televisor y correlacionar recovery_timeout, retry_on_keyframe y
 first_frame de una sola generacion.
+
+### Búfer inicial de audio RAOP
+
+La salida RAOP acumula 50 ms de PCM de la generación vigente al iniciar
+y después de quedarse sin muestras. El lector comprueba los paquetes
+publicados sin consumirlos ni bloquear el callback. La espera deliberada
+no suma al contador de falta de muestras. Oboe conserva su configuración
+de salida. Esta reserva trata variaciones cortas de llegada. La deriva
+prolongada requiere medir los relojes y el nivel del búfer durante la
+prueba física.
+[Referencia sobre búfer y sincronización de Shairport Sync](https://github.com/mikebrady/shairport-sync/blob/master/TROUBLESHOOTING.md)

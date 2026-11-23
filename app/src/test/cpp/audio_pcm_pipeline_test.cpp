@@ -80,6 +80,45 @@ static void testUnderrunOutputsSilence() {
     assert(pipeline.underrunFrames() == 192);
 }
 
+static void testPrebufferAbsorbsFragmentedArrivalAndRebuffersAfterUnderrun() {
+    SharedRingBuffer ring;
+    initAudioRing(ring);
+    AudioPcmPipeline pipeline(384);
+    pipeline.setGenerationId(4);
+    std::array<int16_t, 192 * kAudioChannels> packet{};
+    std::array<int16_t, 192 * kAudioChannels> out{};
+    packet.fill(1234);
+    const auto publish = [&](uint32_t generation) {
+        assert(ring.writePacket(packet.data(), sizeof(packet), generation) == RingResult::Ok);
+    };
+    const auto render = [&] {
+        pipeline.render(ring, out.data(), 192);
+    };
+
+    publish(3);
+    publish(4);
+    render();
+    assert(out.front() == 0 && out.back() == 0);
+    assert(pipeline.underrunCount() == 0);
+
+    publish(4);
+    render();
+    assert(out.front() == 1234 && out.back() == 1234);
+    render();
+    assert(out.front() == 1234);
+    render();
+    assert(out.front() == 0);
+    assert(pipeline.underrunFrames() == 192);
+
+    publish(4);
+    render();
+    assert(out.front() == 0);
+    assert(pipeline.underrunCount() == 1);
+    publish(4);
+    render();
+    assert(out.front() == 1234);
+}
+
 static void testStaleGenerationSkipped() {
     SharedRingBuffer ring;
     initAudioRing(ring);
@@ -216,6 +255,7 @@ int main() {
     static_assert(kAudioBytesPerFrame == 4, "Expected 16-bit stereo PCM");
     testPacketBoundariesAndStreaming();
     testUnderrunOutputsSilence();
+    testPrebufferAbsorbsFragmentedArrivalAndRebuffersAfterUnderrun();
     testStaleGenerationSkipped();
     testGenerationChangeDiscardsPartiallyRenderedPacket();
     testOffsetClampingAndPositiveDelay();

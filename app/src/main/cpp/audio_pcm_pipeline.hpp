@@ -24,6 +24,9 @@ constexpr uint32_t kMaxDrainAttemptsPerCallback = 64;
 // reset() must only be called while the audio stream is stopped.
 class AudioPcmPipeline final {
 public:
+    explicit AudioPcmPipeline(uint32_t prebufferFrames = 0)
+        : prebufferFrames_(prebufferFrames) {}
+
     struct RenderAnchor {
         int64_t senderTimeUs = 0;
         int32_t outputFrame = 0;
@@ -44,6 +47,7 @@ public:
         packetFrameOffset_ = 0;
         packetFrameCount_ = 0;
         appliedOffsetFrames_ = 0;
+        prebuffering_ = true;
     }
 
     void setTargetOffsetMs(int32_t offsetMs) {
@@ -87,6 +91,18 @@ public:
         if (packetGenerationId_ != expectedGen) {
             packetFrameOffset_ = 0;
             packetFrameCount_ = 0;
+        }
+        if (renderGeneration_ != expectedGen) {
+            renderGeneration_ = expectedGen;
+            prebuffering_ = true;
+        }
+        if (prebuffering_ && prebufferFrames_ != 0) {
+            ring.discardOlderGenerations(expectedGen);
+            if (!ring.hasPendingFrames(expectedGen, prebufferFrames_, kAudioBytesPerFrame)) {
+                std::memset(out, 0, static_cast<size_t>(numFrames) * kAudioBytesPerFrame);
+                return {};
+            }
+            prebuffering_ = false;
         }
         const bool duck = ducked_.load(std::memory_order_relaxed);
         const int32_t targetFrames =
@@ -152,6 +168,7 @@ public:
         }
 
         if (underrunFrames != 0) {
+            prebuffering_ = true;
             underrunFrames_.fetch_add(underrunFrames, std::memory_order_relaxed);
             underrunCount_.fetch_add(1, std::memory_order_relaxed);
             return {};
@@ -183,6 +200,9 @@ private:
         return false;
     }
 
+    const uint32_t prebufferFrames_;
+    uint32_t renderGeneration_ = 0;
+    bool prebuffering_ = true;
     std::array<int16_t, kMaxAudioPacketBytes / sizeof(int16_t)> packetBuf_{};
     uint32_t packetFrameOffset_ = 0;
     uint32_t packetFrameCount_ = 0;
