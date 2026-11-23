@@ -96,8 +96,6 @@ class AudioContinuityService : Service() {
         if (!claimed) {
             consumer?.stop()
             connection?.close()
-        }
-        if (!claimed) {
             consumer = null
             connection = null
             audioGeneration = null
