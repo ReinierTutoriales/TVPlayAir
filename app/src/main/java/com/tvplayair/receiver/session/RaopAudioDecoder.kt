@@ -1,5 +1,6 @@
 package com.tvplayair.receiver.session
 
+import android.media.AudioFormat
 import android.media.MediaCodec
 import android.media.MediaCodecInfo
 import android.media.MediaFormat
@@ -165,6 +166,9 @@ class RaopAudioDecoder {
 
     private var codecType: RaopAudioCodec = RaopAudioCodec.PCM_L16_48K
     private var inputSampleRate: Int = PcmResampler.TARGET_SAMPLE_RATE
+    private var aacOutputRate = PcmResampler.TARGET_SAMPLE_RATE
+    private var aacOutputChannels = PcmResampler.CHANNELS
+    private var aacOutputEncoding = AudioFormat.ENCODING_PCM_16BIT
     private var mediaCodec: MediaCodec? = null
     private var configured = false
     private var producedFrames = 0L
@@ -194,6 +198,9 @@ class RaopAudioDecoder {
         release()
         codecType = codec
         inputSampleRate = sampleRate.coerceAtLeast(PcmResampler.MIN_SOURCE_SAMPLE_RATE)
+        aacOutputRate = inputSampleRate
+        aacOutputChannels = PcmResampler.CHANNELS
+        aacOutputEncoding = AudioFormat.ENCODING_PCM_16BIT
         aacFrameDurationUs = (samplesPerFrame.toLong() * 1_000_000L / inputSampleRate).coerceAtLeast(1L)
         producedFrames = 0L
         queuedFrames = 0L
@@ -330,22 +337,21 @@ class RaopAudioDecoder {
                 while (true) {
                     val outIdx = runCatching { decoder.dequeueOutputBuffer(info, 0L) }
                         .getOrDefault(MediaCodec.INFO_TRY_AGAIN_LATER)
+                    if (outIdx == MediaCodec.INFO_OUTPUT_FORMAT_CHANGED) {
+                        updateAacOutputFormat(decoder.outputFormat)
+                        continue
+                    }
                     if (outIdx < 0) break
-                    val outBuf = decoder.getOutputBuffer(outIdx)
                     try {
-                        if (outBuf != null && info.size >= 4) {
-                            val validRange = info.offset >= 0 &&
-                                info.offset <= outBuf.capacity() &&
-                                info.size <= outBuf.capacity() - info.offset
-                            if (validRange) {
-                                val frameCount = (info.size / 4).coerceAtMost(MAX_PCM_FRAMES)
-                                outBuf.clear()
-                                outBuf.position(info.offset)
-                                outBuf.limit(info.offset + frameCount * 4)
-                                outBuf.order(ByteOrder.LITTLE_ENDIAN).asShortBuffer()
-                                    .get(srcSamples, 0, frameCount * 2)
-                                val outputTimeUs = aacTimestamps.remove(info.presentationTimeUs)
-                                publishResampled(frameCount, generationId, outputTimeUs ?: 0L)
+                        val outputTimeUs = aacTimestamps.remove(info.presentationTimeUs) ?: 0L
+                        val outBuf = decoder.getOutputBuffer(outIdx)
+                        if (outBuf != null && info.size > 0) {
+                            val frames = if (aacOutputEncoding == AudioFormat.ENCODING_PCM_16BIT &&
+                                aacOutputRate >= PcmResampler.MIN_SOURCE_SAMPLE_RATE
+                            ) copyPcm16ToStereo(outBuf, info.offset, info.size, aacOutputChannels, srcSamples)
+                            else 0
+                            if (frames > 0) {
+                                publishResampled(frames, generationId, outputTimeUs, aacOutputRate)
                             } else {
                                 decodeFailures++
                             }
@@ -358,7 +364,25 @@ class RaopAudioDecoder {
         }
     }
 
-    private fun publishResampled(srcFrames: Int, generationId: Int, senderTimeUs: Long) {
+    private fun updateAacOutputFormat(format: MediaFormat) {
+        val rate = format.getInteger(MediaFormat.KEY_SAMPLE_RATE, inputSampleRate)
+        val channels = format.getInteger(MediaFormat.KEY_CHANNEL_COUNT, PcmResampler.CHANNELS)
+        val encoding = format.getInteger(MediaFormat.KEY_PCM_ENCODING, AudioFormat.ENCODING_PCM_16BIT)
+        if (rate != aacOutputRate || channels != aacOutputChannels || encoding != aacOutputEncoding) {
+            resampler.reset()
+        }
+        aacOutputRate = rate
+        aacOutputChannels = channels
+        aacOutputEncoding = encoding
+        val supported = rate >= PcmResampler.MIN_SOURCE_SAMPLE_RATE && channels in 1..2 &&
+            encoding == AudioFormat.ENCODING_PCM_16BIT
+        Log.println(if (supported) Log.INFO else Log.WARN, TAG,
+            "AAC PCM output rate=$rate channels=$channels encoding=$encoding supported=$supported")
+    }
+
+    private fun publishResampled(
+        srcFrames: Int, generationId: Int, senderTimeUs: Long, srcRate: Int = inputSampleRate
+    ) {
         if (resamplerGeneration != generationId) {
             resampler.reset()
             resamplerGeneration = generationId
@@ -367,7 +391,7 @@ class RaopAudioDecoder {
         val outFrames = resampler.resampleStereoI16(
             src = srcSamples,
             srcFrames = srcFrames,
-            srcRate = inputSampleRate,
+            srcRate = srcRate,
             dst = resampledSamples,
             driftPpm = driftPpm
         )
@@ -395,4 +419,31 @@ class RaopAudioDecoder {
         }
         mediaCodec = null
     }
+}
+
+
+// MediaCodec PCM is interleaved and uses native byte order.
+internal fun copyPcm16ToStereo(
+    source: ByteBuffer, offset: Int, size: Int, channels: Int, destination: ShortArray
+): Int {
+    if (channels !in 1..2 || offset < 0 || size <= 0 ||
+        offset > source.capacity() || size > source.capacity() - offset
+    ) return 0
+    val bytesPerFrame = channels * Short.SIZE_BYTES
+    if (size % bytesPerFrame != 0) return 0
+    val frames = minOf(size / bytesPerFrame, destination.size / 2)
+    val pcm = source.duplicate().order(ByteOrder.nativeOrder())
+    pcm.clear()
+    pcm.position(offset)
+    val samples = pcm.asShortBuffer()
+    if (channels == 2) {
+        samples.get(destination, 0, frames * 2)
+    } else {
+        for (frame in 0 until frames) {
+            val sample = samples.get()
+            destination[2 * frame] = sample
+            destination[2 * frame + 1] = sample
+        }
+    }
+    return frames
 }
