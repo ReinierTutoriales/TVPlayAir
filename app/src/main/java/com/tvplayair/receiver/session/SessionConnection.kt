@@ -45,7 +45,8 @@ class SessionConnection(
     private var activeCallback: ITvPlayCallback? = null
     private var activeDeathRecipient: IBinder.DeathRecipient? = null
     private var activeConnection: ServiceConnection? = null
-    private var bound = false
+    private var startupTimeout: Runnable? = null
+    private var buffersMapped = false
     private var closed = false
     private var bindingEpoch = 0L
     private var retryDelayMs = 250L
@@ -63,7 +64,7 @@ class SessionConnection(
     }
 
     private fun isCurrent(epoch: Long): Boolean =
-        !closed && bound && bindingEpoch == epoch
+        !closed && activeConnection != null && bindingEpoch == epoch
 
     private fun deliver(epoch: Long, action: () -> Unit) {
         handler.post { if (isCurrent(epoch)) action() }
@@ -78,29 +79,32 @@ class SessionConnection(
             generationId: Int,
             activeDirectPlaybackId: Long
         ) {
-            // The service closes its ParcelFileDescriptor copies after the Binder call.
-            // Take ownership before posting; close both if the connection becomes stale.
-            val videoRawFd = videoFd.detachFd()
-            val audioRawFd = audioFd.detachFd()
             handler.post {
-                if (!isCurrent(epoch)) {
-                    ParcelFileDescriptor.adoptFd(videoRawFd).close()
-                    ParcelFileDescriptor.adoptFd(audioRawFd).close()
-                    return@post
-                }
-                // Mapping and unmapping are serialized on the main thread.
-                val videoMapped = NativeSharedMemory.nativeMapConsumerBuffer(
-                    0, videoRawFd, videoSize
-                )
-                val audioMapped = NativeSharedMemory.nativeMapConsumerBuffer(
-                    1, audioRawFd, audioSize
-                )
-                if (!videoMapped || !audioMapped) {
-                    handleBinderDeath(epoch)
-                } else {
-                    listener.onSharedMemoryReady(generationId, activeDirectPlaybackId)
+                videoFd.use { video ->
+                    audioFd.use { audio ->
+                        if (!isCurrent(epoch)) return@post
+                        val videoMapped = NativeSharedMemory.nativeMapConsumerBuffer(
+                            0, video.detachFd(), videoSize
+                        )
+                        val audioMapped = NativeSharedMemory.nativeMapConsumerBuffer(
+                            1, audio.detachFd(), audioSize
+                        )
+                        if (!videoMapped || !audioMapped) {
+                            NativeSharedMemory.nativeDetachConsumerBuffers()
+                            handleBinderDeath(epoch)
+                        } else {
+                            buffersMapped = true
+                            cancelStartupTimeout()
+                            retryDelayMs = 250L
+                            listener.onSharedMemoryReady(generationId, activeDirectPlaybackId)
+                        }
+                    }
                 }
             }
+        }
+
+        override fun onSessionSnapshot(generationId: Int, activeDirectPlaybackId: Long) = deliver(epoch) {
+            if (buffersMapped) listener.onSharedMemoryReady(generationId, activeDirectPlaybackId)
         }
 
         override fun onSessionUnavailable() = deliver(epoch) { handleBinderDeath(epoch) }
@@ -183,7 +187,6 @@ class SessionConnection(
                 service?.let { advertisingSettings?.sendTo(it) }
                 service?.startServer()
                 Log.i(PLAYBACK_DIAGNOSTICS_TAG, "route=ipc epoch=$epoch event=bound")
-                retryDelayMs = 250L
             } catch (_: Exception) {
                 handleBinderDeath(epoch)
             }
@@ -203,24 +206,32 @@ class SessionConnection(
     }
 
     fun connect() {
-        if (closed || bound) return
+        if (closed || activeConnection != null) return
         handler.removeCallbacks(reconnect)
         runCatching { SessionService.startInBackground(appContext) }
             .onFailure { Log.w(PLAYBACK_DIAGNOSTICS_TAG, "Unable to start foreground receiver; attempting bind", it) }
         val epoch = ++bindingEpoch
         val connection = connectionFor(epoch)
         activeConnection = connection
-        bound = runCatching {
+        val accepted = runCatching {
             appContext.bindService(
                 Intent(appContext, SessionService::class.java),
                 connection,
                 Context.BIND_AUTO_CREATE
             )
+        }.onFailure {
+            Log.w(PLAYBACK_DIAGNOSTICS_TAG, "Unable to bind to receiver", it)
         }.getOrDefault(false)
-        if (!bound) {
-            activeConnection = null
-            scheduleReconnect()
+        if (!accepted) {
+            handleBinderDeath(epoch)
+            return
         }
+        val timeout = Runnable {
+            Log.w(PLAYBACK_DIAGNOSTICS_TAG, "route=ipc epoch=$epoch event=startup_timeout")
+            handleBinderDeath(epoch)
+        }
+        startupTimeout = timeout
+        handler.postDelayed(timeout, 5_000L)
     }
 
     fun setAutoOpenVisual(enabled: Boolean) {
@@ -280,7 +291,15 @@ class SessionConnection(
         scheduleReconnect()
     }
 
+    private fun cancelStartupTimeout() {
+        startupTimeout?.let(handler::removeCallbacks)
+        startupTimeout = null
+    }
+
     private fun detach() {
+        cancelStartupTimeout()
+        val hadBuffers = buffersMapped
+        buffersMapped = false
         val oldService = service
         val oldCallback = activeCallback
         service = null
@@ -295,12 +314,14 @@ class SessionConnection(
         }
         val connection = activeConnection
         activeConnection = null
-        if (bound && connection != null) {
+        if (connection != null) {
             runCatching { appContext.unbindService(connection) }
         }
-        bound = false
-        listener.onSharedMemoryDetached()
-        NativeSharedMemory.nativeDetachConsumerBuffers()
+        try {
+            listener.onSharedMemoryDetached()
+        } finally {
+            if (hadBuffers) NativeSharedMemory.nativeDetachConsumerBuffers()
+        }
     }
 
     private fun scheduleReconnect() {

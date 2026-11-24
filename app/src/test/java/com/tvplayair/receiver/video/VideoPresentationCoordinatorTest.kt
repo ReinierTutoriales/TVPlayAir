@@ -244,7 +244,8 @@ class VideoPresentationCoordinatorTest {
 
     private class FakeMirrorEngine(private val events: MutableList<String>) : MirrorVideoEngine {
         var failStart = false
-        var failStop = false
+        var deferStop = false
+        var releaseCallback: (() -> Unit)? = null
         var discardedPendingFrames = false
 
         override fun start(discardPendingFrames: Boolean): Boolean {
@@ -253,9 +254,15 @@ class VideoPresentationCoordinatorTest {
             return !failStart
         }
 
-        override fun stopAndRelease(): Boolean {
+        override fun stopAndRelease() {
             events += "mirror.stopAndRelease"
-            return !failStop
+        }
+
+        override fun stopBeforeDirect(onReleased: () -> Unit): Boolean {
+            stopAndRelease()
+            if (!deferStop) return true
+            releaseCallback = onReleased
+            return false
         }
     }
 
@@ -418,20 +425,42 @@ class VideoPresentationCoordinatorTest {
     @Test
     fun directPreparationWaitsForMirrorDecoderToRelease() {
         val events = mutableListOf<String>()
-        val mirror = FakeMirrorEngine(events).apply { failStop = true }
+        val mirror = FakeMirrorEngine(events).apply { deferStop = true }
         val direct = FakeDirectEngine(events)
         val coordinator = VideoPresentationCoordinator(
             mirror, direct, FakeAudioController(events), FakeSurfaceController(events)
         )
         assertTrue(coordinator.startMirror())
-        val video = DirectPlaybackStart("https://example.com/video.m3u8", 0.0, playbackId = 1)
-        assertFalse(coordinator.switchToDirectVideo(video))
-        assertEquals(PresentationState.RECOVERING, coordinator.state)
+        val first = DirectPlaybackStart("https://example.com/video.m3u8", 0.0, playbackId = 1)
+        val replacement = first.copy(playbackId = 2)
+        assertTrue(coordinator.switchToDirectVideo(first))
+        assertTrue(coordinator.switchToDirectVideo(replacement))
+        coordinator.pauseDirect()
+        coordinator.seekDirect(0.25)
+        assertFalse(coordinator.onDirectMediaReady(2))
         assertNull(direct.preparedVideo)
 
-        mirror.failStop = false
+        val released = checkNotNull(mirror.releaseCallback)
+        released()
+        assertEquals(replacement.copy(playWhenReady = false), direct.preparedVideo)
+        assertEquals("direct.seekTo(0.25)", events.last())
+    }
+
+    @Test
+    fun directTimeoutIgnoresLateMirrorRelease() {
+        val events = mutableListOf<String>()
+        val mirror = FakeMirrorEngine(events).apply { deferStop = true }
+        val direct = FakeDirectEngine(events)
+        val coordinator = VideoPresentationCoordinator(
+            mirror, direct, FakeAudioController(events), FakeSurfaceController(events)
+        )
+        val video = DirectPlaybackStart("https://example.com/video.m3u8", 0.0, playbackId = 1)
         assertTrue(coordinator.switchToDirectVideo(video))
-        assertEquals(video, direct.preparedVideo)
+        assertTrue(coordinator.onDirectStartupTimeout(1))
+        checkNotNull(mirror.releaseCallback).invoke()
+
+        assertEquals(PresentationState.IDLE, coordinator.state)
+        assertNull(direct.preparedVideo)
     }
 
     @Test
@@ -472,7 +501,7 @@ class VideoPresentationCoordinatorTest {
         assertEquals(listOf("surface.showDirect", "direct.prepareAndPlay(https://example.com/next.mp4,0.0)"), events)
         events.clear()
 
-        coordinator.stopDirectVideo()
+        coordinator.finishDirectPlayback(2)
         assertEquals(PresentationState.MIRROR_PREPARING, coordinator.state)
         assertEquals(
             listOf(
@@ -497,8 +526,8 @@ class VideoPresentationCoordinatorTest {
 
         coordinator.switchToDirectVideo(DirectPlaybackStart("https://example.com/video.mp4", 0.0, playbackId = 1))
         events.clear()
-        coordinator.stopDirectVideo()
-        coordinator.stopDirectVideo()
+        coordinator.finishDirectPlayback(1)
+        coordinator.finishDirectPlayback(1)
 
         assertEquals(PresentationState.IDLE, coordinator.state)
         assertEquals(
@@ -592,7 +621,7 @@ class VideoPresentationCoordinatorTest {
         coordinator.onMirrorDisconnected()
         assertEquals(PresentationState.SWITCHING_TO_DIRECT, coordinator.state)
         assertTrue(events.isEmpty())
-        coordinator.stopDirectVideo()
+        coordinator.finishDirectPlayback(1)
         assertEquals(PresentationState.IDLE, coordinator.state)
         assertFalse(events.contains("mirror.start"))
     }
@@ -629,7 +658,7 @@ class VideoPresentationCoordinatorTest {
         lateinit var coordinator: VideoPresentationCoordinator
         val direct = object : DirectVideoEngine {
             override fun prepare(video: DirectPlaybackStart): Boolean {
-                coordinator.stopDirectVideo()
+                coordinator.finishDirectPlayback(video.playbackId)
                 return true
             }
             override fun play() = Unit

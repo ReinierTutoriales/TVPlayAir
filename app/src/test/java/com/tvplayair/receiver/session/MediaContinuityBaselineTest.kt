@@ -153,9 +153,8 @@ class MediaContinuityBaselineTest {
             assertTrue(mirrorGate.shouldSubmitFrame(0))
         }
 
-        override fun stopAndRelease(): Boolean {
+        override fun stopAndRelease() {
             mirrorRunning = false
-            return true
         }
         override fun prepare(video: DirectPlaybackStart): Boolean {
             assertFalse(mirrorRunning)

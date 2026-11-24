@@ -6,6 +6,7 @@ oneway interface ITvPlayCallback {
     void onSharedMemoryReady(in ParcelFileDescriptor videoFd, long videoSize,
                              in ParcelFileDescriptor audioFd, long audioSize,
                              int generationId, long activeDirectPlaybackId);
+    void onSessionSnapshot(int generationId, long activeDirectPlaybackId);
     void onSessionUnavailable();
     void onVideoConfigChanged(String mimeType, int width, int height, int generationId,
                               in byte[] codecConfig, boolean opensProjection);

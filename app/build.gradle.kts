@@ -16,8 +16,8 @@ android {
         applicationId = "com.tvplayair.receiver"
         minSdk = 29
         targetSdk = 35
-        versionCode = 1
-        versionName = "0.1.0"
+        versionCode = providers.gradleProperty("tvplayairVersionCode").getOrElse("1").toInt()
+        versionName = providers.gradleProperty("tvplayairVersionName").getOrElse("0.1.0")
 
         externalNativeBuild {
             cmake {

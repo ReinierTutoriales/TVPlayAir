@@ -24,7 +24,7 @@ source_text = "\n".join(kotlin.values())
 # Detect exact duplicate imports, declarations and build entries without
 # guessing whether reflection, JNI or IPC consumers exist.
 for path, body in kotlin.items():
-    imports = re.findall(r"^import\\s+([^\\n]+)$", body, re.M)
+    imports = re.findall(r"^import\s+([^\n]+)$", body, re.M)
     for name in sorted(set(imports)):
         check(imports.count(name) == 1,
               f"Duplicate Kotlin import: {path.relative_to(ROOT)}: {name}")
@@ -32,7 +32,7 @@ for path, body in kotlin.items():
 for path, body in xml.items():
     if path.parent.name != "values":
         continue
-    names = re.findall(r'<(?:string|color|dimen|style|bool|integer|array|string-array|plurals)\\s+name="([^"]+)"', body)
+    names = re.findall(r'<(?:string|color|dimen|style|bool|integer|array|string-array|plurals)\s+name="([^"]+)"', body)
     for name in sorted(set(names)):
         check(names.count(name) == 1,
               f"Duplicate Android resource declaration: {path.relative_to(ROOT)}: {name}")

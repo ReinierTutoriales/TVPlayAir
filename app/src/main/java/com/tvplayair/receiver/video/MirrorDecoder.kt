@@ -14,8 +14,8 @@ import com.tvplayair.receiver.diagnostics.PLAYBACK_DIAGNOSTICS_TAG
 import com.tvplayair.receiver.session.NativeSharedMemory
 import java.nio.ByteBuffer
 import java.nio.ByteOrder
+import java.util.concurrent.Executors
 import java.util.concurrent.atomic.AtomicBoolean
-import java.util.concurrent.atomic.AtomicInteger
 
 data class MirrorVideoConfig(
     val mimeType: String = MediaFormat.MIMETYPE_VIDEO_AVC,
@@ -41,114 +41,102 @@ class MirrorDecoder(
         private const val MAX_PACKET_BYTES = 480 * 1024
         private const val DEQUEUE_TIMEOUT_US = 4_000L
         private const val IDLE_POLL_SLEEP_MS = 2L
+
+        // A recreated Activity shares the same decoder slot and ring consumer.
+        private val decoderExecutor = Executors.newSingleThreadExecutor { task ->
+            Thread(task, "TVPlayAir-MirrorDecoder")
+        }
+        private var queuedDecoders = 0 // Main-thread confined.
     }
 
-    private data class PendingConfig(val video: MirrorVideoConfig, val generation: Int, val csd: ByteArray)
+    private data class StreamConfig(val video: MirrorVideoConfig, val generation: Int, val csd: ByteArray)
+    private class DecodeRun(val stream: StreamConfig, val surface: Surface, val epoch: Long) {
+        val running = AtomicBoolean(true)
+    }
 
-    private var pendingConfig: PendingConfig? = null
+    private var requestedConfig = StreamConfig(MirrorVideoConfig(), 0, byteArrayOf())
+    private var workerConfig: StreamConfig? = null
     private val frameGate = MirrorFrameGate()
-
-    private val packetBuffer: ByteBuffer =
-        ByteBuffer.allocateDirect(MAX_PACKET_BYTES).order(ByteOrder.LITTLE_ENDIAN)
-    private val running = AtomicBoolean(false)
-    private val codecLock = Any()
-    private val generationId = AtomicInteger(0)
+    private val packetBuffer = ByteBuffer.allocateDirect(MAX_PACKET_BYTES).order(ByteOrder.LITTLE_ENDIAN)
     private val renderListenerHandler = Handler(Looper.getMainLooper())
-
-    @Volatile
-    private var config = MirrorVideoConfig()
+    private var activeRun: DecodeRun? = null
     @Volatile
     private var codec: MediaCodec? = null
-    private var workerThread: Thread? = null
 
-    @Synchronized
     fun updateConfig(newConfig: MirrorVideoConfig, generation: Int, codecConfig: ByteArray): Boolean {
-        if (pendingConfig == null && generationId.get() == generation && config == newConfig &&
-            frameGate.matchesCodecConfig(codecConfig)
-        ) return false
-        pendingConfig = PendingConfig(newConfig, generation, codecConfig)
-        if (stopAndRelease()) applyPendingConfig()
+        val old = requestedConfig
+        if (old.generation == generation && old.video == newConfig && old.csd.contentEquals(codecConfig)) {
+            return false
+        }
+        requestedConfig = StreamConfig(newConfig, generation, codecConfig)
+        stopAndRelease()
         return true
     }
 
-    private fun applyPendingConfig() {
-        val pending = pendingConfig ?: return
-        config = pending.video
-        generationId.set(pending.generation)
-        frameGate.clearAll()
-        frameGate.onCodecConfig(pending.csd)
-        pendingConfig = null
-    }
-
-    @Synchronized
     override fun start(discardPendingFrames: Boolean): Boolean {
-        if (running.get()) return true
-        // A timed-out stop must not start another worker over the shared packet buffer.
-        if (workerThread?.isAlive == true) {
-            Log.w(PLAYBACK_DIAGNOSTICS_TAG,
-                "route=mirror_decoder generation=${generationId.get()} event=previous_worker_alive")
-            return false
-        }
-        workerThread = null
-        applyPendingConfig()
+        if (activeRun != null) return true
         val surface = surfaceProvider()
         if (surface == null || !surface.isValid) {
             Log.w(PLAYBACK_DIAGNOSTICS_TAG,
-                "route=mirror_decoder generation=${generationId.get()} event=surface_unavailable")
+                "route=mirror_decoder generation=${requestedConfig.generation} event=surface_unavailable")
             return false
         }
 
-        frameGate.resetGate()
-        val watchdog = MirrorOutputWatchdog(
-            allowLegacyOutputProgress = Build.VERSION.SDK_INT < Build.VERSION_CODES.UPSIDE_DOWN_CAKE,
-            elapsedMs = SystemClock::elapsedRealtime
-        )
-        val initialCsd = frameGate.getCachedCodecConfig()
-        if (initialCsd != null) {
-            val createdCodec = createAndConfigureCodec(surface, config, initialCsd, watchdog) ?: return false
-            codec = createdCodec
-        }
-
-        running.set(true)
-        workerThread = Thread({
+        val run = DecodeRun(requestedConfig, surface, NativeSharedMemory.nativeVideoConsumerEpoch())
+        activeRun = run
+        queuedDecoders++
+        decoderExecutor.execute {
             try {
-                if (discardPendingFrames) NativeSharedMemory.nativeDiscardPendingVideoPackets()
-                decodeLoop(watchdog)
+                if (run.running.get()) {
+                    if (workerConfig !== run.stream) {
+                        frameGate.clearAll()
+                        if (run.stream.csd.isNotEmpty()) frameGate.onCodecConfig(run.stream.csd)
+                        workerConfig = run.stream
+                    }
+                    frameGate.resetGate()
+                    if (discardPendingFrames) NativeSharedMemory.nativeDiscardPendingVideoPackets(run.epoch)
+                    val watchdog = MirrorOutputWatchdog(
+                        allowLegacyOutputProgress = Build.VERSION.SDK_INT < Build.VERSION_CODES.UPSIDE_DOWN_CAKE,
+                        elapsedMs = SystemClock::elapsedRealtime
+                    )
+                    codec = frameGate.getCachedCodecConfig()?.let { createAndConfigureCodec(run, it, watchdog) }
+                    decodeLoop(run, watchdog)
+                }
             } finally {
-                // The worker owns MediaCodec until its last dequeue/queue has returned.
-                running.set(false)
+                run.running.set(false)
                 codec?.let { releaseCodec(it) }
+                renderListenerHandler.post {
+                    queuedDecoders--
+                    if (activeRun === run) activeRun = null
+                }
             }
-        }, "TVPlayAir-MirrorDecoder").apply { start() }
+        }
         return true
     }
 
-    @Synchronized
-    override fun stopAndRelease(): Boolean {
-        running.set(false)
-        workerThread?.let { thread ->
-            thread.interrupt()
-            runCatching { thread.join(1_000L) }
-        }
-        if (workerThread?.isAlive == true) {
-            // Do not release a codec that a blocked worker may still be using.
-            Log.w(PLAYBACK_DIAGNOSTICS_TAG,
-                "route=mirror_decoder generation=${generationId.get()} event=worker_stop_timeout")
-            return false
-        }
-        workerThread = null
-        codec?.let { releaseCodec(it) }
-        return true
+    override fun stopAndRelease() {
+        activeRun?.running?.set(false)
+        activeRun = null
+    }
+
+    override fun stopBeforeDirect(onReleased: () -> Unit): Boolean {
+        stopAndRelease()
+        if (queuedDecoders == 0) return true
+        // Completion is posted only after stop/release returned on the codec worker.
+        decoderExecutor.execute { renderListenerHandler.post(onReleased) }
+        return false
     }
 
     private fun createAndConfigureCodec(
-        surface: Surface,
-        cfg: MirrorVideoConfig,
+        run: DecodeRun,
         csdBytes: ByteArray,
         watchdog: MirrorOutputWatchdog,
         lastStalledCodec: String? = null
     ): MediaCodec? {
-        val generation = generationId.get()
+        val surface = run.surface
+        val cfg = run.stream.video
+        val generation = run.stream.generation
+        if (!run.running.get() || !surface.isValid) return null
         val startedMs = SystemClock.elapsedRealtime()
         if (cfg.width <= 0 || cfg.height <= 0) {
             Log.w(PLAYBACK_DIAGNOSTICS_TAG,
@@ -160,7 +148,7 @@ class MirrorDecoder(
         // actual portrait dimensions. Check published capabilities before allocation.
         val codecInfos = runCatching {
             MediaCodecList(MediaCodecList.REGULAR_CODECS).codecInfos
-        }.onFailure { logCodecFailure("enumerate", it) }.getOrNull() ?: return null
+        }.onFailure { logCodecFailure(generation, "enumerate", it) }.getOrNull() ?: return null
         val candidates = codecInfos.filter { info ->
             !info.isEncoder && info.supportedTypes.any { it.equals(cfg.mimeType, ignoreCase = true) } &&
                 runCatching {
@@ -177,7 +165,7 @@ class MirrorDecoder(
         // A codec may advertise dimensions but still fail configure/start for this Surface.
         // Try every compatible decoder, not just the first creatable codec.
         for (candidate in candidates.sortedBy { it.name == lastStalledCodec }) {
-            if (!surface.isValid || generationId.get() != generation) return null
+            if (!surface.isValid || !run.running.get()) return null
             val codecName = candidate.name
             val lowLatencySupported = Build.VERSION.SDK_INT >= Build.VERSION_CODES.R &&
                 runCatching {
@@ -187,7 +175,7 @@ class MirrorDecoder(
 
             fun tryStart(lowLatency: Boolean): MediaCodec? {
                 val instance = runCatching { MediaCodec.createByCodecName(codecName) }
-                    .onFailure { logCodecFailure("create_candidate", it) }.getOrNull()
+                    .onFailure { logCodecFailure(generation, "create_candidate", it) }.getOrNull()
                     ?: return null
                 val attemptFormat = MediaFormat.createVideoFormat(cfg.mimeType, cfg.width, cfg.height)
                 if (csdBytes.isNotEmpty()) {
@@ -201,10 +189,9 @@ class MirrorDecoder(
                     instance.configure(attemptFormat, surface, null, 0)
                     var firstFrame = true
                     instance.setOnFrameRenderedListener({ activeCodec, _, _ ->
-                        synchronized(codecLock) {
-                            if (running.get() && codec === activeCodec && generationId.get() == generation) {
-                                watchdog.onFrameRendered()
-                                if (!firstFrame) return@synchronized
+                        if (isVisibleRun(run) && codec === activeCodec) {
+                            watchdog.onFrameRendered()
+                            if (firstFrame) {
                                 firstFrame = false
                                 Log.i(PLAYBACK_DIAGNOSTICS_TAG,
                                     "route=mirror_decoder generation=$generation event=first_frame codec=$codecName " +
@@ -219,14 +206,14 @@ class MirrorDecoder(
                             "size=${cfg.width}x${cfg.height} lowLatency=$lowLatency")
                     instance
                 }.onFailure {
-                    logCodecFailure(if (lowLatency) "start_low_latency" else "start_basic", it)
+                    logCodecFailure(generation, if (lowLatency) "start_low_latency" else "start_basic", it)
                     runCatching { instance.release() }
                 }.getOrNull()
             }
 
             if (lowLatencySupported) {
                 tryStart(true)?.let { return it }
-                if (!surface.isValid || generationId.get() != generation) return null
+                if (!surface.isValid || !run.running.get()) return null
                 Log.i(PLAYBACK_DIAGNOSTICS_TAG,
                     "route=mirror_decoder generation=$generation event=retry_basic codec=$codecName")
             }
@@ -238,49 +225,47 @@ class MirrorDecoder(
         return null
     }
 
-    private fun logCodecFailure(operation: String, error: Throwable) {
+    private fun logCodecFailure(generation: Int, operation: String, error: Throwable) {
         val failure = error as? MediaCodec.CodecException
         Log.w(PLAYBACK_DIAGNOSTICS_TAG,
-            "route=mirror_decoder generation=${generationId.get()} event=codec_error operation=$operation " +
+            "route=mirror_decoder generation=$generation event=codec_error operation=$operation " +
                 "type=${error.javaClass.simpleName} code=${failure?.errorCode ?: "-"} " +
                 "diagnostic=${failure?.diagnosticInfo ?: "-"} recoverable=${failure?.isRecoverable ?: "-"} " +
                 "transient=${failure?.isTransient ?: "-"}")
     }
 
     private fun releaseCodec(activeCodec: MediaCodec, reclaimed: Boolean = false) {
-        synchronized(codecLock) {
-            if (codec === activeCodec) codec = null
-        }
+        if (codec === activeCodec) codec = null
         if (!reclaimed) runCatching { activeCodec.stop() }
         runCatching { activeCodec.release() }
     }
 
-    private fun decodeLoop(outputWatchdog: MirrorOutputWatchdog) {
+    private fun decodeLoop(run: DecodeRun, outputWatchdog: MirrorOutputWatchdog) {
         val bufferInfo = MediaCodec.BufferInfo()
         val frameClock = MirrorFrameClock(audioClockOffsetNs, System::nanoTime)
-        val worker = Thread.currentThread()
-        val generation = generationId.get()
+        val generation = run.stream.generation
+        val surface = run.surface
         var activeCodec = codec
         var lastStalledCodec: String? = null
         outputWatchdog.awaitFirstFrame()
 
         fun recover(codecToRelease: MediaCodec, operation: String, error: IllegalStateException? = null) {
-            if (error != null && running.get()) logCodecFailure(operation, error)
+            if (error != null && run.running.get()) logCodecFailure(generation, operation, error)
             val reclaimed = (error as? MediaCodec.CodecException)?.errorCode ==
                 MediaCodec.CodecException.ERROR_RECLAIMED
-            if (running.get()) Log.w(PLAYBACK_DIAGNOSTICS_TAG,
-                "route=mirror_decoder generation=${generationId.get()} event=await_keyframe reason=$operation")
+            if (run.running.get()) Log.w(PLAYBACK_DIAGNOSTICS_TAG,
+                "route=mirror_decoder generation=$generation event=await_keyframe reason=$operation")
             if (operation == "render_stall") lastStalledCodec = runCatching { codecToRelease.name }.getOrNull()
             releaseCodec(codecToRelease, reclaimed)
             activeCodec = null
             outputWatchdog.beginRecovery()
             frameGate.resetGate()
             renderListenerHandler.post {
-                if (running.get() && workerThread === worker && generationId.get() == generation) onRecovering()
+                if (isVisibleRun(run)) onRecovering()
             }
         }
 
-        while (running.get()) {
+        while (run.running.get()) {
             if (outputWatchdog.recoveryExpired()) {
                 Log.w(PLAYBACK_DIAGNOSTICS_TAG,
                     "route=mirror_decoder generation=$generation event=recovery_timeout")
@@ -289,15 +274,15 @@ class MirrorDecoder(
                 frameGate.resetGate()
                 outputWatchdog.parkUntilKeyFrame()
                 renderListenerHandler.post {
-                    if (running.get() && workerThread === worker && generationId.get() == generation) {
+                    if (isVisibleRun(run)) {
                         onWaitingForKeyFrame()
                     }
                 }
             }
             activeCodec?.let { current ->
                 try {
-                    drainOutputBuffers(current, bufferInfo, frameClock, outputWatchdog, config)
-                    if (running.get() && outputWatchdog.renderStalled()) recover(current, "render_stall")
+                    drainOutputBuffers(run, current, bufferInfo, frameClock, outputWatchdog)
+                    if (run.running.get() && outputWatchdog.renderStalled()) recover(current, "render_stall")
                 } catch (error: IllegalStateException) {
                     recover(current, "output", error)
                 }
@@ -305,14 +290,15 @@ class MirrorDecoder(
 
             val readBytes = NativeSharedMemory.nativeReadVideoPacket(
                 packetBuffer,
-                generationId.get()
+                generation,
+                run.epoch
             )
             if (readBytes == -1) {
                 // Stale generation skipped by ring; retry immediately.
                 continue
             }
             if (readBytes <= MirrorFrameGate.PACKET_HEADER_BYTES) {
-                if (readBytes == 0) {
+                if (readBytes <= 0) {
                     runCatching { Thread.sleep(IDLE_POLL_SLEEP_MS) }
                 }
                 continue
@@ -334,11 +320,10 @@ class MirrorDecoder(
                 val newCodecConfig = frameGate.onCodecConfig(configBytes)
                 if (activeCodec == null) {
                     if (outputWatchdog.waitingForKeyFrame) continue
-                    val surface = surfaceProvider()
-                    if (surface != null && surface.isValid && running.get()) {
-                        val created = createAndConfigureCodec(surface, config, configBytes, outputWatchdog, lastStalledCodec)
+                    if (surface.isValid && run.running.get()) {
+                        val created = createAndConfigureCodec(run, configBytes, outputWatchdog, lastStalledCodec)
                         if (created != null) {
-                            if (running.get()) {
+                            if (run.running.get()) {
                                 activeCodec = created
                                 codec = created
                             } else {
@@ -359,16 +344,15 @@ class MirrorDecoder(
             }
 
             if (activeCodec == null && (flags and MirrorFrameGate.FLAG_KEY_FRAME) != 0) {
-                val surface = surfaceProvider()
                 val csd = frameGate.getCachedCodecConfig()
-                if (surface != null && surface.isValid && csd != null && running.get()) {
+                if (surface.isValid && csd != null && run.running.get()) {
                     val wasWaiting = outputWatchdog.waitingForKeyFrame
                     if (!outputWatchdog.resumeAtKeyFrame()) continue
                     if (wasWaiting) Log.i(PLAYBACK_DIAGNOSTICS_TAG,
                         "route=mirror_decoder generation=$generation event=retry_on_keyframe")
-                    val created = createAndConfigureCodec(surface, config, csd, outputWatchdog, lastStalledCodec)
+                    val created = createAndConfigureCodec(run, csd, outputWatchdog, lastStalledCodec)
                     if (created != null) {
-                        if (running.get()) {
+                        if (run.running.get()) {
                             activeCodec = created
                             codec = created
                         } else {
@@ -382,14 +366,14 @@ class MirrorDecoder(
             var inputIndex = -1
             var attempts = 0
             val inputBuffer = try {
-                while (running.get() && attempts < 25) {
+                while (run.running.get() && attempts < 25) {
                     inputIndex = currentCodec.dequeueInputBuffer(DEQUEUE_TIMEOUT_US)
                     if (inputIndex >= 0) break
-                    drainOutputBuffers(currentCodec, bufferInfo, frameClock, outputWatchdog, config)
+                    drainOutputBuffers(run, currentCodec, bufferInfo, frameClock, outputWatchdog)
                     attempts++
                 }
                 if (inputIndex < 0) {
-                    if (running.get()) recover(currentCodec, "input_congestion")
+                    if (run.running.get()) recover(currentCodec, "input_congestion")
                     continue
                 }
                 currentCodec.getInputBuffer(inputIndex)
@@ -426,14 +410,17 @@ class MirrorDecoder(
         }
     }
 
+    private fun isVisibleRun(run: DecodeRun): Boolean = activeRun === run && run.running.get()
+
     private fun drainOutputBuffers(
+        run: DecodeRun,
         activeCodec: MediaCodec,
         bufferInfo: MediaCodec.BufferInfo,
         frameClock: MirrorFrameClock,
-        outputWatchdog: MirrorOutputWatchdog,
-        source: MirrorVideoConfig
+        outputWatchdog: MirrorOutputWatchdog
     ) {
-        while (running.get()) {
+        val source = run.stream.video
+        while (run.running.get()) {
             val outIndex = activeCodec.dequeueOutputBuffer(bufferInfo, 0L)
             if (outIndex >= 0) {
                 val videoFrame = (bufferInfo.flags and MediaCodec.BUFFER_FLAG_CODEC_CONFIG) == 0
@@ -458,7 +445,7 @@ class MirrorDecoder(
                     Log.i(TAG, "Mirror output size: ${width}x$height (coded ${codedWidth}x$codedHeight)")
                     onVideoSizeChanged?.let { callback ->
                         renderListenerHandler.post {
-                            if (running.get() && codec === activeCodec) callback(width, height)
+                            if (isVisibleRun(run) && codec === activeCodec) callback(width, height)
                         }
                     }
                 }

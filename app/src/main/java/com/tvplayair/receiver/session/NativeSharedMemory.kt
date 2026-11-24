@@ -11,8 +11,9 @@ object NativeSharedMemory {
 
     external fun nativeCreateProducerBuffer(kind: Int): Int
     external fun nativeMapConsumerBuffer(kind: Int, fd: Int, bytes: Long): Boolean
-    external fun nativeDiscardPendingVideoPackets()
-    external fun nativeReadVideoPacket(directBuffer: ByteBuffer, generationId: Int): Int
+    external fun nativeVideoConsumerEpoch(): Long
+    external fun nativeDiscardPendingVideoPackets(epoch: Long)
+    external fun nativeReadVideoPacket(directBuffer: ByteBuffer, generationId: Int, epoch: Long): Int
     external fun nativeWriteVideoFrame(
         directBuffer: ByteBuffer,
         size: Int,

@@ -6,11 +6,12 @@
 
 #include "oboe_consumer.hpp"
 #include "shared_ring_buffer.hpp"
+#include "video_consumer_ring.hpp"
 
 namespace {
 tvplayair::SharedRingBuffer gProducerVideo;
 tvplayair::SharedRingBuffer gProducerAudio;
-tvplayair::SharedRingBuffer gConsumerVideo;
+tvplayair::VideoConsumerRing gConsumerVideo;
 tvplayair::SharedRingBuffer gConsumerAudio;
 
 int createProducerBuffer(const char* name, size_t bytes, uint32_t capacity,
@@ -41,7 +42,7 @@ Java_com_tvplayair_receiver_session_NativeSharedMemory_nativeMapConsumerBuffer(
     JNIEnv*, jobject, jint kind, jint fd, jlong bytes) {
     bool mapped = false;
     if (kind == 0) {
-        mapped = gConsumerVideo.mapFd(fd, static_cast<size_t>(bytes), false);
+        mapped = gConsumerVideo.mapFd(fd, static_cast<size_t>(bytes));
     } else if (kind == 1) {
         tvplayair::oboeConsumer().stop();
         mapped = gConsumerAudio.mapFd(fd, static_cast<size_t>(bytes), false);
@@ -82,9 +83,15 @@ Java_com_tvplayair_receiver_session_NativeSharedMemory_nativeDetachConsumerBuffe
     gConsumerAudio.detach();
 }
 
+extern "C" JNIEXPORT jlong JNICALL
+Java_com_tvplayair_receiver_session_NativeSharedMemory_nativeVideoConsumerEpoch(
+    JNIEnv*, jobject) {
+    return gConsumerVideo.epoch();
+}
+
 extern "C" JNIEXPORT jint JNICALL
 Java_com_tvplayair_receiver_session_NativeSharedMemory_nativeReadVideoPacket(
-    JNIEnv* env, jobject, jobject directBuffer, jint generationId) {
+    JNIEnv* env, jobject, jobject directBuffer, jint generationId, jlong epoch) {
     if (!directBuffer) return -2;
     void* dst = env->GetDirectBufferAddress(directBuffer);
     const jlong capacity = env->GetDirectBufferCapacity(directBuffer);
@@ -92,7 +99,7 @@ Java_com_tvplayair_receiver_session_NativeSharedMemory_nativeReadVideoPacket(
 
     uint32_t outSize = 0;
     const tvplayair::RingResult result = gConsumerVideo.readPacket(
-        dst, static_cast<uint32_t>(capacity), &outSize, static_cast<uint32_t>(generationId));
+        epoch, dst, static_cast<uint32_t>(capacity), &outSize, static_cast<uint32_t>(generationId));
     if (result == tvplayair::RingResult::Ok) return static_cast<jint>(outSize);
     if (result == tvplayair::RingResult::Empty) return 0;
     if (result == tvplayair::RingResult::StaleGeneration) return -1;
@@ -101,8 +108,8 @@ Java_com_tvplayair_receiver_session_NativeSharedMemory_nativeReadVideoPacket(
 
 extern "C" JNIEXPORT void JNICALL
 Java_com_tvplayair_receiver_session_NativeSharedMemory_nativeDiscardPendingVideoPackets(
-    JNIEnv*, jobject) {
-    gConsumerVideo.discardPending();
+    JNIEnv*, jobject, jlong epoch) {
+    gConsumerVideo.discardPending(epoch);
 }
 
 extern "C" JNIEXPORT void JNICALL

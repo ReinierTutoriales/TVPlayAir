@@ -1,4 +1,5 @@
 #include "shared_ring_buffer.hpp"
+#include "video_consumer_ring.hpp"
 
 #include <array>
 #include <cassert>
@@ -7,6 +8,7 @@
 #include <cstring>
 #include <linux/memfd.h>
 #include <sys/wait.h>
+#include <thread>
 #include <unistd.h>
 
 using tvplayair::RingResult;
@@ -123,8 +125,45 @@ static void testForkSharedMemorySpsc() {
     ::close(sharedFd);
 }
 
+static void testVideoConsumerRemapInvalidatesStaleWorker() {
+    constexpr uint32_t capacity = 4, payload = 64, generation = 1;
+    const size_t bytes = SharedRingBuffer::requiredBytes(capacity, payload);
+    const int sharedFd = makeSharedFd(bytes);
+    SharedRingBuffer producer;
+    assert(producer.mapFd(::dup(sharedFd), bytes, true, capacity, payload));
+    tvplayair::VideoConsumerRing consumer;
+    assert(consumer.mapFd(::dup(sharedFd), bytes));
+    const int64_t oldEpoch = consumer.epoch();
+    std::atomic<bool> run{true};
+    std::thread oldWorker([&] {
+        uint32_t value = 0, size = 0;
+        while (run.load()) {
+            const auto result = consumer.readPacket(oldEpoch, &value, sizeof(value), &size, generation);
+            assert(result == RingResult::Empty || result == RingResult::Invalid);
+            consumer.discardPending(oldEpoch);
+        }
+    });
+
+    for (int i = 0; i < 100; ++i) {
+        consumer.detach();
+        assert(consumer.mapFd(::dup(sharedFd), bytes));
+    }
+    const uint32_t packet = 0x1234;
+    assert(producer.writePacket(&packet, sizeof(packet), generation) == RingResult::Ok);
+    uint32_t value = 0, size = 0;
+    assert(consumer.readPacket(oldEpoch, &value, sizeof(value), &size, generation) == RingResult::Invalid);
+    consumer.discardPending(oldEpoch);
+    assert(consumer.readPacket(consumer.epoch(), &value, sizeof(value), &size, generation) == RingResult::Ok);
+    assert(size == sizeof(packet) && value == packet);
+
+    run.store(false);
+    oldWorker.join();
+    ::close(sharedFd);
+}
+
 int main() {
     testOverflowAndGeneration();
+    testVideoConsumerRemapInvalidatesStaleWorker();
     testAudioStartupDiscardsOlderPacketsAndRetainsNewAudio();
     testWrapAroundAndNoLivelock();
     testForkSharedMemorySpsc();

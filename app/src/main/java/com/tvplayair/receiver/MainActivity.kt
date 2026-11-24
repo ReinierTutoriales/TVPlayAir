@@ -40,6 +40,7 @@ import com.tvplayair.receiver.audio.AudioContinuityService
 import com.tvplayair.receiver.audio.OboeAudioConsumer
 import com.tvplayair.receiver.control.DacpCommand
 import com.tvplayair.receiver.network.ReceiverIdentityHelper
+import com.tvplayair.receiver.network.ReceiverVideoSettings
 import com.tvplayair.receiver.network.ReceiverIdentityStore
 import com.tvplayair.receiver.session.BootReceiver
 import com.tvplayair.receiver.session.ReceiverAvailability
@@ -125,8 +126,11 @@ class MainActivity : ComponentActivity(), SurfaceLayerController {
         val retainedAudio = AudioContinuityService.claim()
         audioConsumer = retainedAudio?.second ?: OboeAudioConsumer(applicationContext)
         identityStore = ReceiverIdentityStore(this)
+        val videoSettings = ReceiverVideoSettings.read(this)
         overlayState = overlayState.copy(
             receiverName = identityStore.readServiceName(),
+            resolutionPreset = videoSettings.resolution,
+            hevcEnabled = videoSettings.hevcEnabled,
             audioOffsetMs = audioConsumer.getAudioOffsetMs(),
             projectionHome = isProjectionHomeIntent(intent),
             autoStartReceiver = BootReceiver.isAutoStartEnabled(this),
@@ -265,7 +269,8 @@ class MainActivity : ComponentActivity(), SurfaceLayerController {
             mirrorEngine = mirrorDecoder,
             directEngine = webVideoPlayer,
             audioController = audioConsumer,
-            surfaceController = this
+            surfaceController = this,
+            onDeferredDirectFailure = ::finishDirectSession
         )
 
         sessionListener = object : SessionEventListener {
@@ -404,7 +409,8 @@ class MainActivity : ComponentActivity(), SurfaceLayerController {
             }
         }
         sessionConnection = retainedPlayback?.connection ?: retainedAudio?.first ?: SessionConnection(this)
-        sessionConnection.replaceListener(sessionListener, replay = retainedPlayback != null)
+        sessionConnection.replaceListener(sessionListener, replay = retainedPlayback != null || retainedAudio != null)
+        pushAdvertisingConfig(overlayState)
         root.doOnPreDraw {
             root.post {
                 if (!destroyingView && !isFinishing) {
@@ -731,14 +737,18 @@ class MainActivity : ComponentActivity(), SurfaceLayerController {
 
     private fun toggleResolutionPreset() {
         val next = overlayState.toggleResolution()
-        overlayState = next
-        pushAdvertisingConfig(next)
+        applyVideoSettings(next)
     }
 
     private fun toggleHevcSetting() {
         val next = overlayState.toggleHevc()
-        overlayState = next
-        pushAdvertisingConfig(next)
+        applyVideoSettings(next)
+    }
+
+    private fun applyVideoSettings(state: TvOverlayState) {
+        overlayState = state
+        ReceiverVideoSettings(state.resolutionPreset, state.hevcEnabled).save(this)
+        pushAdvertisingConfig(state)
     }
 
     private fun pushAdvertisingConfig(state: TvOverlayState) {
@@ -970,6 +980,7 @@ class MainActivity : ComponentActivity(), SurfaceLayerController {
     override fun onDestroy() {
         saveDirectCheckpoint()
         destroyingView = true
+        presentationCoordinator.cancelPendingDirectHandoff()
         mirrorSurfaceTimeout?.let(mainHandler::removeCallbacks)
         mirrorSurfaceTimeout = null
         cancelDirectStartupTimeout()

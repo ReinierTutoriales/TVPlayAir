@@ -25,6 +25,7 @@ import com.tvplayair.receiver.network.AirPlayAdvertiseConfig
 import com.tvplayair.receiver.network.MdnsAdvertiser
 import com.tvplayair.receiver.network.ReceiverIdentityHelper
 import com.tvplayair.receiver.network.ReceiverIdentityStore
+import com.tvplayair.receiver.network.ReceiverVideoSettings
 import com.tvplayair.receiver.video.DirectPlaybackStart
 import com.tvplayair.receiver.video.NO_DIRECT_CHECKPOINT_MS
 import com.tvplayair.receiver.video.DirectPlaybackTelemetry
@@ -220,25 +221,27 @@ class SessionService : Service() {
                 return
             }
             synchronized(callbackLock) {
-                val videoCopy = ParcelFileDescriptor.dup(video.fileDescriptor)
-                try {
-                    val audioCopy = ParcelFileDescriptor.dup(audio.fileDescriptor)
+                val generation = protocolEngine.currentGenerationId()
+                val playbackId = directPlayback?.playbackId ?: 0L
+                if (callback?.asBinder() == cb.asBinder()) {
+                    cb.onSessionSnapshot(generation, playbackId)
+                } else {
                     try {
-                        cb.onSharedMemoryReady(
-                            videoCopy,
-                            16L * 1024 * 1024,
-                            audioCopy,
-                            512L * 1024,
-                            protocolEngine.currentGenerationId(),
-                            directPlayback?.playbackId ?: 0L
-                        )
-                    } finally {
-                        audioCopy.close()
+                        ParcelFileDescriptor.dup(video.fileDescriptor).use { videoCopy ->
+                            ParcelFileDescriptor.dup(audio.fileDescriptor).use { audioCopy ->
+                                cb.onSharedMemoryReady(
+                                    videoCopy, 16L * 1024 * 1024,
+                                    audioCopy, 512L * 1024, generation, playbackId
+                                )
+                            }
+                        }
+                    } catch (error: java.io.IOException) {
+                        Log.w(PLAYBACK_DIAGNOSTICS_TAG, "Unable to share receiver media buffers", error)
+                        runCatching { cb.onSessionUnavailable() }
+                        return
                     }
-                } finally {
-                    videoCopy.close()
+                    callback = cb
                 }
-                callback = cb
                 runCatching { cb.onReceiverAvailability(receiverAvailability.ordinal) }
                 activeAudioGeneration?.let { runCatching { cb.onAudioStreamStarted(it) } }
                 sendNowPlaying(
@@ -366,9 +369,13 @@ class SessionService : Service() {
             .getBoolean("auto_open_visual", false)
         val identity = ReceiverIdentityStore(this).loadOrCreate()
         ed25519PrivateKey = identity.ed25519PrivateKey
+        val videoSettings = ReceiverVideoSettings.read(this)
         advertiseConfig = advertiseConfig.copy(
             serviceName = identity.serviceName,
             deviceId = identity.deviceId,
+            maxWidth = videoSettings.resolution.width,
+            maxHeight = videoSettings.resolution.height,
+            hevcEnabled = videoSettings.hevcEnabled,
             piUuid = identity.piUuid,
             publicKeyHex = identity.ed25519PublicKeyHex
         )
