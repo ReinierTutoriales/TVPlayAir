@@ -1,18 +1,13 @@
 package com.tvplayair.receiver.ui
 
+import com.tvplayair.receiver.network.ResolutionPreset
+
 import com.tvplayair.receiver.R
 import com.tvplayair.receiver.audio.OboeAudioConsumer
 import com.tvplayair.receiver.session.RaopNowPlaying
 import com.tvplayair.receiver.session.ReceiverAvailability
 import com.tvplayair.receiver.video.DirectPlaybackTelemetry
 import com.tvplayair.receiver.video.PresentationState
-
-enum class ResolutionPreset(val width: Int, val height: Int, val label: String) {
-    UHD_4K(3840, 2160, "4K"),
-    FHD_1080P(1920, 1080, "1080p");
-
-    fun next(): ResolutionPreset = if (this == UHD_4K) FHD_1080P else UHD_4K
-}
 
 data class TvOverlayState(
     val visible: Boolean = false,

@@ -145,17 +145,4 @@ object SessionCrypto {
         System.arraycopy(decrypted, 0, result, 0, fullBlockLen)
         return result
     }
-
-    fun decryptMirrorVideoCtr(
-        key16: ByteArray,
-        iv16: ByteArray,
-        input: ByteArray,
-        offset: Int = 0,
-        length: Int = input.size - offset
-    ): ByteArray {
-        require(key16.size == 16 && iv16.size == 16) { "AES-128 requires 16-byte key and IV" }
-        val cipher = Cipher.getInstance("AES/CTR/NoPadding")
-        cipher.init(Cipher.DECRYPT_MODE, SecretKeySpec(key16, "AES"), IvParameterSpec(iv16))
-        return cipher.doFinal(input, offset, length)
-    }
 }

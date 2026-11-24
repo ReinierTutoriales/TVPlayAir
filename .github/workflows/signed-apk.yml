@@ -1,0 +1,96 @@
+name: Signed APK
+
+on:
+  workflow_dispatch:
+    inputs:
+      version_code:
+        description: "Android versionCode (greater than the last distributed version)"
+        required: true
+        type: string
+      version_name:
+        description: "Version shown in Android Settings, such as 1.0.0"
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  signed-apk:
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    environment: apk-signing
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7.0.1
+        with:
+          persist-credentials: false
+      - name: Set up Java
+        uses: actions/setup-java@v6.3.0
+        with:
+          distribution: temurin
+          java-version: "17"
+      - name: Set up Android SDK
+        uses: android-actions/setup-android@v4.0.4
+        with:
+          packages: ""
+      - name: Install Android build components
+        run: sdkmanager --install "platforms;android-37.1" "build-tools;36.0.0" "ndk;30.0.16248370" "cmake;4.1.2"
+      - name: Set up Gradle
+        uses: gradle/actions/setup-gradle@v6.4.1
+      - name: Build unsigned release
+        env:
+          VERSION_CODE: ${{ inputs.version_code }}
+          VERSION_NAME: ${{ inputs.version_name }}
+        run: |
+          if [[ ! "$VERSION_CODE" =~ ^[1-9][0-9]{0,9}$ ]] || (( VERSION_CODE > 2100000000 )); then
+            echo "::error::Invalid Android versionCode."
+            exit 1
+          fi
+          if [[ ! "$VERSION_NAME" =~ ^[0-9]+\.[0-9]+\.[0-9]+([+-][0-9A-Za-z.-]+)?$ ]]; then
+            echo "::error::Invalid versionName."
+            exit 1
+          fi
+          bash ./gradlew --no-daemon :app:assembleRelease \
+            "-PtvplayairVersionCode=$VERSION_CODE" "-PtvplayairVersionName=$VERSION_NAME"
+      - name: Sign and verify release APK
+        env:
+          TVPLAYAIR_KEYSTORE_BASE64: ${{ secrets.TVPLAYAIR_KEYSTORE_BASE64 }}
+          TVPLAYAIR_KEYSTORE_PASSWORD: ${{ secrets.TVPLAYAIR_KEYSTORE_PASSWORD }}
+          TVPLAYAIR_KEY_PASSWORD: ${{ secrets.TVPLAYAIR_KEY_PASSWORD }}
+          TVPLAYAIR_KEY_ALIAS: ${{ vars.TVPLAYAIR_KEY_ALIAS }}
+          TVPLAYAIR_SIGNER_SHA256: ${{ vars.TVPLAYAIR_SIGNER_SHA256 }}
+        run: |
+          : "${TVPLAYAIR_KEYSTORE_BASE64:?Configure the apk-signing environment}"
+          : "${TVPLAYAIR_KEYSTORE_PASSWORD:?Configure the keystore password}"
+          : "${TVPLAYAIR_KEY_PASSWORD:?Configure the key password}"
+          : "${TVPLAYAIR_KEY_ALIAS:?Configure the key alias}"
+          if [[ ! "$TVPLAYAIR_SIGNER_SHA256" =~ ^[0-9A-Fa-f]{64}$ ]]; then
+            echo "::error::Configure the expected signing certificate SHA-256."
+            exit 1
+          fi
+
+          umask 077
+          keystore=$(mktemp)
+          trap 'rm -f -- "$keystore"' EXIT
+          printf '%s' "$TVPLAYAIR_KEYSTORE_BASE64" | base64 --decode > "$keystore"
+          apksigner="$ANDROID_HOME/build-tools/36.0.0/apksigner"
+          "$apksigner" sign --ks "$keystore" --ks-key-alias "$TVPLAYAIR_KEY_ALIAS" \
+            --ks-pass env:TVPLAYAIR_KEYSTORE_PASSWORD --key-pass env:TVPLAYAIR_KEY_PASSWORD \
+            --out tvplayair-release.apk app/build/outputs/apk/release/app-release-unsigned.apk
+          verification=$("$apksigner" verify --print-certs tvplayair-release.apk)
+          signer=$(sed -n 's/^Signer #1 certificate SHA-256 digest: //p' <<< "$verification")
+          if [[ "${signer,,}" != "${TVPLAYAIR_SIGNER_SHA256,,}" ]]; then
+            echo "::error::Unexpected signing certificate."
+            exit 1
+          fi
+          sha256sum tvplayair-release.apk > tvplayair-release.apk.sha256
+      - name: Upload signed APK
+        uses: actions/upload-artifact@v7.0.0
+        with:
+          name: tvplayair-release
+          path: |
+            tvplayair-release.apk
+            tvplayair-release.apk.sha256
+          if-no-files-found: error

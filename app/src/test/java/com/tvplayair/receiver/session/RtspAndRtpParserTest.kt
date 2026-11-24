@@ -316,7 +316,10 @@ class RtspAndRtpParserTest {
             init(Cipher.ENCRYPT_MODE, SecretKeySpec(key, "AES"), IvParameterSpec(iv))
         }
         val ctrCiphertext = ctrEnc.doFinal(plaintext)
-        val decryptedCtr = SessionCrypto.decryptMirrorVideoCtr(key, iv, ctrCiphertext)
+        val ctrDecoder = AirPlayMirrorStreamReceiver.createCtrCipher(key, iv)
+        // The second packet continues the same counter, even across a partial AES block.
+        val decryptedCtr = ctrDecoder.update(ctrCiphertext, 0, 7) +
+            ctrDecoder.update(ctrCiphertext, 7, ctrCiphertext.size - 7)
         assertArrayEquals(plaintext, decryptedCtr)
     }
 

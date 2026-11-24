@@ -38,7 +38,13 @@ interface AudioHandoffController {
 
 interface MirrorVideoEngine {
     fun start(discardPendingFrames: Boolean = false): Boolean
-    fun stopAndRelease(): Boolean
+    fun stopAndRelease()
+
+    /** Returns true if released now. Otherwise invokes the callback on the presentation thread. */
+    fun stopBeforeDirect(onReleased: () -> Unit): Boolean {
+        stopAndRelease()
+        return true
+    }
 }
 
 interface DirectVideoEngine {
@@ -89,20 +95,31 @@ class VideoPresentationCoordinator(
     private val mirrorEngine: MirrorVideoEngine,
     private val directEngine: DirectVideoEngine,
     private val audioController: AudioHandoffController,
-    private val surfaceController: SurfaceLayerController
+    private val surfaceController: SurfaceLayerController,
+    private val onDeferredDirectFailure: (Long) -> Unit = {}
 ) {
     var state: PresentationState = PresentationState.IDLE
         private set
     private var resumeMirrorAfterDirect = false
     private var discardMirrorFrames = false
     private var directPlaybackId: Long? = null
+    private class DirectHandoff(var video: DirectPlaybackStart) {
+        var seekPositionSec: Double? = null
+    }
+    private var directHandoff: DirectHandoff? = null
+
+    internal fun cancelPendingDirectHandoff() {
+        directHandoff = null
+    }
 
     val hasDirectPlayback: Boolean
         get() = state == PresentationState.SWITCHING_TO_DIRECT ||
             state == PresentationState.DIRECT_ACTIVE || state == PresentationState.DIRECT_WITHOUT_SURFACE
 
     fun onDirectMediaReady(playbackId: Long): Boolean {
-        if (state != PresentationState.SWITCHING_TO_DIRECT || directPlaybackId != playbackId) return false
+        if (state != PresentationState.SWITCHING_TO_DIRECT || directPlaybackId != playbackId ||
+            directHandoff != null
+        ) return false
         state = PresentationState.DIRECT_ACTIVE
         surfaceController.revealDirectSurface()
         return true
@@ -138,16 +155,36 @@ class VideoPresentationCoordinator(
         if (isMirrorRequested() || mirrorAvailable) resumeMirrorAfterDirect = true
         state = PresentationState.SWITCHING_TO_DIRECT
         directPlaybackId = playbackId
-        if (!replacingDirect) {
-            audioController.setPausedForExternalPlayer(true)
-            if (!mirrorEngine.stopAndRelease()) {
-                directPlaybackId = null
-                state = PresentationState.RECOVERING
-                audioController.setPausedForExternalPlayer(false)
-                surfaceController.hideAllSurfaces()
-                return false
-            }
+        directHandoff?.let { handoff ->
+            handoff.video = video
+            handoff.seekPositionSec = null
+            return true
         }
+        if (replacingDirect) return prepareDirect(video)
+
+        audioController.setPausedForExternalPlayer(true)
+        val handoff = DirectHandoff(video)
+        directHandoff = handoff
+        if (!mirrorEngine.stopBeforeDirect {
+                if (directHandoff === handoff) {
+                    directHandoff = null
+                    if (prepareDirect(handoff.video)) {
+                        handoff.seekPositionSec?.let(directEngine::seekTo)
+                    } else {
+                        onDeferredDirectFailure(handoff.video.playbackId)
+                    }
+                }
+            }
+        ) {
+            surfaceController.coverMirrorSurface()
+            return true
+        }
+        directHandoff = null
+        return prepareDirect(video)
+    }
+
+    private fun prepareDirect(video: DirectPlaybackStart): Boolean {
+        val playbackId = video.playbackId
         surfaceController.showDirectSurface()
         val prepared = directEngine.prepare(video)
         if (!hasDirectPlayback || directPlaybackId != playbackId) return false
@@ -159,12 +196,8 @@ class VideoPresentationCoordinator(
         return true
     }
 
-    fun stopDirectVideo() {
-        if (!hasDirectPlayback) return
-        restoreAfterDirect()
-    }
-
     private fun restoreAfterDirect(senderStop: Boolean = false) {
+        cancelPendingDirectHandoff()
         if (resumeMirrorAfterDirect) {
             switchToMirror(discardPendingFrames = true)
         } else {
@@ -173,6 +206,7 @@ class VideoPresentationCoordinator(
     }
 
     private fun switchToMirror(discardPendingFrames: Boolean = false): Boolean {
+        cancelPendingDirectHandoff()
         resumeMirrorAfterDirect = false
         directPlaybackId = null
         state = PresentationState.SWITCHING_TO_MIRROR
@@ -216,6 +250,7 @@ class VideoPresentationCoordinator(
     }
 
     fun onSessionDied() {
+        cancelPendingDirectHandoff()
         resumeMirrorAfterDirect = false
         directPlaybackId = null
         directEngine.stopAndClear()
@@ -277,19 +312,24 @@ class VideoPresentationCoordinator(
         }
     }
 
-    fun playDirect() {
-        if (hasDirectPlayback) directEngine.play()
-    }
+    fun playDirect() = setDirectIntent("play", directEngine::play)
 
-    fun pauseDirect() {
-        if (hasDirectPlayback) directEngine.pause()
+    fun pauseDirect() = setDirectIntent("pause", directEngine::pause)
+
+    private fun setDirectIntent(command: String, applyToPlayer: () -> Unit) {
+        if (!hasDirectPlayback) return
+        val handoff = directHandoff
+        if (handoff == null) applyToPlayer()
+        else handoff.video = handoff.video.withPlaybackIntent(command)
     }
 
     fun seekDirect(positionSec: Double) {
         // Sender commands are untrusted. Never forward NaN, infinity or negative
         // positions into Media3's seek path.
         if (hasDirectPlayback && validDirectSeekPosition(positionSec)) {
-            directEngine.seekTo(positionSec)
+            val handoff = directHandoff
+            if (handoff == null) directEngine.seekTo(positionSec)
+            else handoff.seekPositionSec = positionSec
         }
     }
 

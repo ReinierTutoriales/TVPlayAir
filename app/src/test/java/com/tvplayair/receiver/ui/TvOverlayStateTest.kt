@@ -1,5 +1,7 @@
 package com.tvplayair.receiver.ui
 
+import com.tvplayair.receiver.network.ResolutionPreset
+
 import com.tvplayair.receiver.R
 import com.tvplayair.receiver.session.ReceiverAvailability
 import com.tvplayair.receiver.audio.OboeAudioConsumer

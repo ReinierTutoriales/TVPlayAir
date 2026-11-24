@@ -3,8 +3,8 @@ package com.tvplayair.receiver.ipc;
 import com.tvplayair.receiver.ipc.ITvPlayCallback;
 
 interface ITvPlaySession {
-    void registerCallback(ITvPlayCallback callback);
-    void unregisterCallback(ITvPlayCallback callback);
+    oneway void registerCallback(ITvPlayCallback callback);
+    oneway void unregisterCallback(ITvPlayCallback callback);
     oneway void setProjectionVisible(boolean visible);
     oneway void setAutoOpenVisual(boolean enabled);
     oneway void startServer();

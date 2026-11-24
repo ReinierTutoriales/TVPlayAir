@@ -4,8 +4,6 @@ on:
   push:
     branches:
       - main
-      - "build/**"
-      - "feat/**"
   pull_request:
     branches:
       - main
@@ -87,3 +85,32 @@ jobs:
           path: app/build/outputs/apk/debug/app-debug.apk
       - name: Report resolved Android runtime dependencies
         run: ./gradlew --no-daemon :app:dependencies --configuration debugRuntimeClasspath
+
+  verify-windows-installer:
+    runs-on: windows-2025
+    timeout-minutes: 5
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7.0.1
+      - name: Validate dependency detection in Windows PowerShell 5.1
+        shell: powershell
+        run: |
+          $installDir = Join-Path $env:RUNNER_TEMP 'TVPlayAir installer'
+          New-Item -ItemType Directory -Path $installDir | Out-Null
+          $installer = Join-Path $installDir 'TVPlayAir.ps1'
+          Copy-Item .\TVPlayAir.ps1 $installer
+          Push-Location $env:RUNNER_TEMP
+          try {
+            $missing = & powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass -File $installer -CheckDependencies
+            if ($LASTEXITCODE -ne 1 -or "$missing" -notmatch 'AdbWinUsbApi.dll') {
+              throw "Expected the installer to detect missing Platform-Tools. $missing"
+            }
+            Copy-Item (Join-Path $env:ANDROID_HOME 'platform-tools') $installDir -Recurse
+            & powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass -File $installer -CheckDependencies
+            if ($LASTEXITCODE -ne 0) {
+              throw 'The installer could not start Google ADB from its own directory.'
+            }
+          } finally {
+            Pop-Location
+          }
+          exit 0
