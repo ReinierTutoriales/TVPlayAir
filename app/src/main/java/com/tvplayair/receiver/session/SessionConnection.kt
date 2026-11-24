@@ -19,6 +19,7 @@ import com.tvplayair.receiver.video.NO_DIRECT_CHECKPOINT_MS
 interface SessionEventListener {
     fun onSharedMemoryReady(generationId: Int, activeDirectPlaybackId: Long) = Unit
     fun onSharedMemoryDetached() = Unit
+    fun onReceiverAvailability(availability: ReceiverAvailability) = Unit
     fun onVideoConfigChanged(
         mimeType: String, width: Int, height: Int, generationId: Int, codecConfig: ByteArray, opensProjection: Boolean
     ) = Unit
@@ -49,6 +50,17 @@ class SessionConnection(
     private var bindingEpoch = 0L
     private var retryDelayMs = 250L
     private var projectionVisible = false
+    private var advertisingSettings: AdvertisingSettings? = null
+
+    private data class AdvertisingSettings(
+        val maxWidth: Int,
+        val maxHeight: Int,
+        val hevcEnabled: Boolean,
+        val serviceName: String
+    ) {
+        fun sendTo(service: ITvPlaySession) =
+            service.configureAdvertising(maxWidth, maxHeight, hevcEnabled, serviceName)
+    }
 
     private fun isCurrent(epoch: Long): Boolean =
         !closed && bound && bindingEpoch == epoch
@@ -92,6 +104,11 @@ class SessionConnection(
         }
 
         override fun onSessionUnavailable() = deliver(epoch) { handleBinderDeath(epoch) }
+
+        override fun onReceiverAvailability(state: Int) {
+            val availability = ReceiverAvailability.entries.getOrNull(state) ?: return
+            deliver(epoch) { listener.onReceiverAvailability(availability) }
+        }
 
         override fun onVideoConfigChanged(
             mimeType: String, width: Int, height: Int, generationId: Int, codecConfig: ByteArray, opensProjection: Boolean
@@ -163,6 +180,7 @@ class SessionConnection(
                         .getBoolean("auto_open_visual", false)
                 )
                 service?.setProjectionVisible(projectionVisible)
+                service?.let { advertisingSettings?.sendTo(it) }
                 service?.startServer()
                 Log.i(PLAYBACK_DIAGNOSTICS_TAG, "route=ipc epoch=$epoch event=bound")
                 retryDelayMs = 250L
@@ -172,6 +190,8 @@ class SessionConnection(
         }
 
         override fun onServiceDisconnected(name: ComponentName?) = handleBinderDeath(epoch)
+        override fun onBindingDied(name: ComponentName) = handleBinderDeath(epoch)
+        override fun onNullBinding(name: ComponentName) = handleBinderDeath(epoch)
     }
 
     internal fun replaceListener(listener: SessionEventListener, replay: Boolean = false) {
@@ -241,7 +261,11 @@ class SessionConnection(
     fun configureAdvertising(
         maxWidth: Int, maxHeight: Int, hevcEnabled: Boolean, serviceName: String
     ) {
-        runCatching { service?.configureAdvertising(maxWidth, maxHeight, hevcEnabled, serviceName) }
+        val settings = AdvertisingSettings(maxWidth, maxHeight, hevcEnabled, serviceName)
+        if (settings == advertisingSettings) return
+        advertisingSettings = settings
+        runCatching { service?.let(settings::sendTo) }
+            .onFailure { handleBinderDeath(bindingEpoch) }
     }
 
     private fun handleBinderDeath(epoch: Long) {

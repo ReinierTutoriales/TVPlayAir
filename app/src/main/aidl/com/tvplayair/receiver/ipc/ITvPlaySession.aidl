@@ -7,7 +7,7 @@ interface ITvPlaySession {
     void unregisterCallback(ITvPlayCallback callback);
     oneway void setProjectionVisible(boolean visible);
     oneway void setAutoOpenVisual(boolean enabled);
-    void startServer();
+    oneway void startServer();
     void updatePlaybackTelemetry(ITvPlayCallback source, long playbackId, long resumePositionMs,
                                  double durationSec, double positionSec,
                                  double livePositionSec, float rate, boolean isPlaying, boolean isBuffering, boolean isReady);

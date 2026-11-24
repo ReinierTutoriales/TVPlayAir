@@ -10,7 +10,6 @@ import java.io.ByteArrayInputStream
 import java.io.ByteArrayOutputStream
 import java.io.IOException
 import java.io.OutputStream
-import java.net.InetSocketAddress
 import java.net.ServerSocket
 import java.net.Socket
 import java.net.SocketTimeoutException
@@ -121,10 +120,7 @@ class AirPlayDirectHttpServer(
         activeConfig = config
         if (running.get()) return true
         val socket = runCatching {
-            ServerSocket().apply {
-                reuseAddress = true
-                bind(InetSocketAddress(config.airPlayPort))
-            }
+            openAirPlayListener(config.airPlayPort)
         }.onFailure {
             Log.e(TAG, "Failed to bind AirPlay control port ${config.airPlayPort}", it)
         }.getOrNull() ?: return false

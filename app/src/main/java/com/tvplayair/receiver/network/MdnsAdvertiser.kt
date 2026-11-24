@@ -6,7 +6,11 @@ import android.net.Network
 import android.net.nsd.NsdManager
 import android.net.nsd.NsdServiceInfo
 import android.net.wifi.WifiManager
+import android.os.Handler
+import android.os.Looper
 import android.util.Log
+import com.tvplayair.receiver.diagnostics.PLAYBACK_DIAGNOSTICS_TAG
+import com.tvplayair.receiver.session.ReceiverAvailability
 import java.util.UUID
 
 data class AirPlayAdvertiseConfig(
@@ -53,9 +57,19 @@ object MdnsTxtRecords {
         "vv" to "2"
     )
 
-    fun buildRaopServiceName(config: AirPlayAdvertiseConfig): String {
-        val hexId = config.deviceId.replace(":", "").uppercase()
-        return "$hexId@${config.serviceName}"
+    fun buildAirPlayServiceName(config: AirPlayAdvertiseConfig, attempt: Int = 0): String =
+        buildInstanceName(config, "", attempt)
+
+    fun buildRaopServiceName(config: AirPlayAdvertiseConfig, attempt: Int = 0): String =
+        buildInstanceName(config, "${config.deviceId.replace(":", "").uppercase()}@", attempt)
+
+    private fun buildInstanceName(config: AirPlayAdvertiseConfig, prefix: String, attempt: Int): String {
+        val deviceSuffix = config.deviceId.replace(":", "").takeLast(6).uppercase()
+        val suffix = if (attempt == 0) "" else " (TVPlayAir $deviceSuffix-$attempt)"
+        // The service instance is a single DNS label with a 63-octet limit (RFC 6763).
+        val byteLimit = 63 - prefix.toByteArray(Charsets.UTF_8).size - suffix.toByteArray(Charsets.UTF_8).size
+        val name = ReceiverIdentityHelper.sanitizeServiceName(config.serviceName, byteLimit)
+        return "$prefix$name$suffix"
     }
 
     fun buildRaopTxt(config: AirPlayAdvertiseConfig): Map<String, String> = linkedMapOf(
@@ -83,9 +97,13 @@ object MdnsTxtRecords {
  * Publishes _airplay._tcp (7000) and _raop._tcp (5000) via Android NsdManager
  * and holds WIFI_MODE_FULL_LOW_LATENCY + MulticastLock inside the :session process.
  */
-class MdnsAdvertiser(context: Context) {
+class MdnsAdvertiser(
+    context: Context,
+    private val onAirPlayAvailability: (ReceiverAvailability) -> Unit
+) {
     companion object {
         private const val TAG = "MdnsAdvertiser"
+        private val retryDelaysMs = longArrayOf(500, 1_500, 4_000)
     }
 
     private val appContext = context.applicationContext
@@ -96,92 +114,88 @@ class MdnsAdvertiser(context: Context) {
 
     private var wifiLock: WifiManager.WifiLock? = null
     private var multicastLock: WifiManager.MulticastLock? = null
-    private var airPlayListener: NsdManager.RegistrationListener? = null
-    private var raopListener: NsdManager.RegistrationListener? = null
+    private val handler = Handler(Looper.getMainLooper())
+    private val advertisements = mutableMapOf<String, Advertisement>()
     private var networkCallback: ConnectivityManager.NetworkCallback? = null
     private var activeNetwork: Network? = null
-    private var sawNetworkLoss = false
     private var activeConfig: AirPlayAdvertiseConfig? = null
-    private var started = false
 
     @Synchronized
     fun start(config: AirPlayAdvertiseConfig) {
-        if (started && isSameMdnsAdvertisement(activeConfig, config)) {
-            activeConfig = config
-            return
-        }
-        if (started) stop()
+        if (isSameMdnsAdvertisement(activeConfig, config)) return
+        if (activeConfig != null) stop()
         activeConfig = config
         acquireLocks()
         registerAdvertisements(config)
         registerNetworkCallback()
-        started = true
     }
 
     @Synchronized
     fun stop() {
-        started = false
         activeConfig = null
         unregisterNetworkCallback()
         unregisterAdvertisements()
         releaseLocks()
     }
 
-    @Synchronized
     private fun reregisterOnNetworkChange() {
         val config = activeConfig ?: return
-        if (!started) return
         Log.i(TAG, "Network changed; re-registering AirPlay and RAOP mDNS advertisements")
         unregisterAdvertisements()
         registerAdvertisements(config)
     }
 
     private fun registerAdvertisements(config: AirPlayAdvertiseConfig) {
+        if (nsdManager == null) {
+            onAirPlayAvailability(ReceiverAvailability.UNAVAILABLE)
+            return
+        }
+        onAirPlayAvailability(ReceiverAvailability.STARTING)
         registerService(
-            serviceName = config.serviceName,
+            serviceName = { attempt -> MdnsTxtRecords.buildAirPlayServiceName(config, attempt) },
             serviceType = MdnsTxtRecords.AIRPLAY_SERVICE_TYPE,
             port = config.airPlayPort,
             txt = MdnsTxtRecords.buildAirPlayTxt(config)
-        )?.also { airPlayListener = it }
+        )
 
         registerService(
-            serviceName = MdnsTxtRecords.buildRaopServiceName(config),
+            serviceName = { attempt -> MdnsTxtRecords.buildRaopServiceName(config, attempt) },
             serviceType = MdnsTxtRecords.RAOP_SERVICE_TYPE,
             port = config.raopPort,
             txt = MdnsTxtRecords.buildRaopTxt(config)
-        )?.also { raopListener = it }
+        )
     }
 
     private fun unregisterAdvertisements() {
-        unregisterSafe(airPlayListener)
-        airPlayListener = null
-        unregisterSafe(raopListener)
-        raopListener = null
+        advertisements.values.forEach { it.stop() }
+        advertisements.clear()
     }
 
     private fun registerNetworkCallback() {
         val cm = connectivityManager ?: return
         if (networkCallback != null) return
-        activeNetwork = null
-        sawNetworkLoss = false
+        activeNetwork = cm.activeNetwork
         val callback = object : ConnectivityManager.NetworkCallback() {
             override fun onAvailable(network: Network) {
-                val shouldReregister = synchronized(this@MdnsAdvertiser) {
-                    val prev = activeNetwork
+                synchronized(this@MdnsAdvertiser) {
+                    if (networkCallback !== this) return
+                    Log.i(PLAYBACK_DIAGNOSTICS_TAG,
+                        "route=network event=default_available handle=${network.networkHandle}")
+                    if (activeNetwork == network) return
                     activeNetwork = network
-                    val changed = (prev != null && prev != network) || sawNetworkLoss
-                    sawNetworkLoss = false
-                    changed && started
-                }
-                if (shouldReregister) {
                     reregisterOnNetworkChange()
                 }
             }
 
             override fun onLost(network: Network) {
                 synchronized(this@MdnsAdvertiser) {
+                    if (networkCallback !== this) return
+                    Log.i(PLAYBACK_DIAGNOSTICS_TAG,
+                        "route=network event=default_lost handle=${network.networkHandle}")
                     if (activeNetwork == network) {
-                        sawNetworkLoss = true
+                        activeNetwork = null
+                        unregisterAdvertisements()
+                        onAirPlayAvailability(ReceiverAvailability.NETWORK_UNAVAILABLE)
                     }
                 }
             }
@@ -199,7 +213,6 @@ class MdnsAdvertiser(context: Context) {
         val callback = networkCallback ?: return
         networkCallback = null
         activeNetwork = null
-        sawNetworkLoss = false
         runCatching { cm.unregisterNetworkCallback(callback) }
     }
 
@@ -216,47 +229,89 @@ class MdnsAdvertiser(context: Context) {
         a.publicKeyHex == b.publicKeyHex
 
     private fun registerService(
-        serviceName: String,
+        serviceName: (Int) -> String,
         serviceType: String,
         port: Int,
         txt: Map<String, String>
-    ): NsdManager.RegistrationListener? {
-        val manager = nsdManager ?: return null
-        val info = NsdServiceInfo().apply {
-            this.serviceName = serviceName
-            this.serviceType = serviceType
-            this.port = port
-            txt.forEach { (k, v) -> setAttribute(k, v) }
-        }
-        val listener = object : NsdManager.RegistrationListener {
-            override fun onServiceRegistered(serviceInfo: NsdServiceInfo) {
-                Log.i(TAG, "Registered $serviceType as ${serviceInfo.serviceName}:$port")
-            }
-
-            override fun onRegistrationFailed(serviceInfo: NsdServiceInfo, errorCode: Int) {
-                Log.e(TAG, "Failed to register $serviceType (${serviceInfo.serviceName}, code=$errorCode)")
-            }
-
-            override fun onServiceUnregistered(serviceInfo: NsdServiceInfo) {
-                Log.i(TAG, "Unregistered $serviceType (${serviceInfo.serviceName})")
-            }
-
-            override fun onUnregistrationFailed(serviceInfo: NsdServiceInfo, errorCode: Int) {
-                Log.w(TAG, "Failed to unregister $serviceType (code=$errorCode)")
-            }
-        }
-        return runCatching {
-            manager.registerService(info, NsdManager.PROTOCOL_DNS_SD, listener)
-            listener
-        }.onFailure {
-            Log.e(TAG, "Exception registering $serviceType", it)
-        }.getOrNull()
+    ) {
+        val manager = nsdManager ?: return
+        val advertisement = Advertisement(manager, serviceType, serviceName, port, txt)
+        advertisements[serviceType] = advertisement
+        advertisement.register()
     }
 
-    private fun unregisterSafe(listener: NsdManager.RegistrationListener?) {
-        val manager = nsdManager ?: return
-        if (listener != null) {
-            runCatching { manager.unregisterService(listener) }
+    private inner class Advertisement(
+        private val manager: NsdManager,
+        private val serviceType: String,
+        private val serviceName: (Int) -> String,
+        private val port: Int,
+        private val txt: Map<String, String>
+    ) {
+        private var listener: NsdManager.RegistrationListener? = null
+        private var failures = 0
+        private val isAirPlay = serviceType == MdnsTxtRecords.AIRPLAY_SERVICE_TYPE
+        private val retry = Runnable {
+            synchronized(this@MdnsAdvertiser) {
+                if (advertisements[serviceType] === this) register()
+            }
+        }
+
+        fun register() {
+            val info = NsdServiceInfo().apply {
+                this.serviceName = this@Advertisement.serviceName(failures)
+                this.serviceType = this@Advertisement.serviceType
+                this.port = this@Advertisement.port
+                txt.forEach { (key, value) -> setAttribute(key, value) }
+            }
+            val attempt = object : NsdManager.RegistrationListener {
+                override fun onServiceRegistered(serviceInfo: NsdServiceInfo) {
+                    synchronized(this@MdnsAdvertiser) {
+                        if (listener === this) {
+                            Log.i(TAG, "Registered $serviceType as ${serviceInfo.serviceName}:${info.port}")
+                            if (isAirPlay) onAirPlayAvailability(ReceiverAvailability.AVAILABLE)
+                        }
+                    }
+                }
+
+                override fun onRegistrationFailed(serviceInfo: NsdServiceInfo, errorCode: Int) {
+                    synchronized(this@MdnsAdvertiser) {
+                        if (listener !== this) return
+                        Log.w(TAG, "Failed to register $serviceType (code=$errorCode)")
+                        scheduleRetry()
+                    }
+                }
+
+                override fun onServiceUnregistered(serviceInfo: NsdServiceInfo) = Unit
+
+                override fun onUnregistrationFailed(serviceInfo: NsdServiceInfo, errorCode: Int) {
+                    Log.w(TAG, "Failed to unregister $serviceType (code=$errorCode)")
+                }
+            }
+            listener = attempt
+            try {
+                manager.registerService(info, NsdManager.PROTOCOL_DNS_SD, attempt)
+            } catch (error: RuntimeException) {
+                Log.w(TAG, "Exception registering $serviceType", error)
+                scheduleRetry()
+            }
+        }
+
+        private fun scheduleRetry() {
+            listener = null
+            val delayMs = retryDelaysMs.getOrNull(failures++)
+            if (delayMs == null) {
+                Log.e(TAG, "Registration retries exhausted for $serviceType")
+                if (isAirPlay) onAirPlayAvailability(ReceiverAvailability.UNAVAILABLE)
+                return
+            }
+            handler.postDelayed(retry, delayMs)
+        }
+
+        fun stop() {
+            handler.removeCallbacks(retry)
+            val attempt = listener ?: return
+            listener = null
+            runCatching { manager.unregisterService(attempt) }
         }
     }
 

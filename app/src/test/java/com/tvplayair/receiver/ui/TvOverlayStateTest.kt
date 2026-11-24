@@ -1,5 +1,7 @@
 package com.tvplayair.receiver.ui
 
+import com.tvplayair.receiver.R
+import com.tvplayair.receiver.session.ReceiverAvailability
 import com.tvplayair.receiver.audio.OboeAudioConsumer
 import com.tvplayair.receiver.session.RaopNowPlaying
 import com.tvplayair.receiver.session.RaopTrack
@@ -12,6 +14,29 @@ import org.junit.Assert.assertTrue
 import org.junit.Test
 
 class TvOverlayStateTest {
+
+    @Test
+    fun autoOpenRequiresCurrentOverlayAccessEvenWhenPreviouslyEnabled() {
+        val enabled = TvOverlayState(autoOpenVisual = true, overlayAccessGranted = true)
+        assertEquals(R.string.receiver_setting_on, enabled.autoOpenSettingText)
+        assertEquals(R.string.receiver_access_required,
+            enabled.copy(overlayAccessGranted = false).autoOpenSettingText)
+        assertEquals(R.string.receiver_setting_off, enabled.copy(autoOpenVisual = false).autoOpenSettingText)
+    }
+
+    @Test
+    fun standbyDistinguishesStartupDiscoveryAndNetworkLoss() {
+        val state = TvOverlayState()
+        assertEquals(R.string.receiver_starting, state.standbyStatusText)
+        assertEquals(R.string.receiver_airplay_ready,
+            state.copy(receiverAvailability = ReceiverAvailability.AVAILABLE).standbyStatusText)
+        assertEquals(R.string.receiver_unavailable,
+            state.copy(receiverAvailability = ReceiverAvailability.UNAVAILABLE).standbyStatusText)
+        assertEquals(R.string.receiver_network_unavailable,
+            state.copy(receiverAvailability = ReceiverAvailability.NETWORK_UNAVAILABLE).standbyStatusText)
+        assertEquals(R.string.receiver_connected,
+            state.copy(receiverAvailability = ReceiverAvailability.AVAILABLE, connectedClient = "iPhone").standbyStatusText)
+    }
 
     @Test
     fun mirrorControlsStayHiddenUntilRequestedAndDoNotFollowTheNextSource() {

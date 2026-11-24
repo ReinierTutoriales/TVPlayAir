@@ -56,8 +56,8 @@ internal fun TvNowPlayingScreen(
     controls: @Composable () -> Unit
 ) {
     BoxWithConstraints(Modifier.fillMaxSize()) {
-        val coverSize = minOf(maxWidth * 0.39f, maxHeight * 0.77f, 340.dp)
-        val horizontalInset = maxWidth * 0.055f
+        val coverSize = minOf(maxWidth * 0.37f, maxHeight * 0.74f, 368.dp)
+        val horizontalInset = (maxWidth * 0.055f).coerceIn(18.dp, 88.dp)
         val currentCover = rememberUniformArtwork(artwork, coverSize)
         val tint = currentCover?.tint ?: DefaultArtworkTint
         val compact = maxHeight < 360.dp || maxWidth < 640.dp
@@ -141,7 +141,7 @@ internal fun rememberUniformArtwork(artwork: ByteArray?, coverSize: androidx.com
 
 @Composable
 internal fun AlbumCover(image: ImageBitmap?, modifier: Modifier) {
-    val shape = RoundedCornerShape(16.dp)
+    val shape = RoundedCornerShape(22.dp)
     Box(
         modifier = modifier.clip(shape)
             .background(Color(0xFF16181E))

@@ -1,7 +1,9 @@
 package com.tvplayair.receiver.ui
 
+import com.tvplayair.receiver.R
 import com.tvplayair.receiver.audio.OboeAudioConsumer
 import com.tvplayair.receiver.session.RaopNowPlaying
+import com.tvplayair.receiver.session.ReceiverAvailability
 import com.tvplayair.receiver.video.DirectPlaybackTelemetry
 import com.tvplayair.receiver.video.PresentationState
 
@@ -17,10 +19,14 @@ data class TvOverlayState(
     val resolutionPreset: ResolutionPreset = ResolutionPreset.UHD_4K,
     val hevcEnabled: Boolean = true,
     val autoOpenVisual: Boolean = false,
+    val overlayAccessGranted: Boolean = false,
+    val notificationsEnabled: Boolean = false,
+    val autoStartReceiver: Boolean = true,
     val audioOffsetMs: Int = 0,
     val presentationState: PresentationState = PresentationState.IDLE,
     val connectedClient: String? = null,
     val receiverName: String = "TVPlayAir",
+    val receiverAvailability: ReceiverAvailability = ReceiverAvailability.STARTING,
     val projectionHome: Boolean = false,
     val audioGeneration: Int? = null,
     val audioControlsAvailable: Boolean = false,
@@ -31,6 +37,21 @@ data class TvOverlayState(
     private val awaitingAudioPresentation: Boolean = false,
     private val pendingNowPlaying: RaopNowPlaying? = null
 ) {
+    internal val autoOpenSettingText: Int
+        get() = when {
+            !overlayAccessGranted -> R.string.receiver_access_required
+            autoOpenVisual -> R.string.receiver_setting_on
+            else -> R.string.receiver_setting_off
+        }
+
+    internal val standbyStatusText: Int
+        get() = if (connectedClient != null) R.string.receiver_connected else when (receiverAvailability) {
+            ReceiverAvailability.STARTING -> R.string.receiver_starting
+            ReceiverAvailability.AVAILABLE -> R.string.receiver_airplay_ready
+            ReceiverAvailability.UNAVAILABLE -> R.string.receiver_unavailable
+            ReceiverAvailability.NETWORK_UNAVAILABLE -> R.string.receiver_network_unavailable
+        }
+
     companion object {
         const val OFFSET_STEP_MS = 10
     }

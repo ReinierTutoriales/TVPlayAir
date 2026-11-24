@@ -39,7 +39,7 @@ El árbitro distingue `requested`, `buffering`, `ready`, `firstFrame`, `playing`
 - `seekVideoBy` solo limita el mínimo; respetar seekability, duración conocida, streams live y disponibilidad de comandos Media3.
 - `Handler` del HUD se limpia en `onStop`; añadir cierre explícito en destrucción y pruebas de callbacks tardíos.
 - La prueba nueva de `TvOverlayStateTest` valida visibilidad lógica, **no** cambios de app, superficies, eventos tardíos, IPC, A/V ni latencia.
-- La especificación v1.0 declara capacidades 4K/HEVC/HDR, DACP, HID y tolerancia a fallos: cada afirmación requiere pruebas por capacidad y dispositivo, no solo revisión estática.
+- La especificación v1.0 declara capacidades 4K/HEVC/HDR, DACP y tolerancia a fallos: cada afirmación requiere pruebas por capacidad y dispositivo, no solo revisión estática.
 - La documentación antigua dice `targetSdk 35` y `NDK r27+`; verificar configuración real y requisitos vigentes antes de actualizar. Evitar prometer passthrough HDR, cero copias o ausencia de crashes sin medición.
 
 ## Tecnología y fuentes oficiales

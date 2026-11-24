@@ -8,15 +8,14 @@ import android.app.Service
 import android.content.Context
 import android.content.Intent
 import android.content.pm.ServiceInfo
-import android.net.ConnectivityManager
-import android.net.Network
-import android.os.Build
 import android.os.Handler
 import android.os.IBinder
 import android.os.Looper
 import android.os.ParcelFileDescriptor
+import android.provider.Settings
 import android.util.Log
 import com.tvplayair.receiver.MainActivity
+import com.tvplayair.receiver.R
 import com.tvplayair.receiver.control.DacpController
 import com.tvplayair.receiver.control.DacpRequestBuilder
 import com.tvplayair.receiver.diagnostics.PLAYBACK_DIAGNOSTICS_TAG
@@ -33,15 +32,13 @@ import com.tvplayair.receiver.video.DirectPlaybackTelemetry
 class SessionService : Service() {
     companion object {
         private const val TAG = "SessionService"
-        private const val CHANNEL_ID = "tvplayair_session"
+        internal const val RECEIVER_CHANNEL_ID = "tvplayair_session"
         private const val NOTIFICATION_ID = 1001
-        const val ACTION_START_BACKGROUND = "com.tvplayair.receiver.action.START_BACKGROUND"
+        private val endpointRetryDelaysMs = longArrayOf(500, 1_500, 4_000)
 
         fun startInBackground(context: Context) {
-            val intent = Intent(context.applicationContext, SessionService::class.java).apply {
-                action = ACTION_START_BACKGROUND
-            }
-            context.applicationContext.startForegroundService(intent)
+            val appContext = context.applicationContext
+            appContext.startForegroundService(Intent(appContext, SessionService::class.java))
         }
     }
 
@@ -68,11 +65,12 @@ class SessionService : Service() {
 
     @Volatile
     private var callback: ITvPlayCallback? = null
+    private var receiverAvailability = ReceiverAvailability.STARTING
     private var directPlayback: DirectPlaybackStart? = null
     // Only an actual new visual session may request foreground presentation.
     // Android can still reject background activity starts; the notification remains available.
     private var mirrorProjectionActive = false
-    private var lastAutoOpenedDirectId: Long? = null
+    private var pendingProjection: Runnable? = null
     @Volatile private var autoOpenVisual = false
 
     private fun ITvPlayCallback.showDirectVideo(video: DirectPlaybackStart) {
@@ -82,7 +80,6 @@ class SessionService : Service() {
         )
     }
 
-    private lateinit var identityStore: ReceiverIdentityStore
     private lateinit var mdnsAdvertiser: MdnsAdvertiser
     private val mainHandler = Handler(Looper.getMainLooper())
     private lateinit var dacpController: DacpController
@@ -91,6 +88,15 @@ class SessionService : Service() {
     private var advertiseConfig = AirPlayAdvertiseConfig()
     private var ed25519PrivateKey: ByteArray? = null
     private var serverRunning = false
+    private var receiverDestroyed = false
+    private var endpointRetryPending = false
+    private val retryAirPlayEndpoints = Runnable {
+        synchronized(this) {
+            endpointRetryPending = false
+            startAirPlaySession()
+        }
+    }
+    private var endpointFailures = 0
 
     private val protocolListener = object : AirPlayProtocolListener {
         override fun onVideoConfigChanged(
@@ -106,14 +112,10 @@ class SessionService : Service() {
                 latestMirrorConfig = config
                 if (opensProjection) {
                     directPlayback = null
-                    lastAutoOpenedDirectId = null
+                    if (!mirrorProjectionActive) requestProjection()
+                    mirrorProjectionActive = true
                 }
                 runCatching { callback?.let { config.sendTo(it, opensProjection) } }
-            }
-            if (opensProjection) {
-                val newProjection = !mirrorProjectionActive
-                mirrorProjectionActive = true
-                if (newProjection) ensureUiForeground()
             }
         }
 
@@ -121,13 +123,11 @@ class SessionService : Service() {
             synchronized(callbackLock) {
                 // Retain the active source for Activity recreation, even if a UI is bound.
                 val video = DirectPlaybackStart(url, startPosition, playbackId)
+                val isNewPlayback = directPlayback?.playbackId != playbackId
                 directPlayback = video
                 mirrorProjectionActive = false
+                if (isNewPlayback) requestProjection()
                 runCatching { callback?.showDirectVideo(video) }
-            }
-            if (lastAutoOpenedDirectId != playbackId) {
-                lastAutoOpenedDirectId = playbackId
-                ensureUiForeground()
             }
         }
 
@@ -137,7 +137,7 @@ class SessionService : Service() {
                 when (command) {
                     "stop" -> {
                         directPlayback = null
-                        lastAutoOpenedDirectId = null
+                        cancelProjectionRequest()
                     }
                     "pause", "play" -> directPlayback = directPlayback?.withPlaybackIntent(command)
                 }
@@ -158,6 +158,7 @@ class SessionService : Service() {
             synchronized(callbackLock) {
                 if (latestMirrorConfig?.generationId != generationId) return
                 latestMirrorConfig = null
+                if (mirrorProjectionActive) cancelProjectionRequest()
                 mirrorProjectionActive = false
                 runCatching { callback?.onMirrorStreamEnded(generationId) }
             }
@@ -238,6 +239,7 @@ class SessionService : Service() {
                     videoCopy.close()
                 }
                 callback = cb
+                runCatching { cb.onReceiverAvailability(receiverAvailability.ordinal) }
                 activeAudioGeneration?.let { runCatching { cb.onAudioStreamStarted(it) } }
                 sendNowPlaying(
                     cb,
@@ -265,12 +267,10 @@ class SessionService : Service() {
 
         override fun setAutoOpenVisual(enabled: Boolean) {
             autoOpenVisual = enabled
-            getSharedPreferences("receiver_presentation", MODE_PRIVATE)
-                .edit().putBoolean("auto_open_visual", enabled).apply()
         }
 
         override fun startServer() {
-            startAirPlaySession()
+            mainHandler.post { startAirPlaySession() }
         }
 
         override fun updatePlaybackTelemetry(
@@ -319,7 +319,7 @@ class SessionService : Service() {
                 if (callback?.asBinder() != source.asBinder()) return
                 if (directPlayback?.playbackId == playbackId) {
                     directPlayback = null
-                    lastAutoOpenedDirectId = null
+                    cancelProjectionRequest()
                 }
             }
             protocolEngine.finishDirectPlayback(playbackId)
@@ -345,30 +345,18 @@ class SessionService : Service() {
             serviceName: String
         ) {
             synchronized(this@SessionService) {
-                val cleanName = if (serviceName.isNotBlank()) {
-                    identityStore.saveServiceName(serviceName)
-                } else {
-                    advertiseConfig.serviceName
-                }
-                advertiseConfig = advertiseConfig.copy(
-                    serviceName = ReceiverIdentityHelper.sanitizeServiceName(cleanName),
+                val serviceNameToAdvertise = serviceName.takeIf { it.isNotBlank() }
+                    ?.let { ReceiverIdentityHelper.sanitizeServiceName(it) } ?: advertiseConfig.serviceName
+                val updated = advertiseConfig.copy(
+                    serviceName = serviceNameToAdvertise,
                     maxWidth = maxWidth,
                     maxHeight = maxHeight,
                     hevcEnabled = hevcEnabled
                 )
+                if (updated == advertiseConfig) return
+                advertiseConfig = updated
                 if (serverRunning) startAirPlayEndpoints()
             }
-        }
-    }
-
-    private var connectivity: ConnectivityManager? = null
-    private val networkCallback = object : ConnectivityManager.NetworkCallback() {
-        override fun onAvailable(network: Network) {
-            Log.i(PLAYBACK_DIAGNOSTICS_TAG, "route=network event=default_available handle=${network.networkHandle}")
-        }
-
-        override fun onLost(network: Network) {
-            Log.i(PLAYBACK_DIAGNOSTICS_TAG, "route=network event=default_lost handle=${network.networkHandle}")
         }
     }
 
@@ -376,8 +364,7 @@ class SessionService : Service() {
         super.onCreate()
         autoOpenVisual = getSharedPreferences("receiver_presentation", MODE_PRIVATE)
             .getBoolean("auto_open_visual", false)
-        identityStore = ReceiverIdentityStore(this)
-        val identity = identityStore.loadOrCreate()
+        val identity = ReceiverIdentityStore(this).loadOrCreate()
         ed25519PrivateKey = identity.ed25519PrivateKey
         advertiseConfig = advertiseConfig.copy(
             serviceName = identity.serviceName,
@@ -385,7 +372,7 @@ class SessionService : Service() {
             piUuid = identity.piUuid,
             publicKeyHex = identity.ed25519PublicKeyHex
         )
-        mdnsAdvertiser = MdnsAdvertiser(this)
+        mdnsAdvertiser = MdnsAdvertiser(this, ::publishReceiverAvailability)
         dacpController = DacpController(this) {
             mainHandler.post {
                 synchronized(callbackLock) {
@@ -394,21 +381,25 @@ class SessionService : Service() {
             }
         }
         protocolEngine = AirPlayDirectHttpServer(protocolListener)
-        getSystemService(ConnectivityManager::class.java)?.let { manager ->
-            try {
-                manager.registerDefaultNetworkCallback(networkCallback)
-                connectivity = manager
-            } catch (error: RuntimeException) {
-                Log.w(PLAYBACK_DIAGNOSTICS_TAG,
-                    "route=network event=observer_unavailable error=${error.javaClass.simpleName}")
-            }
-        }
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
-        promoteToForeground()
+        if (!promoteToForeground()) {
+            publishReceiverAvailability(ReceiverAvailability.UNAVAILABLE)
+            stopSelf(startId)
+            return START_NOT_STICKY
+        }
         startAirPlaySession()
         return START_STICKY
+    }
+
+    private fun publishReceiverAvailability(availability: ReceiverAvailability) {
+        synchronized(callbackLock) {
+            if (receiverAvailability == availability) return
+            receiverAvailability = availability
+            Log.i(PLAYBACK_DIAGNOSTICS_TAG, "route=startup event=receiver_state state=$availability")
+            runCatching { callback?.onReceiverAvailability(availability.ordinal) }
+        }
     }
 
     private fun sendAudioControlsAvailability(target: ITvPlayCallback) {
@@ -428,19 +419,19 @@ class SessionService : Service() {
         }
     }
 
-    private fun promoteToForeground() {
+    private fun promoteToForeground(): Boolean {
         val manager = getSystemService(NotificationManager::class.java)
         val channel = NotificationChannel(
-            CHANNEL_ID,
+            RECEIVER_CHANNEL_ID,
             "TVPlayAir Background Receiver",
             NotificationManager.IMPORTANCE_LOW
         )
         manager?.createNotificationChannel(channel)
 
-        val notification = Notification.Builder(this, CHANNEL_ID)
+        val notification = Notification.Builder(this, RECEIVER_CHANNEL_ID)
             .setContentTitle(advertiseConfig.serviceName)
             .setContentText("AirPlay receiver active in background")
-            .setSmallIcon(android.R.drawable.stat_sys_data_bluetooth)
+            .setSmallIcon(R.drawable.ic_receiver_notification)
             .setContentIntent(
                 PendingIntent.getActivity(
                     this, 0, projectionIntent(), PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT
@@ -449,30 +440,45 @@ class SessionService : Service() {
             .setOngoing(true)
             .build()
 
-        runCatching {
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
-                startForeground(
-                    NOTIFICATION_ID,
-                    notification,
-                    ServiceInfo.FOREGROUND_SERVICE_TYPE_MEDIA_PLAYBACK
-                )
-            } else {
-                startForeground(NOTIFICATION_ID, notification)
-            }
+        return runCatching {
+            startForeground(
+                NOTIFICATION_ID,
+                notification,
+                ServiceInfo.FOREGROUND_SERVICE_TYPE_CONNECTED_DEVICE
+            )
         }.onFailure {
-            Log.w(TAG, "Could not promote SessionService to foreground", it)
-        }
+            Log.w(PLAYBACK_DIAGNOSTICS_TAG,
+                "route=startup event=foreground_failed reason=${it.javaClass.simpleName}", it)
+        }.isSuccess
     }
 
-    private fun ensureUiForeground() {
-        if (projectionVisible) return
-        // Opt-in policy: no background activity launches unless explicitly enabled.
-        if (!autoOpenVisual) return
-        runCatching {
-            startActivity(projectionIntent())
-        }.onFailure {
-            Log.w(TAG, "Unable to auto-launch MainActivity from background", it)
+    // Called under callbackLock so a replaced or ended session cannot open the UI later.
+    private fun requestProjection() {
+        cancelProjectionRequest()
+        if (projectionVisible || !autoOpenVisual) return
+        val request = object : Runnable {
+            override fun run() {
+                synchronized(callbackLock) {
+                    if (pendingProjection !== this) return
+                    pendingProjection = null
+                    if (projectionVisible || !autoOpenVisual) return
+                    if (!Settings.canDrawOverlays(this@SessionService)) {
+                        Log.i(PLAYBACK_DIAGNOSTICS_TAG, "route=projection event=overlay_access_missing")
+                        return
+                    }
+                    runCatching { startActivity(projectionIntent()) }.onFailure {
+                        Log.w(TAG, "Unable to auto-launch MainActivity from background", it)
+                    }
+                }
+            }
         }
+        pendingProjection = request
+        mainHandler.post(request)
+    }
+
+    private fun cancelProjectionRequest() {
+        pendingProjection?.let(mainHandler::removeCallbacks)
+        pendingProjection = null
     }
 
     private fun projectionIntent() = Intent(this, MainActivity::class.java).apply {
@@ -496,12 +502,26 @@ class SessionService : Service() {
 
     @Synchronized
     private fun startAirPlaySession() {
-        if (serverRunning) return
-        if (ensureBuffer(0) == null || ensureBuffer(1) == null) {
+        if (receiverDestroyed || serverRunning || endpointRetryPending) return
+
+        if (ensureBuffer(0) != null && ensureBuffer(1) != null) {
+            serverRunning = startAirPlayEndpoints()
+            if (serverRunning) {
+                endpointFailures = 0
+                return
+            }
+        } else {
             Log.e(TAG, "AirPlay cannot start without video and audio shared memory")
+        }
+
+        val delayMs = endpointRetryDelaysMs.getOrNull(endpointFailures++)
+        if (delayMs == null) {
+            endpointFailures = 0
+            Log.e(TAG, "AirPlay endpoint startup retries exhausted")
+            publishReceiverAvailability(ReceiverAvailability.UNAVAILABLE)
             return
         }
-        serverRunning = startAirPlayEndpoints()
+        endpointRetryPending = mainHandler.postDelayed(retryAirPlayEndpoints, delayMs)
     }
 
     private fun startAirPlayEndpoints(): Boolean {
@@ -513,6 +533,9 @@ class SessionService : Service() {
 
     @Synchronized
     private fun stopAirPlaySession() {
+        receiverDestroyed = true
+        endpointRetryPending = false
+        mainHandler.removeCallbacks(retryAirPlayEndpoints)
         serverRunning = false
         mdnsAdvertiser.stop()
         protocolEngine.stop()
@@ -521,6 +544,8 @@ class SessionService : Service() {
             latestNowPlaying = null
             activeAudioGeneration = null
             directPlayback = null
+            mirrorProjectionActive = false
+            cancelProjectionRequest()
         }
         dacpController.onClientDisconnected()
     }
@@ -539,8 +564,6 @@ class SessionService : Service() {
     override fun onBind(intent: Intent?): IBinder = binder
 
     override fun onDestroy() {
-        connectivity?.unregisterNetworkCallback(networkCallback)
-        connectivity = null
         stopAirPlaySession()
         dacpController.release()
         callback = null

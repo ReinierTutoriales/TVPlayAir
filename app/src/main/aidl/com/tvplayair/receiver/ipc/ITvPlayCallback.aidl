@@ -18,4 +18,5 @@ oneway interface ITvPlayCallback {
     void onNowPlaying(int generationId, boolean available, String title, String artist, String album, in byte[] artwork);
     void onAudioControlsAvailable(boolean available);
     void onAudioStreamStopped(int generationId);
+    void onReceiverAvailability(int state);
 }

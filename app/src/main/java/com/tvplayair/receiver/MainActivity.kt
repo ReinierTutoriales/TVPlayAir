@@ -1,6 +1,12 @@
 package com.tvplayair.receiver
 
+import android.Manifest
+import android.app.NotificationManager
 import android.content.Intent
+import android.content.pm.PackageManager
+import android.net.Uri
+import android.os.Build
+import android.provider.Settings
 import android.graphics.Color
 import android.os.Bundle
 import android.os.Handler
@@ -15,13 +21,16 @@ import android.view.View
 import android.view.ViewGroup
 import android.view.WindowManager
 import android.widget.FrameLayout
+import android.widget.Toast
 import androidx.activity.ComponentActivity
 import androidx.activity.OnBackPressedCallback
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.activity.viewModels
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.platform.ComposeView
+import androidx.core.view.doOnPreDraw
 import androidx.core.view.WindowCompat
 import androidx.core.view.WindowInsetsCompat
 import androidx.core.view.WindowInsetsControllerCompat
@@ -30,12 +39,14 @@ import com.tvplayair.receiver.diagnostics.PLAYBACK_DIAGNOSTICS_TAG
 import com.tvplayair.receiver.audio.AudioContinuityService
 import com.tvplayair.receiver.audio.OboeAudioConsumer
 import com.tvplayair.receiver.control.DacpCommand
-import com.tvplayair.receiver.control.TvRemoteHidBridge
 import com.tvplayair.receiver.network.ReceiverIdentityHelper
 import com.tvplayair.receiver.network.ReceiverIdentityStore
+import com.tvplayair.receiver.session.BootReceiver
+import com.tvplayair.receiver.session.ReceiverAvailability
 import com.tvplayair.receiver.session.SessionConnection
 import com.tvplayair.receiver.session.RaopNowPlaying
 import com.tvplayair.receiver.session.SessionEventListener
+import com.tvplayair.receiver.session.SessionService
 import com.tvplayair.receiver.ui.TvOverlayMenu
 import com.tvplayair.receiver.ui.TvOverlayState
 import com.tvplayair.receiver.video.DIRECT_STARTUP_TIMEOUT_MS
@@ -62,7 +73,6 @@ class MainActivity : ComponentActivity(), SurfaceLayerController {
     private lateinit var sessionConnection: SessionConnection
     private lateinit var sessionListener: SessionEventListener
     private var audioHandedOff = false
-    private lateinit var hidBridge: TvRemoteHidBridge
     private lateinit var identityStore: ReceiverIdentityStore
 
     private var sharedMemoryReady = false
@@ -78,6 +88,15 @@ class MainActivity : ComponentActivity(), SurfaceLayerController {
     private var mirrorSurfaceTimeout: Runnable? = null
     private var directRequestedAtMs = 0L
     private var overlayState by mutableStateOf(TvOverlayState())
+
+    private val overlaySettings = registerForActivityResult(ActivityResultContracts.StartActivityForResult()) {
+        refreshAccessStatus()
+        if (overlayState.overlayAccessGranted) setAutoOpenVisual(true)
+    }
+
+    private val notificationPermission = registerForActivityResult(ActivityResultContracts.RequestPermission()) {
+        refreshAccessStatus()
+    }
 
     private val mainHandler = Handler(Looper.getMainLooper())
     private var pendingVideoSelect: Pair<Long, Long>? = null
@@ -96,6 +115,7 @@ class MainActivity : ComponentActivity(), SurfaceLayerController {
     }
 
     override fun onCreate(savedInstanceState: Bundle?) {
+        val createdAtMs = SystemClock.elapsedRealtime()
         super.onCreate(savedInstanceState)
         WindowCompat.getInsetsController(window, window.decorView).apply {
             systemBarsBehavior = WindowInsetsControllerCompat.BEHAVIOR_SHOW_TRANSIENT_BARS_BY_SWIPE
@@ -105,11 +125,11 @@ class MainActivity : ComponentActivity(), SurfaceLayerController {
         val retainedAudio = AudioContinuityService.claim()
         audioConsumer = retainedAudio?.second ?: OboeAudioConsumer(applicationContext)
         identityStore = ReceiverIdentityStore(this)
-        val initialIdentity = identityStore.loadOrCreate()
         overlayState = overlayState.copy(
-            receiverName = initialIdentity.serviceName,
+            receiverName = identityStore.readServiceName(),
             audioOffsetMs = audioConsumer.getAudioOffsetMs(),
             projectionHome = isProjectionHomeIntent(intent),
+            autoStartReceiver = BootReceiver.isAutoStartEnabled(this),
             autoOpenVisual = getSharedPreferences("receiver_presentation", MODE_PRIVATE)
                 .getBoolean("auto_open_visual", false)
         )
@@ -148,6 +168,8 @@ class MainActivity : ComponentActivity(), SurfaceLayerController {
                         onToggleResolution = ::toggleResolutionPreset,
                         onToggleHevc = ::toggleHevcSetting,
                         onToggleAutoOpenVisual = ::toggleAutoOpenVisual,
+                        onManageNotifications = ::manageNotifications,
+                        onToggleAutoStartReceiver = ::toggleAutoStartReceiver,
                         onAdjustAudioOffset = ::adjustAudioOffset,
                         onAudioCommand = { command -> sendAudioCommand(command, audioGeneration) },
                         onVideoToggle = { toggleVideoFromControls(directPlaybackId) },
@@ -245,9 +267,12 @@ class MainActivity : ComponentActivity(), SurfaceLayerController {
             audioController = audioConsumer,
             surfaceController = this
         )
-        hidBridge = TvRemoteHidBridge(this).apply { startIfSupported() }
 
         sessionListener = object : SessionEventListener {
+            override fun onReceiverAvailability(availability: ReceiverAvailability) {
+                overlayState = overlayState.copy(receiverAvailability = availability)
+            }
+
             override fun onSharedMemoryReady(generationId: Int, activeDirectPlaybackId: Long) {
                 sharedMemoryReady = true
                 awaitingDirectSnapshot = activeDirectPlaybackId != 0L
@@ -279,7 +304,7 @@ class MainActivity : ComponentActivity(), SurfaceLayerController {
                 dismissPlaybackControls()
                 presentationCoordinator.onSessionDied()
                 overlayState = overlayState.withAudioStreamStopped().withPresentation(presentationCoordinator.state)
-                    .copy(connectedClient = null)
+                    .copy(connectedClient = null, receiverAvailability = ReceiverAvailability.STARTING)
                 updateScreenWake()
             }
 
@@ -380,8 +405,15 @@ class MainActivity : ComponentActivity(), SurfaceLayerController {
         }
         sessionConnection = retainedPlayback?.connection ?: retainedAudio?.first ?: SessionConnection(this)
         sessionConnection.replaceListener(sessionListener, replay = retainedPlayback != null)
-        sessionConnection.connect()
-        sessionConnection.setAutoOpenVisual(overlayState.autoOpenVisual)
+        root.doOnPreDraw {
+            root.post {
+                if (!destroyingView && !isFinishing) {
+                    Log.i(PLAYBACK_DIAGNOSTICS_TAG,
+                        "route=startup event=ui_layout elapsedMs=${SystemClock.elapsedRealtime() - createdAtMs}")
+                    sessionConnection.connect()
+                }
+            }
+        }
     }
 
     override fun onStart() {
@@ -394,6 +426,11 @@ class MainActivity : ComponentActivity(), SurfaceLayerController {
         screenStarted = true
         sessionConnection.setProjectionVisible(true)
         if (directPlaybackId != 0L) publishDirectPlayback()
+    }
+
+    override fun onResume() {
+        super.onResume()
+        refreshAccessStatus()
     }
 
     override fun onStop() {
@@ -412,7 +449,7 @@ class MainActivity : ComponentActivity(), SurfaceLayerController {
     override fun onKeyDown(keyCode: Int, event: KeyEvent?): Boolean {
         val openDuringMirror = isSelectKey(keyCode) && !overlayState.visible &&
             presentationCoordinator.state == PresentationState.MIRROR_ACTIVE &&
-            !overlayState.showingMirrorControls && !hidBridge.isConnected()
+            !overlayState.showingMirrorControls
         val openFromProjectionHome = isSelectKey(keyCode) && overlayState.projectionHome &&
             !overlayState.visible && overlayState.showStandby && !overlayState.showingAudio
         if (isSettingsKey(keyCode) || openDuringMirror || openFromProjectionHome) {
@@ -422,7 +459,7 @@ class MainActivity : ComponentActivity(), SurfaceLayerController {
 
         if (overlayState.visible) return super.onKeyDown(keyCode, event)
 
-        if (presentationCoordinator.state == PresentationState.MIRROR_ACTIVE && !hidBridge.isConnected() &&
+        if (presentationCoordinator.state == PresentationState.MIRROR_ACTIVE &&
             (keyCode == KeyEvent.KEYCODE_DPAD_UP || keyCode == KeyEvent.KEYCODE_DPAD_DOWN)
         ) {
             overlayState = overlayState.copy(mirrorControlsVisible = true)
@@ -498,13 +535,6 @@ class MainActivity : ComponentActivity(), SurfaceLayerController {
                 }
                 return true
             }
-        }
-
-        if (presentationCoordinator.state == PresentationState.MIRROR_ACTIVE &&
-            hidBridge.isConnected() &&
-            hidBridge.sendAndroidKey(keyCode)
-        ) {
-            return true
         }
 
         return super.onKeyDown(keyCode, event)
@@ -630,8 +660,69 @@ class MainActivity : ComponentActivity(), SurfaceLayerController {
         pushAdvertisingConfig(overlayState)
     }
 
+    private fun toggleAutoStartReceiver() {
+        val enabled = !overlayState.autoStartReceiver
+        BootReceiver.setAutoStartEnabled(this, enabled)
+        overlayState = overlayState.copy(autoStartReceiver = enabled)
+    }
+
     private fun toggleAutoOpenVisual() {
-        val enabled = !overlayState.autoOpenVisual
+        refreshAccessStatus()
+        if (overlayState.overlayAccessGranted) {
+            setAutoOpenVisual(!overlayState.autoOpenVisual)
+            return
+        }
+        runCatching {
+            overlaySettings.launch(Intent(Settings.ACTION_MANAGE_OVERLAY_PERMISSION, Uri.parse("package:$packageName")))
+        }.onFailure {
+            Toast.makeText(this, R.string.receiver_overlay_settings_unavailable, Toast.LENGTH_LONG).show()
+        }
+    }
+
+    private fun refreshAccessStatus() {
+        val manager = getSystemService(NotificationManager::class.java)
+        val receiverChannel = manager?.getNotificationChannel(SessionService.RECEIVER_CHANNEL_ID)
+        overlayState = overlayState.copy(
+            overlayAccessGranted = Settings.canDrawOverlays(this),
+            notificationsEnabled = manager?.areNotificationsEnabled() == true &&
+                receiverChannel?.importance != NotificationManager.IMPORTANCE_NONE
+        )
+    }
+
+    private fun manageNotifications() {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU &&
+            checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED
+        ) {
+            val prefs = getPreferences(MODE_PRIVATE)
+            val requested = prefs.getBoolean("notification_permission_requested", false)
+            if (!requested || shouldShowRequestPermissionRationale(Manifest.permission.POST_NOTIFICATIONS)) {
+                prefs.edit().putBoolean("notification_permission_requested", true).apply()
+                notificationPermission.launch(Manifest.permission.POST_NOTIFICATIONS)
+                return
+            }
+        }
+
+        val manager = getSystemService(NotificationManager::class.java)
+        if (manager?.areNotificationsEnabled() == true &&
+            manager.getNotificationChannel(SessionService.RECEIVER_CHANNEL_ID) != null
+        ) {
+            val channelSettings = Intent(Settings.ACTION_CHANNEL_NOTIFICATION_SETTINGS)
+                .putExtra(Settings.EXTRA_APP_PACKAGE, packageName)
+                .putExtra(Settings.EXTRA_CHANNEL_ID, SessionService.RECEIVER_CHANNEL_ID)
+            if (runCatching { startActivity(channelSettings) }.isSuccess) return
+        }
+
+        runCatching {
+            startActivity(Intent(Settings.ACTION_APP_NOTIFICATION_SETTINGS).putExtra(Settings.EXTRA_APP_PACKAGE, packageName))
+        }.recoverCatching {
+            startActivity(Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS, Uri.parse("package:$packageName")))
+        }.onFailure {
+            Toast.makeText(this, R.string.receiver_notification_settings_unavailable, Toast.LENGTH_LONG).show()
+        }
+    }
+
+    private fun setAutoOpenVisual(enabled: Boolean) {
+        if (overlayState.autoOpenVisual == enabled) return
         overlayState = overlayState.copy(autoOpenVisual = enabled)
         getSharedPreferences("receiver_presentation", MODE_PRIVATE)
             .edit().putBoolean("auto_open_visual", enabled).apply()
@@ -883,7 +974,6 @@ class MainActivity : ComponentActivity(), SurfaceLayerController {
         mirrorSurfaceTimeout = null
         cancelDirectStartupTimeout()
         mainHandler.removeCallbacks(hidePlaybackControls)
-        hidBridge.release()
         webVideoPlayer.detachView(directSurfaceView)
         val retainedByService = !isChangingConfigurations &&
             DirectPlaybackService.retain(DirectPlaybackService.RetainedPlayback(webVideoPlayer, sessionConnection))
