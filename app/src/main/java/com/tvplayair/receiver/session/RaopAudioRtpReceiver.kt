@@ -307,8 +307,9 @@ internal class RaopRtpJitterBuffer(
  */
 class RaopAudioRtpReceiver(
     private val generationProvider: () -> Int,
-    private val payloadObserver: ((ByteArray, Int) -> Unit)? = null
+    private val payloadObserver: ((ByteArray, Int) -> Unit)?
 ) {
+    constructor(generationProvider: () -> Int) : this(generationProvider, null)
     companion object {
         private const val TAG = "RaopAudioRtpReceiver"
         const val DEFAULT_AUDIO_PORT = 6000
@@ -453,13 +454,16 @@ class RaopAudioRtpReceiver(
     }
 
     fun start(peer: InetAddress?, remoteControlPort: Int? = null, owner: Any? = null): Boolean {
-        closeActiveTransport(retireSsrc = true)
-        val udp = bindUdp(0) ?: bindUdp(DEFAULT_AUDIO_PORT) ?: return false
+        val udp = bindUdp(0) ?: run {
+            closeActiveTransport(retireSsrc = true)
+            bindUdp(DEFAULT_AUDIO_PORT)
+        } ?: return false
         val ctrlUdp = bindUdp(0) ?: bindUdp(DEFAULT_CONTROL_PORT)
         if (ctrlUdp == null) {
             udp.close()
             return false
         }
+        closeActiveTransport(retireSsrc = true)
 
         val session = TransportSession(
             owner = owner,
