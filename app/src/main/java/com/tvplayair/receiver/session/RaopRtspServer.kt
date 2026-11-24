@@ -500,6 +500,8 @@ internal class RaopRtspServer(
     ): Boolean {
         val generation = generationId.incrementAndGet()
         if (!audioReceiver.start(peer, controlPort, source, generation)) return false
+        Log.i(TAG, "RAOP UDP ready generation=$generation audio=${audioReceiver.localAudioPort} " +
+            "control=${audioReceiver.localControlPort}")
         nowPlaying.activate(source, remoteFor(request)) {
             listener.onAudioStreamStarted(generation)
         }

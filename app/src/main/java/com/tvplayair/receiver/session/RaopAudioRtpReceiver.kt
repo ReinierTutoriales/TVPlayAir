@@ -479,7 +479,6 @@ class RaopAudioRtpReceiver(
             isDaemon = true
             start()
         }
-        Log.i(TAG, "RAOP audio UDP receiver listening on port ${udp.localPort} (control=${ctrlUdp.localPort})")
         return true
     }
 
