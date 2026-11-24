@@ -46,6 +46,7 @@ import com.tvplayair.receiver.session.ReceiverAvailability
 import com.tvplayair.receiver.session.SessionConnection
 import com.tvplayair.receiver.session.RaopNowPlaying
 import com.tvplayair.receiver.session.SessionEventListener
+import com.tvplayair.receiver.session.SessionService
 import com.tvplayair.receiver.ui.TvOverlayMenu
 import com.tvplayair.receiver.ui.TvOverlayState
 import com.tvplayair.receiver.video.DIRECT_STARTUP_TIMEOUT_MS
@@ -679,9 +680,12 @@ class MainActivity : ComponentActivity(), SurfaceLayerController {
     }
 
     private fun refreshAccessStatus() {
+        val manager = getSystemService(NotificationManager::class.java)
+        val receiverChannel = manager?.getNotificationChannel(SessionService.RECEIVER_CHANNEL_ID)
         overlayState = overlayState.copy(
             overlayAccessGranted = Settings.canDrawOverlays(this),
-            notificationsEnabled = getSystemService(NotificationManager::class.java)?.areNotificationsEnabled() == true
+            notificationsEnabled = manager?.areNotificationsEnabled() == true &&
+                receiverChannel?.importance != NotificationManager.IMPORTANCE_NONE
         )
     }
 
@@ -696,6 +700,16 @@ class MainActivity : ComponentActivity(), SurfaceLayerController {
                 notificationPermission.launch(Manifest.permission.POST_NOTIFICATIONS)
                 return
             }
+        }
+
+        val manager = getSystemService(NotificationManager::class.java)
+        if (manager?.areNotificationsEnabled() == true &&
+            manager.getNotificationChannel(SessionService.RECEIVER_CHANNEL_ID) != null
+        ) {
+            val channelSettings = Intent(Settings.ACTION_CHANNEL_NOTIFICATION_SETTINGS)
+                .putExtra(Settings.EXTRA_APP_PACKAGE, packageName)
+                .putExtra(Settings.EXTRA_CHANNEL_ID, SessionService.RECEIVER_CHANNEL_ID)
+            if (runCatching { startActivity(channelSettings) }.isSuccess) return
         }
 
         runCatching {

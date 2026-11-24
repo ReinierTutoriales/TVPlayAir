@@ -32,7 +32,7 @@ import com.tvplayair.receiver.video.DirectPlaybackTelemetry
 class SessionService : Service() {
     companion object {
         private const val TAG = "SessionService"
-        private const val CHANNEL_ID = "tvplayair_session"
+        internal const val RECEIVER_CHANNEL_ID = "tvplayair_session"
         private const val NOTIFICATION_ID = 1001
         private val endpointRetryDelaysMs = longArrayOf(500, 1_500, 4_000)
 
@@ -422,13 +422,13 @@ class SessionService : Service() {
     private fun promoteToForeground(): Boolean {
         val manager = getSystemService(NotificationManager::class.java)
         val channel = NotificationChannel(
-            CHANNEL_ID,
+            RECEIVER_CHANNEL_ID,
             "TVPlayAir Background Receiver",
             NotificationManager.IMPORTANCE_LOW
         )
         manager?.createNotificationChannel(channel)
 
-        val notification = Notification.Builder(this, CHANNEL_ID)
+        val notification = Notification.Builder(this, RECEIVER_CHANNEL_ID)
             .setContentTitle(advertiseConfig.serviceName)
             .setContentText("AirPlay receiver active in background")
             .setSmallIcon(R.drawable.ic_receiver_notification)
