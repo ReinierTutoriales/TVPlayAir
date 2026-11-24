@@ -8,9 +8,6 @@ import android.app.Service
 import android.content.Context
 import android.content.Intent
 import android.content.pm.ServiceInfo
-import android.net.ConnectivityManager
-import android.net.Network
-import android.os.Build
 import android.os.Handler
 import android.os.IBinder
 import android.os.Looper
@@ -35,13 +32,10 @@ class SessionService : Service() {
         private const val TAG = "SessionService"
         private const val CHANNEL_ID = "tvplayair_session"
         private const val NOTIFICATION_ID = 1001
-        const val ACTION_START_BACKGROUND = "com.tvplayair.receiver.action.START_BACKGROUND"
 
         fun startInBackground(context: Context) {
-            val intent = Intent(context.applicationContext, SessionService::class.java).apply {
-                action = ACTION_START_BACKGROUND
-            }
-            context.applicationContext.startForegroundService(intent)
+            val appContext = context.applicationContext
+            appContext.startForegroundService(Intent(appContext, SessionService::class.java))
         }
     }
 
@@ -72,7 +66,7 @@ class SessionService : Service() {
     // Only an actual new visual session may request foreground presentation.
     // Android can still reject background activity starts; the notification remains available.
     private var mirrorProjectionActive = false
-    private var lastAutoOpenedDirectId: Long? = null
+    private var pendingProjection: Runnable? = null
     @Volatile private var autoOpenVisual = false
 
     private fun ITvPlayCallback.showDirectVideo(video: DirectPlaybackStart) {
@@ -106,14 +100,10 @@ class SessionService : Service() {
                 latestMirrorConfig = config
                 if (opensProjection) {
                     directPlayback = null
-                    lastAutoOpenedDirectId = null
+                    if (!mirrorProjectionActive) requestProjection()
+                    mirrorProjectionActive = true
                 }
                 runCatching { callback?.let { config.sendTo(it, opensProjection) } }
-            }
-            if (opensProjection) {
-                val newProjection = !mirrorProjectionActive
-                mirrorProjectionActive = true
-                if (newProjection) ensureUiForeground()
             }
         }
 
@@ -121,13 +111,11 @@ class SessionService : Service() {
             synchronized(callbackLock) {
                 // Retain the active source for Activity recreation, even if a UI is bound.
                 val video = DirectPlaybackStart(url, startPosition, playbackId)
+                val isNewPlayback = directPlayback?.playbackId != playbackId
                 directPlayback = video
                 mirrorProjectionActive = false
+                if (isNewPlayback) requestProjection()
                 runCatching { callback?.showDirectVideo(video) }
-            }
-            if (lastAutoOpenedDirectId != playbackId) {
-                lastAutoOpenedDirectId = playbackId
-                ensureUiForeground()
             }
         }
 
@@ -137,7 +125,7 @@ class SessionService : Service() {
                 when (command) {
                     "stop" -> {
                         directPlayback = null
-                        lastAutoOpenedDirectId = null
+                        cancelProjectionRequest()
                     }
                     "pause", "play" -> directPlayback = directPlayback?.withPlaybackIntent(command)
                 }
@@ -158,6 +146,7 @@ class SessionService : Service() {
             synchronized(callbackLock) {
                 if (latestMirrorConfig?.generationId != generationId) return
                 latestMirrorConfig = null
+                if (mirrorProjectionActive) cancelProjectionRequest()
                 mirrorProjectionActive = false
                 runCatching { callback?.onMirrorStreamEnded(generationId) }
             }
@@ -319,7 +308,7 @@ class SessionService : Service() {
                 if (callback?.asBinder() != source.asBinder()) return
                 if (directPlayback?.playbackId == playbackId) {
                     directPlayback = null
-                    lastAutoOpenedDirectId = null
+                    cancelProjectionRequest()
                 }
             }
             protocolEngine.finishDirectPlayback(playbackId)
@@ -361,17 +350,6 @@ class SessionService : Service() {
         }
     }
 
-    private var connectivity: ConnectivityManager? = null
-    private val networkCallback = object : ConnectivityManager.NetworkCallback() {
-        override fun onAvailable(network: Network) {
-            Log.i(PLAYBACK_DIAGNOSTICS_TAG, "route=network event=default_available handle=${network.networkHandle}")
-        }
-
-        override fun onLost(network: Network) {
-            Log.i(PLAYBACK_DIAGNOSTICS_TAG, "route=network event=default_lost handle=${network.networkHandle}")
-        }
-    }
-
     override fun onCreate() {
         super.onCreate()
         autoOpenVisual = getSharedPreferences("receiver_presentation", MODE_PRIVATE)
@@ -394,19 +372,13 @@ class SessionService : Service() {
             }
         }
         protocolEngine = AirPlayDirectHttpServer(protocolListener)
-        getSystemService(ConnectivityManager::class.java)?.let { manager ->
-            try {
-                manager.registerDefaultNetworkCallback(networkCallback)
-                connectivity = manager
-            } catch (error: RuntimeException) {
-                Log.w(PLAYBACK_DIAGNOSTICS_TAG,
-                    "route=network event=observer_unavailable error=${error.javaClass.simpleName}")
-            }
-        }
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
-        promoteToForeground()
+        if (!promoteToForeground()) {
+            stopSelf(startId)
+            return START_NOT_STICKY
+        }
         startAirPlaySession()
         return START_STICKY
     }
@@ -428,7 +400,7 @@ class SessionService : Service() {
         }
     }
 
-    private fun promoteToForeground() {
+    private fun promoteToForeground(): Boolean {
         val manager = getSystemService(NotificationManager::class.java)
         val channel = NotificationChannel(
             CHANNEL_ID,
@@ -449,30 +421,40 @@ class SessionService : Service() {
             .setOngoing(true)
             .build()
 
-        runCatching {
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
-                startForeground(
-                    NOTIFICATION_ID,
-                    notification,
-                    ServiceInfo.FOREGROUND_SERVICE_TYPE_MEDIA_PLAYBACK
-                )
-            } else {
-                startForeground(NOTIFICATION_ID, notification)
-            }
+        return runCatching {
+            startForeground(
+                NOTIFICATION_ID,
+                notification,
+                ServiceInfo.FOREGROUND_SERVICE_TYPE_CONNECTED_DEVICE
+            )
         }.onFailure {
             Log.w(TAG, "Could not promote SessionService to foreground", it)
-        }
+        }.isSuccess
     }
 
-    private fun ensureUiForeground() {
-        if (projectionVisible) return
-        // Opt-in policy: no background activity launches unless explicitly enabled.
-        if (!autoOpenVisual) return
-        runCatching {
-            startActivity(projectionIntent())
-        }.onFailure {
-            Log.w(TAG, "Unable to auto-launch MainActivity from background", it)
+    // Called under callbackLock so a replaced or ended session cannot open the UI later.
+    private fun requestProjection() {
+        cancelProjectionRequest()
+        if (projectionVisible || !autoOpenVisual) return
+        val request = object : Runnable {
+            override fun run() {
+                synchronized(callbackLock) {
+                    if (pendingProjection !== this) return
+                    pendingProjection = null
+                    if (projectionVisible || !autoOpenVisual) return
+                    runCatching { startActivity(projectionIntent()) }.onFailure {
+                        Log.w(TAG, "Unable to auto-launch MainActivity from background", it)
+                    }
+                }
+            }
         }
+        pendingProjection = request
+        mainHandler.post(request)
+    }
+
+    private fun cancelProjectionRequest() {
+        pendingProjection?.let(mainHandler::removeCallbacks)
+        pendingProjection = null
     }
 
     private fun projectionIntent() = Intent(this, MainActivity::class.java).apply {
@@ -521,6 +503,8 @@ class SessionService : Service() {
             latestNowPlaying = null
             activeAudioGeneration = null
             directPlayback = null
+            mirrorProjectionActive = false
+            cancelProjectionRequest()
         }
         dacpController.onClientDisconnected()
     }
@@ -539,8 +523,6 @@ class SessionService : Service() {
     override fun onBind(intent: Intent?): IBinder = binder
 
     override fun onDestroy() {
-        connectivity?.unregisterNetworkCallback(networkCallback)
-        connectivity = null
         stopAirPlaySession()
         dacpController.release()
         callback = null

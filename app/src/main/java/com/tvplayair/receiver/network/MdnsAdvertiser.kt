@@ -6,7 +6,10 @@ import android.net.Network
 import android.net.nsd.NsdManager
 import android.net.nsd.NsdServiceInfo
 import android.net.wifi.WifiManager
+import android.os.Handler
+import android.os.Looper
 import android.util.Log
+import com.tvplayair.receiver.diagnostics.PLAYBACK_DIAGNOSTICS_TAG
 import java.util.UUID
 
 data class AirPlayAdvertiseConfig(
@@ -86,6 +89,7 @@ object MdnsTxtRecords {
 class MdnsAdvertiser(context: Context) {
     companion object {
         private const val TAG = "MdnsAdvertiser"
+        private val retryDelaysMs = longArrayOf(500, 1_500, 4_000)
     }
 
     private val appContext = context.applicationContext
@@ -96,8 +100,8 @@ class MdnsAdvertiser(context: Context) {
 
     private var wifiLock: WifiManager.WifiLock? = null
     private var multicastLock: WifiManager.MulticastLock? = null
-    private var airPlayListener: NsdManager.RegistrationListener? = null
-    private var raopListener: NsdManager.RegistrationListener? = null
+    private val handler = Handler(Looper.getMainLooper())
+    private val advertisements = mutableMapOf<String, Advertisement>()
     private var networkCallback: ConnectivityManager.NetworkCallback? = null
     private var activeNetwork: Network? = null
     private var sawNetworkLoss = false
@@ -113,9 +117,9 @@ class MdnsAdvertiser(context: Context) {
         if (started) stop()
         activeConfig = config
         acquireLocks()
+        started = true
         registerAdvertisements(config)
         registerNetworkCallback()
-        started = true
     }
 
     @Synchronized
@@ -142,49 +146,49 @@ class MdnsAdvertiser(context: Context) {
             serviceType = MdnsTxtRecords.AIRPLAY_SERVICE_TYPE,
             port = config.airPlayPort,
             txt = MdnsTxtRecords.buildAirPlayTxt(config)
-        )?.also { airPlayListener = it }
+        )
 
         registerService(
             serviceName = MdnsTxtRecords.buildRaopServiceName(config),
             serviceType = MdnsTxtRecords.RAOP_SERVICE_TYPE,
             port = config.raopPort,
             txt = MdnsTxtRecords.buildRaopTxt(config)
-        )?.also { raopListener = it }
+        )
     }
 
     private fun unregisterAdvertisements() {
-        unregisterSafe(airPlayListener)
-        airPlayListener = null
-        unregisterSafe(raopListener)
-        raopListener = null
+        advertisements.values.forEach { it.stop() }
+        advertisements.clear()
     }
 
     private fun registerNetworkCallback() {
         val cm = connectivityManager ?: return
         if (networkCallback != null) return
-        activeNetwork = null
+        activeNetwork = cm.activeNetwork
         sawNetworkLoss = false
         val callback = object : ConnectivityManager.NetworkCallback() {
             override fun onAvailable(network: Network) {
-                val shouldReregister = synchronized(this@MdnsAdvertiser) {
-                    val prev = activeNetwork
+                synchronized(this@MdnsAdvertiser) {
+                    if (networkCallback !== this) return
+                    Log.i(PLAYBACK_DIAGNOSTICS_TAG,
+                        "route=network event=default_available handle=${network.networkHandle}")
+                    val previous = activeNetwork
                     activeNetwork = network
-                    val changed = (prev != null && prev != network) || sawNetworkLoss
+                    val changed = previous != network || sawNetworkLoss
                     sawNetworkLoss = false
-                    changed && started
-                }
-                if (shouldReregister) {
-                    reregisterOnNetworkChange()
+                    if (changed) reregisterOnNetworkChange()
                 }
             }
 
             override fun onLost(network: Network) {
                 synchronized(this@MdnsAdvertiser) {
-                    if (activeNetwork == network) {
-                        sawNetworkLoss = true
-                    }
+                    if (networkCallback !== this) return
+                    Log.i(PLAYBACK_DIAGNOSTICS_TAG,
+                        "route=network event=default_lost handle=${network.networkHandle}")
+                    if (activeNetwork == network) sawNetworkLoss = true
                 }
             }
+
         }
         runCatching {
             cm.registerDefaultNetworkCallback(callback)
@@ -215,48 +219,80 @@ class MdnsAdvertiser(context: Context) {
         a.piUuid == b.piUuid &&
         a.publicKeyHex == b.publicKeyHex
 
-    private fun registerService(
-        serviceName: String,
-        serviceType: String,
-        port: Int,
-        txt: Map<String, String>
-    ): NsdManager.RegistrationListener? {
-        val manager = nsdManager ?: return null
+    private fun registerService(serviceName: String, serviceType: String, port: Int, txt: Map<String, String>) {
+        val manager = nsdManager ?: return
         val info = NsdServiceInfo().apply {
             this.serviceName = serviceName
             this.serviceType = serviceType
             this.port = port
-            txt.forEach { (k, v) -> setAttribute(k, v) }
+            txt.forEach { (key, value) -> setAttribute(key, value) }
         }
-        val listener = object : NsdManager.RegistrationListener {
-            override fun onServiceRegistered(serviceInfo: NsdServiceInfo) {
-                Log.i(TAG, "Registered $serviceType as ${serviceInfo.serviceName}:$port")
-            }
-
-            override fun onRegistrationFailed(serviceInfo: NsdServiceInfo, errorCode: Int) {
-                Log.e(TAG, "Failed to register $serviceType (${serviceInfo.serviceName}, code=$errorCode)")
-            }
-
-            override fun onServiceUnregistered(serviceInfo: NsdServiceInfo) {
-                Log.i(TAG, "Unregistered $serviceType (${serviceInfo.serviceName})")
-            }
-
-            override fun onUnregistrationFailed(serviceInfo: NsdServiceInfo, errorCode: Int) {
-                Log.w(TAG, "Failed to unregister $serviceType (code=$errorCode)")
-            }
-        }
-        return runCatching {
-            manager.registerService(info, NsdManager.PROTOCOL_DNS_SD, listener)
-            listener
-        }.onFailure {
-            Log.e(TAG, "Exception registering $serviceType", it)
-        }.getOrNull()
+        val advertisement = Advertisement(manager, serviceType, info)
+        advertisements[serviceType] = advertisement
+        advertisement.register()
     }
 
-    private fun unregisterSafe(listener: NsdManager.RegistrationListener?) {
-        val manager = nsdManager ?: return
-        if (listener != null) {
-            runCatching { manager.unregisterService(listener) }
+    private inner class Advertisement(
+        private val manager: NsdManager,
+        private val serviceType: String,
+        private val info: NsdServiceInfo
+    ) {
+        private var listener: NsdManager.RegistrationListener? = null
+        private var failures = 0
+        private val retry = Runnable {
+            synchronized(this@MdnsAdvertiser) {
+                if (advertisements[serviceType] === this) register()
+            }
+        }
+
+        fun register() {
+            val attempt = object : NsdManager.RegistrationListener {
+                override fun onServiceRegistered(serviceInfo: NsdServiceInfo) {
+                    synchronized(this@MdnsAdvertiser) {
+                        if (listener === this) {
+                            Log.i(TAG, "Registered $serviceType as ${serviceInfo.serviceName}:${info.port}")
+                        }
+                    }
+                }
+
+                override fun onRegistrationFailed(serviceInfo: NsdServiceInfo, errorCode: Int) {
+                    synchronized(this@MdnsAdvertiser) {
+                        if (listener !== this) return
+                        Log.w(TAG, "Failed to register $serviceType (code=$errorCode)")
+                        scheduleRetry()
+                    }
+                }
+
+                override fun onServiceUnregistered(serviceInfo: NsdServiceInfo) = Unit
+
+                override fun onUnregistrationFailed(serviceInfo: NsdServiceInfo, errorCode: Int) {
+                    Log.w(TAG, "Failed to unregister $serviceType (code=$errorCode)")
+                }
+            }
+            listener = attempt
+            try {
+                manager.registerService(info, NsdManager.PROTOCOL_DNS_SD, attempt)
+            } catch (error: RuntimeException) {
+                Log.w(TAG, "Exception registering $serviceType", error)
+                scheduleRetry()
+            }
+        }
+
+        private fun scheduleRetry() {
+            listener = null
+            val delayMs = retryDelaysMs.getOrNull(failures++)
+            if (delayMs == null) {
+                Log.e(TAG, "Registration retries exhausted for $serviceType")
+                return
+            }
+            handler.postDelayed(retry, delayMs)
+        }
+
+        fun stop() {
+            handler.removeCallbacks(retry)
+            val attempt = listener ?: return
+            listener = null
+            runCatching { manager.unregisterService(attempt) }
         }
     }
 

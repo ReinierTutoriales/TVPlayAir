@@ -296,7 +296,7 @@ class MirrorDecoder(
             }
             activeCodec?.let { current ->
                 try {
-                    drainOutputBuffers(current, bufferInfo, frameClock, outputWatchdog)
+                    drainOutputBuffers(current, bufferInfo, frameClock, outputWatchdog, config)
                     if (running.get() && outputWatchdog.renderStalled()) recover(current, "render_stall")
                 } catch (error: IllegalStateException) {
                     recover(current, "output", error)
@@ -385,7 +385,7 @@ class MirrorDecoder(
                 while (running.get() && attempts < 25) {
                     inputIndex = currentCodec.dequeueInputBuffer(DEQUEUE_TIMEOUT_US)
                     if (inputIndex >= 0) break
-                    drainOutputBuffers(currentCodec, bufferInfo, frameClock, outputWatchdog)
+                    drainOutputBuffers(currentCodec, bufferInfo, frameClock, outputWatchdog, config)
                     attempts++
                 }
                 if (inputIndex < 0) {
@@ -430,7 +430,8 @@ class MirrorDecoder(
         activeCodec: MediaCodec,
         bufferInfo: MediaCodec.BufferInfo,
         frameClock: MirrorFrameClock,
-        outputWatchdog: MirrorOutputWatchdog
+        outputWatchdog: MirrorOutputWatchdog,
+        source: MirrorVideoConfig
     ) {
         while (running.get()) {
             val outIndex = activeCodec.dequeueOutputBuffer(bufferInfo, 0L)
@@ -445,24 +446,20 @@ class MirrorDecoder(
                 if (videoFrame) outputWatchdog.onOutputReleased()
             } else if (outIndex == MediaCodec.INFO_OUTPUT_FORMAT_CHANGED) {
                 val outFmt = activeCodec.outputFormat
-                val w = if (outFmt.containsKey("crop-right") && outFmt.containsKey("crop-left")) {
-                    outFmt.getInteger("crop-right") - outFmt.getInteger("crop-left") + 1
-                } else if (outFmt.containsKey(MediaFormat.KEY_WIDTH)) {
-                    outFmt.getInteger(MediaFormat.KEY_WIDTH)
-                } else {
-                    0
-                }
-                val h = if (outFmt.containsKey("crop-bottom") && outFmt.containsKey("crop-top")) {
-                    outFmt.getInteger("crop-bottom") - outFmt.getInteger("crop-top") + 1
-                } else if (outFmt.containsKey(MediaFormat.KEY_HEIGHT)) {
-                    outFmt.getInteger(MediaFormat.KEY_HEIGHT)
-                } else {
-                    0
-                }
-                if (w > 0 && h > 0) {
-                    Log.i(TAG, "Mirror output format changed: ${w}x$h")
+                val codedWidth = outFmt.getInteger(MediaFormat.KEY_WIDTH, 0)
+                val codedHeight = outFmt.getInteger(MediaFormat.KEY_HEIGHT, 0)
+                val cropWidth = cropSize(outFmt, "crop-left", "crop-right", codedWidth)
+                val cropHeight = cropSize(outFmt, "crop-top", "crop-bottom", codedHeight)
+                val size = mirrorPresentationSize(
+                    source.width, source.height, codedWidth, codedHeight, cropWidth, cropHeight
+                )
+                if (size != null) {
+                    val (width, height) = size
+                    Log.i(TAG, "Mirror output size: ${width}x$height (coded ${codedWidth}x$codedHeight)")
                     onVideoSizeChanged?.let { callback ->
-                        renderListenerHandler.post { if (codec === activeCodec) callback(w, h) }
+                        renderListenerHandler.post {
+                            if (running.get() && codec === activeCodec) callback(width, height)
+                        }
                     }
                 }
                 continue
@@ -472,6 +469,11 @@ class MirrorDecoder(
                 break
             }
         }
+    }
+    private fun cropSize(format: MediaFormat, startKey: String, endKey: String, codedSize: Int): Int {
+        val start = format.getInteger(startKey, -1)
+        val end = format.getInteger(endKey, -1)
+        return if (start >= 0 && end in start until codedSize) end - start + 1 else 0
     }
 }
 
