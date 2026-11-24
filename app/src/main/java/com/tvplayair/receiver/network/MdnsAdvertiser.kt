@@ -194,6 +194,7 @@ class MdnsAdvertiser(
                         "route=network event=default_lost handle=${network.networkHandle}")
                     if (activeNetwork == network) {
                         activeNetwork = null
+                        unregisterAdvertisements()
                         onAirPlayAvailability(ReceiverAvailability.NETWORK_UNAVAILABLE)
                     }
                 }

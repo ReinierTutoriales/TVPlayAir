@@ -2,7 +2,7 @@
 
 ## 1. Objetivo y Alcance
 
-**Objetivo**: Construir un receptor AirPlay independiente, libre y modular para Android TV que entregue calidad nativa 4K/HEVC/HDR, transición limpia entre espejo de pantalla y reproducción directa de video web, audio estable sin cortes y control desde el mando de la TV, respetando las limitaciones reales de hardware (VPU, Binder, fragmentación Bluetooth).
+**Objetivo**: Construir un receptor AirPlay independiente, libre y modular para Android TV que entregue calidad nativa 4K/HEVC/HDR, transición limpia entre espejo de pantalla y reproducción directa de video web, audio estable sin cortes y control desde el mando de la TV, respetando las limitaciones reales de hardware (VPU y Binder).
 
 La experiencia objetivo es conectar el iPhone una vez y manejar la sesión desde la TV. En espejo, cambiar de app o girar el iPhone debe mantener la conexión. En video directo, la TV reproduce el contenido compatible en ExoPlayer mientras el iPhone puede pasar a otra app. Abrir los ajustes o cambiar el tema de la TV debe dejar la sesión y la reproducción activas. Estas transiciones se verifican de extremo a extremo con iPhone, TV y mando.
 
@@ -10,7 +10,7 @@ La experiencia objetivo es conectar el iPhone una vez y manejar la sesión desde
 
 La pantalla de espera cede el espacio al video, al espejo o a **Ahora suena** cuando llega contenido. En audio, la sesión RTSP propietaria aporta título, artista, álbum y destino DACP. Los metadatos y la carátula se asocian por `rtptime` cuando el emisor lo incluye. Cambiar de canción retira la carátula anterior y una respuesta atrasada de otra conexión no puede reemplazarla. Los controles de pista de la TV usan DACP y requieren que el emisor publique un destino válido.
 
-La TV muestra **Ahora suena** en negro con carátula, título, artista y tres controles para el mando. El video directo abre a pantalla completa. Arriba o abajo muestran el estado y el avance, OK alterna reproducción y pausa, e izquierda o derecha mueven la posición un 1 % cuando el foco está en la barra y la fuente permite buscar. La franja se cierra con Atrás o tras cinco segundos de inactividad durante la reproducción. En espejo se muestra la pantalla del iPhone y se conserva el control HID cuando está disponible. Referencias de diseño [CarPlay en iOS 27](https://developer.apple.com/videos/play/wwdc2026/212/?time=382) y [controles de Android TV](https://developer.android.com/training/tv/playback/controls).
+La TV muestra **Ahora suena** en negro con carátula, título, artista y tres controles para el mando. El video directo abre a pantalla completa. Arriba o abajo muestran el estado y el avance, OK alterna reproducción y pausa, e izquierda o derecha mueven la posición un 1 % cuando el foco está en la barra y la fuente permite buscar. La franja se cierra con Atrás o tras cinco segundos de inactividad durante la reproducción. En espejo se muestra la pantalla del iPhone y el mando abre los controles disponibles de TVPlayAir. Referencias de diseño [CarPlay en iOS 27](https://developer.apple.com/videos/play/wwdc2026/212/?time=382) y [controles de Android TV](https://developer.android.com/training/tv/playback/controls).
 
 Al cambiar de app con video directo, el reproductor reutiliza la superficie y el canal inverso de la app entrante puede abrirse antes de pedir el video. Los controles con ID de sesión y las actualizaciones del reproductor se verifican contra el video activo. Los emisores que omiten ese ID conservan el control desde la misma dirección IP. Un `FLUSH` de una conexión RAOP reemplazada se descarta. Si llega audio mientras ExoPlayer usa la salida, Oboe registra la sesión y puede reanudarla al terminar el video. La latencia de estas transiciones se mide en el televisor.
 
@@ -26,7 +26,7 @@ La integración con Inicio depende de que el equipo permita seleccionar un lanza
 | Video Web directo 4K HDR (Media3 ExoPlayer) | Mezclador multi-bus con ducking (multi-cliente) |
 | Audio PCM 48 kHz (MediaCodec/ALAC nativo → Google Oboe) + offset ± ms | Reloj PTP (IEEE 802.1AS) multiroom |
 | Control remoto bidireccional DACP (obligatorio) | Puente cableado USB CDC-NCM |
-| Control Bluetooth HID (opcional / best-effort) | Emparejamiento HomeKit persistente (Ed25519) |
+| | Emparejamiento HomeKit persistente (Ed25519) |
 
 ## 2. Arquitectura de 3 Capas y Fronteras de Proceso
 
@@ -49,7 +49,7 @@ El sistema separa estrictamente la red/protocolo del renderizado y la UI mediant
 |  [Capa de Interacción]          [Motor de Presentación]           |
 |  ├── Compose for TV (HUD/Menú)  ├── SurfaceView A: MediaCodec     |
 |  ├── DACP (Play/Pause/Seek)     │   (Caché SPS/PPS + Puerta IDR)  |
-|  └── BT HID (Opcional D-Pad)    ├── SurfaceView B: ExoPlayer      |
+|  └── Controles D-pad              ├── SurfaceView B: ExoPlayer      |
 |                                 │   (4K HDR + User-Agent Safari)  |
 |                                 └── Audio: Oboe + AudioFocus      |
 +-------------------------------------------------------------------+
@@ -78,7 +78,6 @@ El sistema separa estrictamente la red/protocolo del renderizado y la UI mediant
 ### Capa 3: Capa de Interacción (Proceso Principal)
 
 - **DACP (Obligatorio)**: Captura DACP-ID y Active-Remote al conectar. Traduce las teclas multimedia del mando a comandos HTTP `GET /ctrl-int/1/...` hacia el dispositivo Apple. El video directo informa el progreso en `GET /playback-info` y envía cambios de estado a la misma sesión AirPlay por `/reverse`.
-- **Bluetooth HID (Opcional)**: Implementado con `BluetoothHidDevice` (perfil teclado estándar). Al iniciar la app, verifica soporte del stack Bluetooth del televisor; si falla o no existe, se desactiva silenciosamente sin afectar el resto del sistema.
 - **UI (Jetpack Compose for TV)**: Overlay lateral mínimo (invocado con tecla Menú) para cambiar resolución anunciada, activar/desactivar HEVC, ajustar offset de audio (ms) y mostrar HUD de telemetría (FPS, códec, drops).
 
 ## 4. Contratos IPC y Resiliencia
@@ -121,8 +120,7 @@ TVPlayAir/app/src/main/
     │   ├── MirrorDecoder.kt         # MediaCodec + Caché SPS/PPS + Compuerta IDR
     │   └── WebVideoPlayer.kt        # Media3 ExoPlayer (4K HDR + Safari UA)
     ├── control/
-    │   ├── DacpController.kt
-    │   └── TvRemoteHidBridge.kt     # Best-effort BluetoothHidDevice
+    │   └── DacpController.kt
     └── ui/
         ├── MainTvActivity.kt        # Doble SurfaceView + KeyEvents + DeathRecipient
         └── TvOverlayMenu.kt         # Compose for TV

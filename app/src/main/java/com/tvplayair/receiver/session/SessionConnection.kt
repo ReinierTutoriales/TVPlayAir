@@ -50,6 +50,17 @@ class SessionConnection(
     private var bindingEpoch = 0L
     private var retryDelayMs = 250L
     private var projectionVisible = false
+    private var advertisingSettings: AdvertisingSettings? = null
+
+    private data class AdvertisingSettings(
+        val maxWidth: Int,
+        val maxHeight: Int,
+        val hevcEnabled: Boolean,
+        val serviceName: String
+    ) {
+        fun sendTo(service: ITvPlaySession) =
+            service.configureAdvertising(maxWidth, maxHeight, hevcEnabled, serviceName)
+    }
 
     private fun isCurrent(epoch: Long): Boolean =
         !closed && bound && bindingEpoch == epoch
@@ -169,6 +180,7 @@ class SessionConnection(
                         .getBoolean("auto_open_visual", false)
                 )
                 service?.setProjectionVisible(projectionVisible)
+                service?.let { advertisingSettings?.sendTo(it) }
                 service?.startServer()
                 Log.i(PLAYBACK_DIAGNOSTICS_TAG, "route=ipc epoch=$epoch event=bound")
                 retryDelayMs = 250L
@@ -249,7 +261,11 @@ class SessionConnection(
     fun configureAdvertising(
         maxWidth: Int, maxHeight: Int, hevcEnabled: Boolean, serviceName: String
     ) {
-        runCatching { service?.configureAdvertising(maxWidth, maxHeight, hevcEnabled, serviceName) }
+        val settings = AdvertisingSettings(maxWidth, maxHeight, hevcEnabled, serviceName)
+        if (settings == advertisingSettings) return
+        advertisingSettings = settings
+        runCatching { service?.let(settings::sendTo) }
+            .onFailure { handleBinderDeath(bindingEpoch) }
     }
 
     private fun handleBinderDeath(epoch: Long) {

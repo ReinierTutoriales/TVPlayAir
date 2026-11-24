@@ -19,6 +19,6 @@ CI validates native SPSC ring integrity, audio PCM pipeline behavior, JVM unit t
 | **4. Oboe Audio & Recovery** | Logs granted `AudioApi` / `SharingMode` (`Exclusive` or `Shared` fallback), `framesPerBurst * 2`, zero audible clicks, recovers HDMI/BT route disconnect via `onErrorAfterClose()` | `PENDING` | |
 | **5. Audio Offset & AudioFocus** | Live `-200..+200 ms` adjustment from Compose TV menu; clean focus yield to ExoPlayer and restore on return | `PENDING` | |
 | **6. DACP Remote Control** | TV remote Play/Pause/Next/Prev/Seek control iOS playback; `GET /playback-info` reflects live ExoPlayer telemetry | `PENDING` | |
-| **7. Optional Bluetooth HID** | If TV supports `BluetoothHidDevice`, D-pad navigates host; if unsupported, degrades silently with zero impact on DACP/playback | `PENDING` | |
+| **7. D-pad controls** | The TV remote opens and dismisses TVPlayAir controls during mirroring and moves focus reliably in settings | `PENDING` | |
 | **8. `:session` Crash Recovery** | `adb shell am crash com.tvplayair.receiver:session` triggers `DeathRecipient`, stops engines before `munmap()`, reconnects with exponential backoff (`250–2000 ms`) | `PENDING` | |
 | **9. 30-Minute Soak Test** | Continuous playback/mirroring for 30 min with bounded memory, no thermal/VPU hang, zero uncaught crashes | `PENDING` | |

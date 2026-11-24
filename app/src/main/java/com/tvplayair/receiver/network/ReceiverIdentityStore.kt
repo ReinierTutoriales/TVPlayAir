@@ -119,6 +119,7 @@ object ReceiverIdentityHelper {
 class ReceiverIdentityStore(context: Context) {
     companion object {
         private const val PREFS_NAME = "tvplayair_identity"
+        private const val NAME_PREFS_NAME = "receiver_display_name"
         private const val KEY_DEVICE_ID = "device_id"
         private const val KEY_PI_UUID = "pi_uuid"
         private const val KEY_SERVICE_NAME = "service_name"
@@ -134,7 +135,12 @@ class ReceiverIdentityStore(context: Context) {
             ?.takeIf { it.isNotEmpty() }
     }.getOrNull()
 
-    fun readServiceName(): String = resolveServiceName(prefs.getString(KEY_SERVICE_NAME, null))
+    private val namePrefs = appContext.getSharedPreferences(NAME_PREFS_NAME, Context.MODE_PRIVATE)
+
+    fun readServiceName(): String {
+        namePrefs.getString(KEY_SERVICE_NAME, null)?.let { return it }
+        return resolveServiceName(prefs.getString(KEY_SERVICE_NAME, null))
+    }
 
     private fun resolveServiceName(existingName: String?): String {
         val sysName = readSystemDeviceName()
@@ -154,7 +160,6 @@ class ReceiverIdentityStore(context: Context) {
         val random = SecureRandom()
         val existingMac = prefs.getString(KEY_DEVICE_ID, null)
         val existingUuid = prefs.getString(KEY_PI_UUID, null)
-        val existingName = prefs.getString(KEY_SERVICE_NAME, null)
         val existingPrivHex = prefs.getString(KEY_ED25519_PRIV, null)
         val existingPriv = existingPrivHex?.let { ReceiverIdentityHelper.fromHex(it) }
             ?.takeIf { it.size == Ed25519.SECRET_KEY_SIZE }
@@ -162,17 +167,16 @@ class ReceiverIdentityStore(context: Context) {
         val mac = existingMac ?: ByteArray(6).also { random.nextBytes(it) }
             .let { ReceiverIdentityHelper.formatLocalMac(it) }
         val uuid = existingUuid ?: UUID.randomUUID().toString()
-        val name = resolveServiceName(existingName)
+        val name = readServiceName()
         val priv = existingPriv ?: ByteArray(Ed25519.SECRET_KEY_SIZE).also {
             Ed25519.generatePrivateKey(random, it)
         }
         val pubHex = ReceiverIdentityHelper.deriveEd25519PublicKeyHex(priv)
 
-        if (existingMac == null || existingUuid == null || name != existingName || existingPriv == null) {
+        if (existingMac == null || existingUuid == null || existingPriv == null) {
             prefs.edit()
                 .putString(KEY_DEVICE_ID, mac)
                 .putString(KEY_PI_UUID, uuid)
-                .putString(KEY_SERVICE_NAME, name)
                 .putString(KEY_ED25519_PRIV, ReceiverIdentityHelper.toHexLower(priv))
                 .apply()
         }
@@ -187,7 +191,7 @@ class ReceiverIdentityStore(context: Context) {
 
     fun saveServiceName(name: String): String {
         val sanitized = ReceiverIdentityHelper.sanitizeServiceName(name)
-        prefs.edit().putString(KEY_SERVICE_NAME, sanitized).apply()
+        namePrefs.edit().putString(KEY_SERVICE_NAME, sanitized).apply()
         return sanitized
     }
 }

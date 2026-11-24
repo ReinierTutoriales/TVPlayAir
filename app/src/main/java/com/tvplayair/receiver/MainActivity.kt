@@ -31,7 +31,6 @@ import com.tvplayair.receiver.diagnostics.PLAYBACK_DIAGNOSTICS_TAG
 import com.tvplayair.receiver.audio.AudioContinuityService
 import com.tvplayair.receiver.audio.OboeAudioConsumer
 import com.tvplayair.receiver.control.DacpCommand
-import com.tvplayair.receiver.control.TvRemoteHidBridge
 import com.tvplayair.receiver.network.ReceiverIdentityHelper
 import com.tvplayair.receiver.network.ReceiverIdentityStore
 import com.tvplayair.receiver.session.BootReceiver
@@ -65,7 +64,6 @@ class MainActivity : ComponentActivity(), SurfaceLayerController {
     private lateinit var sessionConnection: SessionConnection
     private lateinit var sessionListener: SessionEventListener
     private var audioHandedOff = false
-    private lateinit var hidBridge: TvRemoteHidBridge
     private lateinit var identityStore: ReceiverIdentityStore
 
     private var sharedMemoryReady = false
@@ -250,7 +248,6 @@ class MainActivity : ComponentActivity(), SurfaceLayerController {
             audioController = audioConsumer,
             surfaceController = this
         )
-        hidBridge = TvRemoteHidBridge(this).apply { startIfSupported() }
 
         sessionListener = object : SessionEventListener {
             override fun onReceiverAvailability(availability: ReceiverAvailability) {
@@ -428,7 +425,7 @@ class MainActivity : ComponentActivity(), SurfaceLayerController {
     override fun onKeyDown(keyCode: Int, event: KeyEvent?): Boolean {
         val openDuringMirror = isSelectKey(keyCode) && !overlayState.visible &&
             presentationCoordinator.state == PresentationState.MIRROR_ACTIVE &&
-            !overlayState.showingMirrorControls && !hidBridge.isConnected()
+            !overlayState.showingMirrorControls
         val openFromProjectionHome = isSelectKey(keyCode) && overlayState.projectionHome &&
             !overlayState.visible && overlayState.showStandby && !overlayState.showingAudio
         if (isSettingsKey(keyCode) || openDuringMirror || openFromProjectionHome) {
@@ -438,7 +435,7 @@ class MainActivity : ComponentActivity(), SurfaceLayerController {
 
         if (overlayState.visible) return super.onKeyDown(keyCode, event)
 
-        if (presentationCoordinator.state == PresentationState.MIRROR_ACTIVE && !hidBridge.isConnected() &&
+        if (presentationCoordinator.state == PresentationState.MIRROR_ACTIVE &&
             (keyCode == KeyEvent.KEYCODE_DPAD_UP || keyCode == KeyEvent.KEYCODE_DPAD_DOWN)
         ) {
             overlayState = overlayState.copy(mirrorControlsVisible = true)
@@ -514,13 +511,6 @@ class MainActivity : ComponentActivity(), SurfaceLayerController {
                 }
                 return true
             }
-        }
-
-        if (presentationCoordinator.state == PresentationState.MIRROR_ACTIVE &&
-            hidBridge.isConnected() &&
-            hidBridge.sendAndroidKey(keyCode)
-        ) {
-            return true
         }
 
         return super.onKeyDown(keyCode, event)
@@ -905,7 +895,6 @@ class MainActivity : ComponentActivity(), SurfaceLayerController {
         mirrorSurfaceTimeout = null
         cancelDirectStartupTimeout()
         mainHandler.removeCallbacks(hidePlaybackControls)
-        hidBridge.release()
         webVideoPlayer.detachView(directSurfaceView)
         val retainedByService = !isChangingConfigurations &&
             DirectPlaybackService.retain(DirectPlaybackService.RetainedPlayback(webVideoPlayer, sessionConnection))

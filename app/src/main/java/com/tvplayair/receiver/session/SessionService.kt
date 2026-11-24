@@ -14,6 +14,7 @@ import android.os.Looper
 import android.os.ParcelFileDescriptor
 import android.util.Log
 import com.tvplayair.receiver.MainActivity
+import com.tvplayair.receiver.R
 import com.tvplayair.receiver.control.DacpController
 import com.tvplayair.receiver.control.DacpRequestBuilder
 import com.tvplayair.receiver.diagnostics.PLAYBACK_DIAGNOSTICS_TAG
@@ -78,7 +79,6 @@ class SessionService : Service() {
         )
     }
 
-    private lateinit var identityStore: ReceiverIdentityStore
     private lateinit var mdnsAdvertiser: MdnsAdvertiser
     private val mainHandler = Handler(Looper.getMainLooper())
     private lateinit var dacpController: DacpController
@@ -266,8 +266,6 @@ class SessionService : Service() {
 
         override fun setAutoOpenVisual(enabled: Boolean) {
             autoOpenVisual = enabled
-            getSharedPreferences("receiver_presentation", MODE_PRIVATE)
-                .edit().putBoolean("auto_open_visual", enabled).apply()
         }
 
         override fun startServer() {
@@ -346,17 +344,16 @@ class SessionService : Service() {
             serviceName: String
         ) {
             synchronized(this@SessionService) {
-                val cleanName = if (serviceName.isNotBlank()) {
-                    identityStore.saveServiceName(serviceName)
-                } else {
-                    advertiseConfig.serviceName
-                }
-                advertiseConfig = advertiseConfig.copy(
-                    serviceName = ReceiverIdentityHelper.sanitizeServiceName(cleanName),
+                val serviceNameToAdvertise = serviceName.takeIf { it.isNotBlank() }
+                    ?.let { ReceiverIdentityHelper.sanitizeServiceName(it) } ?: advertiseConfig.serviceName
+                val updated = advertiseConfig.copy(
+                    serviceName = serviceNameToAdvertise,
                     maxWidth = maxWidth,
                     maxHeight = maxHeight,
                     hevcEnabled = hevcEnabled
                 )
+                if (updated == advertiseConfig) return
+                advertiseConfig = updated
                 if (serverRunning) startAirPlayEndpoints()
             }
         }
@@ -366,8 +363,7 @@ class SessionService : Service() {
         super.onCreate()
         autoOpenVisual = getSharedPreferences("receiver_presentation", MODE_PRIVATE)
             .getBoolean("auto_open_visual", false)
-        identityStore = ReceiverIdentityStore(this)
-        val identity = identityStore.loadOrCreate()
+        val identity = ReceiverIdentityStore(this).loadOrCreate()
         ed25519PrivateKey = identity.ed25519PrivateKey
         advertiseConfig = advertiseConfig.copy(
             serviceName = identity.serviceName,
@@ -434,7 +430,7 @@ class SessionService : Service() {
         val notification = Notification.Builder(this, CHANNEL_ID)
             .setContentTitle(advertiseConfig.serviceName)
             .setContentText("AirPlay receiver active in background")
-            .setSmallIcon(android.R.drawable.stat_sys_data_bluetooth)
+            .setSmallIcon(R.drawable.ic_receiver_notification)
             .setContentIntent(
                 PendingIntent.getActivity(
                     this, 0, projectionIntent(), PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT
