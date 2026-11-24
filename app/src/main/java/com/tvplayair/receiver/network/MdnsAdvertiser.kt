@@ -56,9 +56,19 @@ object MdnsTxtRecords {
         "vv" to "2"
     )
 
-    fun buildRaopServiceName(config: AirPlayAdvertiseConfig): String {
-        val hexId = config.deviceId.replace(":", "").uppercase()
-        return "$hexId@${config.serviceName}"
+    fun buildAirPlayServiceName(config: AirPlayAdvertiseConfig, attempt: Int = 0): String =
+        buildInstanceName(config, "", attempt)
+
+    fun buildRaopServiceName(config: AirPlayAdvertiseConfig, attempt: Int = 0): String =
+        buildInstanceName(config, "${config.deviceId.replace(":", "").uppercase()}@", attempt)
+
+    private fun buildInstanceName(config: AirPlayAdvertiseConfig, prefix: String, attempt: Int): String {
+        val deviceSuffix = config.deviceId.replace(":", "").takeLast(6).uppercase()
+        val suffix = if (attempt == 0) "" else " (TVPlayAir $deviceSuffix-$attempt)"
+        // The service instance is a single DNS label with a 63-octet limit (RFC 6763).
+        val byteLimit = 63 - prefix.toByteArray(Charsets.UTF_8).size - suffix.toByteArray(Charsets.UTF_8).size
+        val name = ReceiverIdentityHelper.sanitizeServiceName(config.serviceName, byteLimit)
+        return "$prefix$name$suffix"
     }
 
     fun buildRaopTxt(config: AirPlayAdvertiseConfig): Map<String, String> = linkedMapOf(
@@ -133,14 +143,14 @@ class MdnsAdvertiser(context: Context) {
 
     private fun registerAdvertisements(config: AirPlayAdvertiseConfig) {
         registerService(
-            serviceName = config.serviceName,
+            serviceName = { attempt -> MdnsTxtRecords.buildAirPlayServiceName(config, attempt) },
             serviceType = MdnsTxtRecords.AIRPLAY_SERVICE_TYPE,
             port = config.airPlayPort,
             txt = MdnsTxtRecords.buildAirPlayTxt(config)
         )
 
         registerService(
-            serviceName = MdnsTxtRecords.buildRaopServiceName(config),
+            serviceName = { attempt -> MdnsTxtRecords.buildRaopServiceName(config, attempt) },
             serviceType = MdnsTxtRecords.RAOP_SERVICE_TYPE,
             port = config.raopPort,
             txt = MdnsTxtRecords.buildRaopTxt(config)
@@ -205,15 +215,14 @@ class MdnsAdvertiser(context: Context) {
         a.piUuid == b.piUuid &&
         a.publicKeyHex == b.publicKeyHex
 
-    private fun registerService(serviceName: String, serviceType: String, port: Int, txt: Map<String, String>) {
+    private fun registerService(
+        serviceName: (Int) -> String,
+        serviceType: String,
+        port: Int,
+        txt: Map<String, String>
+    ) {
         val manager = nsdManager ?: return
-        val info = NsdServiceInfo().apply {
-            this.serviceName = serviceName
-            this.serviceType = serviceType
-            this.port = port
-            txt.forEach { (key, value) -> setAttribute(key, value) }
-        }
-        val advertisement = Advertisement(manager, serviceType, info)
+        val advertisement = Advertisement(manager, serviceType, serviceName, port, txt)
         advertisements[serviceType] = advertisement
         advertisement.register()
     }
@@ -221,7 +230,9 @@ class MdnsAdvertiser(context: Context) {
     private inner class Advertisement(
         private val manager: NsdManager,
         private val serviceType: String,
-        private val info: NsdServiceInfo
+        private val serviceName: (Int) -> String,
+        private val port: Int,
+        private val txt: Map<String, String>
     ) {
         private var listener: NsdManager.RegistrationListener? = null
         private var failures = 0
@@ -232,6 +243,12 @@ class MdnsAdvertiser(context: Context) {
         }
 
         fun register() {
+            val info = NsdServiceInfo().apply {
+                this.serviceName = this@Advertisement.serviceName(failures)
+                this.serviceType = this@Advertisement.serviceType
+                this.port = this@Advertisement.port
+                txt.forEach { (key, value) -> setAttribute(key, value) }
+            }
             val attempt = object : NsdManager.RegistrationListener {
                 override fun onServiceRegistered(serviceInfo: NsdServiceInfo) {
                     synchronized(this@MdnsAdvertiser) {

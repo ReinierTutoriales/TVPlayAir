@@ -4,6 +4,7 @@ import android.content.Context
 import android.provider.Settings
 import org.bouncycastle.math.ec.rfc8032.Ed25519
 import java.security.SecureRandom
+import java.text.Normalizer
 import java.util.Locale
 import java.util.UUID
 
@@ -67,12 +68,26 @@ object ReceiverIdentityHelper {
         return toHexLower(pub)
     }
 
-    fun sanitizeServiceName(raw: String?): String {
-        val cleaned = raw.orEmpty()
-            .replace(Regex("[\\r\\n\\t]+"), " ")
+    fun sanitizeServiceName(raw: String?, maxBytes: Int = 48): String {
+        val cleaned = Normalizer.normalize(raw.orEmpty(), Normalizer.Form.NFC)
+            .replace(Regex("[\\p{Cc}]+"), " ")
             .trim()
-            .take(48)
-        return cleaned.ifEmpty { "TVPlayAir" }
+            .ifEmpty { "TVPlayAir" }
+        var end = 0
+        var bytes = 0
+        while (end < cleaned.length) {
+            val codePoint = cleaned.codePointAt(end)
+            val byteCount = when {
+                codePoint < 0x80 -> 1
+                codePoint < 0x800 -> 2
+                codePoint < 0x10000 -> 3
+                else -> 4
+            }
+            if (bytes + byteCount > maxBytes) break
+            bytes += byteCount
+            end += Character.charCount(codePoint)
+        }
+        return cleaned.substring(0, end).trimEnd().ifEmpty { "TVPlayAir".take(maxBytes) }
     }
 
     fun availableNames(systemDeviceName: String?): List<String> {
