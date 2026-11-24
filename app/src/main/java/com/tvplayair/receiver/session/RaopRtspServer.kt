@@ -255,9 +255,13 @@ internal class RaopRtspServer(
             }
             Log.i(TAG, "RTSP connection ended for $peer (${error.javaClass.simpleName})")
         } finally {
-            mirrorReceiver?.closeStreamForOwner(source, endReason)
-            stopAudioForOwner(source)
+            endControlSession(source, endReason)
         }
+    }
+
+    internal fun endControlSession(source: AirPlayConnectionCrypto, reason: String) {
+        mirrorReceiver?.closeStreamForOwner(source, reason)
+        stopAudioForOwner(source)
     }
 
     private fun dispatchRtsp(

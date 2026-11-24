@@ -17,6 +17,7 @@ data class TvOverlayState(
     val resolutionPreset: ResolutionPreset = ResolutionPreset.UHD_4K,
     val hevcEnabled: Boolean = true,
     val autoOpenVisual: Boolean = false,
+    val autoStartReceiver: Boolean = true,
     val audioOffsetMs: Int = 0,
     val presentationState: PresentationState = PresentationState.IDLE,
     val connectedClient: String? = null,

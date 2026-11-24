@@ -357,6 +357,7 @@ class AirPlayMirrorStreamReceiver(
         var streamWidth = 0
         var streamHeight = 0
         var streamConfig: ByteArray? = null
+        var spsDimensions: Pair<Int, Int>? = null
         client.use { sock ->
             sock.soTimeout = MIRROR_SOCKET_TIMEOUT_MS
             sock.tcpNoDelay = true
@@ -395,20 +396,25 @@ class AirPlayMirrorStreamReceiver(
                     val codecConfig = NativeSharedMemory.nativeConvertMirrorCodecConfig(
                         payload, payload.remaining(), isHevc
                     ) ?: continue
-                    if (streamIsHevc == isHevc && streamWidth == header.width &&
-                        streamHeight == header.height && streamConfig.contentEquals(codecConfig)
-                    ) continue
+                    val sameConfig = streamIsHevc == isHevc && streamConfig.contentEquals(codecConfig)
+                    if (!sameConfig) {
+                        spsDimensions = mirrorSpsDimensions(codecConfig, isHevc)
+                    }
+                    val width = spsDimensions?.first ?: header.width
+                    val height = spsDimensions?.second ?: header.height
+                    if (sameConfig && streamWidth == width && streamHeight == height) continue
 
                     val opensProjection = streamConfig == null
                     streamIsHevc = isHevc
-                    streamWidth = header.width
-                    streamHeight = header.height
+                    streamWidth = width
+                    streamHeight = height
                     streamConfig = codecConfig
                     trace.generation = videoGeneration.incrementAndGet()
                     // Publish codec setup even if the frame ring is full or the mirror is suspended.
                     Log.i(PLAYBACK_DIAGNOSTICS_TAG,
                         "route=mirror_transport generation=${trace.generation} event=config " +
-                            "width=$streamWidth height=$streamHeight hevc=$isHevc")
+                            "width=$streamWidth height=$streamHeight hevc=$isHevc " +
+                            "header=${header.width}x${header.height} source=${if (spsDimensions != null) "sps" else "header"}")
                     onCodecConfigReady(sock, isHevc, streamWidth, streamHeight, trace.generation, codecConfig, opensProjection)
                     continue
                 }

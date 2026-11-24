@@ -1,5 +1,6 @@
 package com.tvplayair.receiver.video
 
+import android.app.ActivityManager
 import android.content.Context
 import android.os.Handler
 import android.os.Looper
@@ -293,9 +294,15 @@ class WebVideoPlayer(context: Context) : DirectVideoEngine {
             .setReadTimeoutMs(15_000)
             .setAllowCrossProtocolRedirects(true)
 
-        val loadControl = DefaultLoadControl.Builder()
-            .setBufferDurationsMs(15_000, 30_000, 1_500, 3_000)
-            .build()
+        val lowRam = appContext.getSystemService(ActivityManager::class.java)?.isLowRamDevice == true
+        val buffer = DefaultLoadControl.Builder()
+        if (lowRam) {
+            buffer.setBufferDurationsMsForStreaming(8_000, 16_000, 1_500, 2_500)
+                .setTargetBufferBytes(24 * 1024 * 1024)
+                .setPrioritizeTimeOverSizeThresholdsForStreaming(false)
+        } else {
+            buffer.setBufferDurationsMsForStreaming(15_000, 30_000, 1_500, 3_000)
+        }
 
         val mediaSourceFactory = DefaultMediaSourceFactory(appContext)
             .setDataSourceFactory(httpDataSourceFactory)
@@ -308,7 +315,7 @@ class WebVideoPlayer(context: Context) : DirectVideoEngine {
 
         return ExoPlayer.Builder(appContext)
             .setMediaSourceFactory(mediaSourceFactory)
-            .setLoadControl(loadControl)
+            .setLoadControl(buffer.build())
             .setAudioAttributes(audioAttributes, true)
             .build()
             .also { created ->

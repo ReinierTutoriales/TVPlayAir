@@ -33,6 +33,7 @@ import com.tvplayair.receiver.control.DacpCommand
 import com.tvplayair.receiver.control.TvRemoteHidBridge
 import com.tvplayair.receiver.network.ReceiverIdentityHelper
 import com.tvplayair.receiver.network.ReceiverIdentityStore
+import com.tvplayair.receiver.session.BootReceiver
 import com.tvplayair.receiver.session.SessionConnection
 import com.tvplayair.receiver.session.RaopNowPlaying
 import com.tvplayair.receiver.session.SessionEventListener
@@ -110,6 +111,7 @@ class MainActivity : ComponentActivity(), SurfaceLayerController {
             receiverName = initialIdentity.serviceName,
             audioOffsetMs = audioConsumer.getAudioOffsetMs(),
             projectionHome = isProjectionHomeIntent(intent),
+            autoStartReceiver = BootReceiver.isAutoStartEnabled(this),
             autoOpenVisual = getSharedPreferences("receiver_presentation", MODE_PRIVATE)
                 .getBoolean("auto_open_visual", false)
         )
@@ -148,6 +150,7 @@ class MainActivity : ComponentActivity(), SurfaceLayerController {
                         onToggleResolution = ::toggleResolutionPreset,
                         onToggleHevc = ::toggleHevcSetting,
                         onToggleAutoOpenVisual = ::toggleAutoOpenVisual,
+                        onToggleAutoStartReceiver = ::toggleAutoStartReceiver,
                         onAdjustAudioOffset = ::adjustAudioOffset,
                         onAudioCommand = { command -> sendAudioCommand(command, audioGeneration) },
                         onVideoToggle = { toggleVideoFromControls(directPlaybackId) },
@@ -628,6 +631,12 @@ class MainActivity : ComponentActivity(), SurfaceLayerController {
         val saved = identityStore.saveServiceName(nextName)
         overlayState = overlayState.copy(receiverName = saved)
         pushAdvertisingConfig(overlayState)
+    }
+
+    private fun toggleAutoStartReceiver() {
+        val enabled = !overlayState.autoStartReceiver
+        BootReceiver.setAutoStartEnabled(this, enabled)
+        overlayState = overlayState.copy(autoStartReceiver = enabled)
     }
 
     private fun toggleAutoOpenVisual() {
