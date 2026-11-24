@@ -54,7 +54,6 @@ class RaopUdpSessionIsolationTest {
         var currentGen = 1
         val decoded = mutableListOf<Pair<ByteArray, Int>>()
         val receiver = RaopAudioRtpReceiver(
-            generationProvider = { currentGen },
             payloadObserver = { bytes, gen -> decoded.add(bytes to gen) }
         )
         try {
@@ -70,7 +69,7 @@ class RaopUdpSessionIsolationTest {
             val ownerA = Any()
             val ownerB = Any()
 
-            assertTrue(receiver.start(iphoneIpv4, remoteControlPort = 55001, owner = ownerA))
+            assertTrue(receiver.start(iphoneIpv4, remoteControlPort = 55001, owner = ownerA, generation = currentGen))
             val transportA = receiver.currentTransportForTest()!!
             val portA = receiver.localAudioPort
             assertTrue(portA > 0)
@@ -82,7 +81,10 @@ class RaopUdpSessionIsolationTest {
 
             // Replacement SETUP for session B (e.g. Mirror audio) on new UDP sockets.
             currentGen = 2
-            assertTrue(receiver.start(iphoneIpv4, remoteControlPort = 55002, owner = ownerB))
+            val inFlight = buildRtpAudioPacket(101, 1352L, 0x1111_2222L, byteArrayOf(0x01))
+            assertTrue(receiver.ingestAudioDatagram(transportA, inFlight, inFlight.size, iphoneIpv4))
+            assertEquals(1, decoded.last().second)
+            assertTrue(receiver.start(iphoneIpv4, remoteControlPort = 55002, owner = ownerB, generation = currentGen))
             val transportB = receiver.currentTransportForTest()!!
             val portB = receiver.localAudioPort
             assertTrue(transportA.closed.get())
@@ -114,17 +116,16 @@ class RaopUdpSessionIsolationTest {
 
     @Test
     fun `case 2 - 0x56 control retransmission requires valid sender and pending requested gap`() {
-        var currentGen = 2
+        val currentGen = 2
         val decoded = mutableListOf<Pair<ByteArray, Int>>()
         val receiver = RaopAudioRtpReceiver(
-            generationProvider = { currentGen },
             payloadObserver = { bytes, gen -> decoded.add(bytes to gen) }
         )
         try {
             val iphone = InetAddress.getByName("192.168.1.50")
             val otherPeer = InetAddress.getByName("192.168.1.99")
             val ownerB = Any()
-            assertTrue(receiver.start(iphone, remoteControlPort = 55002, owner = ownerB))
+            assertTrue(receiver.start(iphone, remoteControlPort = 55002, owner = ownerB, generation = currentGen))
             val transportB = receiver.currentTransportForTest()!!
 
             // Packet 500 arrives, then 502 arrives (creating a pending requested gap for seq 501).
@@ -164,7 +165,6 @@ class RaopUdpSessionIsolationTest {
         var currentGen = 1
         val decoded = mutableListOf<Pair<ByteArray, Int>>()
         val receiver = RaopAudioRtpReceiver(
-            generationProvider = { currentGen },
             payloadObserver = { bytes, gen -> decoded.add(bytes to gen) }
         )
         try {
@@ -172,14 +172,14 @@ class RaopUdpSessionIsolationTest {
             val sharedSsrc = 0xAAAA_BBBBL
 
             // Session A uses sharedSsrc.
-            assertTrue(receiver.start(iphone, remoteControlPort = 55001, owner = Any()))
+            assertTrue(receiver.start(iphone, remoteControlPort = 55001, owner = Any(), generation = currentGen))
             val transportA = receiver.currentTransportForTest()!!
             val pktA = buildRtpAudioPacket(10, 1000L, sharedSsrc, byteArrayOf(0x01))
             assertTrue(receiver.ingestAudioDatagram(transportA, pktA, pktA.size, iphone))
 
             // Session B reuses sharedSsrc without RTP-Info anchor, starting across 65535 -> 0 wrap.
             currentGen = 2
-            assertTrue(receiver.start(iphone, remoteControlPort = 55002, owner = Any()))
+            assertTrue(receiver.start(iphone, remoteControlPort = 55002, owner = Any(), generation = currentGen))
             val transportB = receiver.currentTransportForTest()!!
             decoded.clear()
 
@@ -207,7 +207,6 @@ class RaopUdpSessionIsolationTest {
         var currentGen = 2
         val decoded = mutableListOf<Pair<ByteArray, Int>>()
         val receiver = RaopAudioRtpReceiver(
-            generationProvider = { currentGen },
             payloadObserver = { bytes, gen -> decoded.add(bytes to gen) }
         )
         try {
@@ -215,7 +214,7 @@ class RaopUdpSessionIsolationTest {
             val owner = Any()
             val ssrc = 0x7777_8888L
 
-            assertTrue(receiver.start(iphone, remoteControlPort = 55002, owner = owner))
+            assertTrue(receiver.start(iphone, remoteControlPort = 55002, owner = owner, generation = currentGen))
             val transport = receiver.currentTransportForTest()!!
             val initialPort = receiver.localAudioPort
 
@@ -229,6 +228,10 @@ class RaopUdpSessionIsolationTest {
             val flushSeq = RaopMetadataParser.sequenceNumber("seq=900;rtptime=90000")
             assertEquals(900, flushSeq)
             currentGen = 3
+            val beforeReset = buildRtpAudioPacket(501, 5352L, ssrc, byteArrayOf(0x01))
+            assertTrue(receiver.ingestAudioDatagram(transport, beforeReset, beforeReset.size, iphone))
+            assertEquals(2, decoded.single().second)
+            decoded.clear()
             receiver.onFlush(owner, newGeneration = currentGen, flushSeq = flushSeq)
 
             // Same UDP transport and port remain active.

@@ -84,7 +84,7 @@ internal class RaopRtspServer(
     ) { runnable ->
         Thread(runnable, "TVPlayAir-RtspClient").apply { isDaemon = true }
     }
-    private val audioReceiver = RaopAudioRtpReceiver { generationId.get() }
+    private val audioReceiver = RaopAudioRtpReceiver()
     private val timingAndEventServers = AirPlayTimingAndEventServers()
     private val activeSockets = java.util.Collections.newSetFromMap(java.util.concurrent.ConcurrentHashMap<Socket, Boolean>())
 
@@ -365,8 +365,7 @@ internal class RaopRtspServer(
                             null
                         } else {
                             source.announcedAudioSdp?.let(::configureFromSdp)
-                            if (audioReceiver.start(peer, transport.controlPort, owner = source)) {
-                                activateAudioSource(source, request)
+                            if (startAudioTransport(source, request, peer, transport.controlPort)) {
                                 RtspMessageParser.formatAudioSetupTransport(
                                     audioReceiver.localAudioPort,
                                     audioReceiver.localControlPort,
@@ -493,10 +492,18 @@ internal class RaopRtspServer(
         listener.onAudioStreamStopped(stoppedGen)
     }
 
-    private fun activateAudioSource(source: Any, request: RtspRequest) {
+    private fun startAudioTransport(
+        source: AirPlayConnectionCrypto,
+        request: RtspRequest,
+        peer: InetAddress?,
+        controlPort: Int?
+    ): Boolean {
+        val generation = generationId.incrementAndGet()
+        if (!audioReceiver.start(peer, controlPort, source, generation)) return false
         nowPlaying.activate(source, remoteFor(request)) {
-            listener.onAudioStreamStarted(generationId.incrementAndGet())
+            listener.onAudioStreamStarted(generation)
         }
+        return true
     }
 
     private fun updateVolume(body: ByteArray) {
@@ -673,8 +680,7 @@ internal class RaopRtspServer(
             )
             val remoteControlPort = (stream["controlPort"] as? Long)
                 ?.takeIf { it in 1L..65535L }?.toInt()
-            if (audioReceiver.start(peer, remoteControlPort, owner = source)) {
-                activateAudioSource(source, request)
+            if (startAudioTransport(source, request, peer, remoteControlPort)) {
                 mapOf(
                     "dataPort" to audioReceiver.localAudioPort.toLong(),
                     "controlPort" to audioReceiver.localControlPort.toLong(),
