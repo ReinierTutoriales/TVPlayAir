@@ -134,6 +134,22 @@ class ReceiverIdentityStore(context: Context) {
             ?.takeIf { it.isNotEmpty() }
     }.getOrNull()
 
+    fun readServiceName(): String = resolveServiceName(prefs.getString(KEY_SERVICE_NAME, null))
+
+    private fun resolveServiceName(existingName: String?): String {
+        val sysName = readSystemDeviceName()
+        // Avoid bare system hostname (e.g. "GoogleTV5124") which collides with Android 14
+        // built-in Cast mDNS records; prefix with "TVPlayAir" for conflict-free AirPlay discovery.
+        val defaultName = if (!sysName.isNullOrEmpty()) {
+            ReceiverIdentityHelper.sanitizeServiceName("TVPlayAir $sysName")
+        } else {
+            "TVPlayAir"
+        }
+        return existingName
+            ?.takeUnless { !sysName.isNullOrEmpty() && it.equals(sysName, ignoreCase = true) }
+            ?: defaultName
+    }
+
     fun loadOrCreate(): ReceiverIdentity {
         val random = SecureRandom()
         val existingMac = prefs.getString(KEY_DEVICE_ID, null)
@@ -146,17 +162,7 @@ class ReceiverIdentityStore(context: Context) {
         val mac = existingMac ?: ByteArray(6).also { random.nextBytes(it) }
             .let { ReceiverIdentityHelper.formatLocalMac(it) }
         val uuid = existingUuid ?: UUID.randomUUID().toString()
-        val sysName = readSystemDeviceName()
-        // Avoid bare system hostname (e.g. "GoogleTV5124") which collides with Android 14
-        // built-in Cast mDNS records; prefix with "TVPlayAir" for conflict-free AirPlay discovery.
-        val defaultName = if (!sysName.isNullOrEmpty()) {
-            ReceiverIdentityHelper.sanitizeServiceName("TVPlayAir $sysName")
-        } else {
-            "TVPlayAir"
-        }
-        val name = existingName
-            ?.takeUnless { !sysName.isNullOrEmpty() && it.equals(sysName, ignoreCase = true) }
-            ?: defaultName
+        val name = resolveServiceName(existingName)
         val priv = existingPriv ?: ByteArray(Ed25519.SECRET_KEY_SIZE).also {
             Ed25519.generatePrivateKey(random, it)
         }

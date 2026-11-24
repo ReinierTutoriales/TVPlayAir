@@ -10,6 +10,7 @@ import android.os.Handler
 import android.os.Looper
 import android.util.Log
 import com.tvplayair.receiver.diagnostics.PLAYBACK_DIAGNOSTICS_TAG
+import com.tvplayair.receiver.session.ReceiverAvailability
 import java.util.UUID
 
 data class AirPlayAdvertiseConfig(
@@ -96,7 +97,10 @@ object MdnsTxtRecords {
  * Publishes _airplay._tcp (7000) and _raop._tcp (5000) via Android NsdManager
  * and holds WIFI_MODE_FULL_LOW_LATENCY + MulticastLock inside the :session process.
  */
-class MdnsAdvertiser(context: Context) {
+class MdnsAdvertiser(
+    context: Context,
+    private val onAirPlayAvailability: (ReceiverAvailability) -> Unit
+) {
     companion object {
         private const val TAG = "MdnsAdvertiser"
         private val retryDelaysMs = longArrayOf(500, 1_500, 4_000)
@@ -142,6 +146,11 @@ class MdnsAdvertiser(context: Context) {
     }
 
     private fun registerAdvertisements(config: AirPlayAdvertiseConfig) {
+        if (nsdManager == null) {
+            onAirPlayAvailability(ReceiverAvailability.UNAVAILABLE)
+            return
+        }
+        onAirPlayAvailability(ReceiverAvailability.STARTING)
         registerService(
             serviceName = { attempt -> MdnsTxtRecords.buildAirPlayServiceName(config, attempt) },
             serviceType = MdnsTxtRecords.AIRPLAY_SERVICE_TYPE,
@@ -183,7 +192,10 @@ class MdnsAdvertiser(context: Context) {
                     if (networkCallback !== this) return
                     Log.i(PLAYBACK_DIAGNOSTICS_TAG,
                         "route=network event=default_lost handle=${network.networkHandle}")
-                    if (activeNetwork == network) activeNetwork = null
+                    if (activeNetwork == network) {
+                        activeNetwork = null
+                        onAirPlayAvailability(ReceiverAvailability.NETWORK_UNAVAILABLE)
+                    }
                 }
             }
         }
@@ -236,6 +248,7 @@ class MdnsAdvertiser(context: Context) {
     ) {
         private var listener: NsdManager.RegistrationListener? = null
         private var failures = 0
+        private val isAirPlay = serviceType == MdnsTxtRecords.AIRPLAY_SERVICE_TYPE
         private val retry = Runnable {
             synchronized(this@MdnsAdvertiser) {
                 if (advertisements[serviceType] === this) register()
@@ -254,6 +267,7 @@ class MdnsAdvertiser(context: Context) {
                     synchronized(this@MdnsAdvertiser) {
                         if (listener === this) {
                             Log.i(TAG, "Registered $serviceType as ${serviceInfo.serviceName}:${info.port}")
+                            if (isAirPlay) onAirPlayAvailability(ReceiverAvailability.AVAILABLE)
                         }
                     }
                 }
@@ -286,6 +300,7 @@ class MdnsAdvertiser(context: Context) {
             val delayMs = retryDelaysMs.getOrNull(failures++)
             if (delayMs == null) {
                 Log.e(TAG, "Registration retries exhausted for $serviceType")
+                if (isAirPlay) onAirPlayAvailability(ReceiverAvailability.UNAVAILABLE)
                 return
             }
             handler.postDelayed(retry, delayMs)

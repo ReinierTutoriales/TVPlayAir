@@ -22,6 +22,7 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.platform.ComposeView
+import androidx.core.view.doOnPreDraw
 import androidx.core.view.WindowCompat
 import androidx.core.view.WindowInsetsCompat
 import androidx.core.view.WindowInsetsControllerCompat
@@ -34,6 +35,7 @@ import com.tvplayair.receiver.control.TvRemoteHidBridge
 import com.tvplayair.receiver.network.ReceiverIdentityHelper
 import com.tvplayair.receiver.network.ReceiverIdentityStore
 import com.tvplayair.receiver.session.BootReceiver
+import com.tvplayair.receiver.session.ReceiverAvailability
 import com.tvplayair.receiver.session.SessionConnection
 import com.tvplayair.receiver.session.RaopNowPlaying
 import com.tvplayair.receiver.session.SessionEventListener
@@ -97,6 +99,7 @@ class MainActivity : ComponentActivity(), SurfaceLayerController {
     }
 
     override fun onCreate(savedInstanceState: Bundle?) {
+        val createdAtMs = SystemClock.elapsedRealtime()
         super.onCreate(savedInstanceState)
         WindowCompat.getInsetsController(window, window.decorView).apply {
             systemBarsBehavior = WindowInsetsControllerCompat.BEHAVIOR_SHOW_TRANSIENT_BARS_BY_SWIPE
@@ -106,9 +109,8 @@ class MainActivity : ComponentActivity(), SurfaceLayerController {
         val retainedAudio = AudioContinuityService.claim()
         audioConsumer = retainedAudio?.second ?: OboeAudioConsumer(applicationContext)
         identityStore = ReceiverIdentityStore(this)
-        val initialIdentity = identityStore.loadOrCreate()
         overlayState = overlayState.copy(
-            receiverName = initialIdentity.serviceName,
+            receiverName = identityStore.readServiceName(),
             audioOffsetMs = audioConsumer.getAudioOffsetMs(),
             projectionHome = isProjectionHomeIntent(intent),
             autoStartReceiver = BootReceiver.isAutoStartEnabled(this),
@@ -251,6 +253,10 @@ class MainActivity : ComponentActivity(), SurfaceLayerController {
         hidBridge = TvRemoteHidBridge(this).apply { startIfSupported() }
 
         sessionListener = object : SessionEventListener {
+            override fun onReceiverAvailability(availability: ReceiverAvailability) {
+                overlayState = overlayState.copy(receiverAvailability = availability)
+            }
+
             override fun onSharedMemoryReady(generationId: Int, activeDirectPlaybackId: Long) {
                 sharedMemoryReady = true
                 awaitingDirectSnapshot = activeDirectPlaybackId != 0L
@@ -282,7 +288,7 @@ class MainActivity : ComponentActivity(), SurfaceLayerController {
                 dismissPlaybackControls()
                 presentationCoordinator.onSessionDied()
                 overlayState = overlayState.withAudioStreamStopped().withPresentation(presentationCoordinator.state)
-                    .copy(connectedClient = null)
+                    .copy(connectedClient = null, receiverAvailability = ReceiverAvailability.STARTING)
                 updateScreenWake()
             }
 
@@ -383,8 +389,15 @@ class MainActivity : ComponentActivity(), SurfaceLayerController {
         }
         sessionConnection = retainedPlayback?.connection ?: retainedAudio?.first ?: SessionConnection(this)
         sessionConnection.replaceListener(sessionListener, replay = retainedPlayback != null)
-        sessionConnection.connect()
-        sessionConnection.setAutoOpenVisual(overlayState.autoOpenVisual)
+        root.doOnPreDraw {
+            root.post {
+                if (!destroyingView && !isFinishing) {
+                    Log.i(PLAYBACK_DIAGNOSTICS_TAG,
+                        "route=startup event=ui_layout elapsedMs=${SystemClock.elapsedRealtime() - createdAtMs}")
+                    sessionConnection.connect()
+                }
+            }
+        }
     }
 
     override fun onStart() {

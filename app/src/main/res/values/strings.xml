@@ -10,4 +10,9 @@
     <string name="video_loading">Cargando…</string>
     <string name="video_pause">Pausar</string>
     <string name="video_play">Reproducir</string>
+    <string name="receiver_starting">Iniciando receptor…</string>
+    <string name="receiver_airplay_ready">Selecciona este receptor desde AirPlay.</string>
+    <string name="receiver_unavailable">Receptor no disponible.</string>
+    <string name="receiver_network_unavailable">Red no disponible. Comprueba la conexión.</string>
+    <string name="receiver_connected">Dispositivo conectado</string>
 </resources>

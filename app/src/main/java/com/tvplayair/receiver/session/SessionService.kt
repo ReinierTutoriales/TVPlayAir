@@ -63,6 +63,7 @@ class SessionService : Service() {
 
     @Volatile
     private var callback: ITvPlayCallback? = null
+    private var receiverAvailability = ReceiverAvailability.STARTING
     private var directPlayback: DirectPlaybackStart? = null
     // Only an actual new visual session may request foreground presentation.
     // Android can still reject background activity starts; the notification remains available.
@@ -237,6 +238,7 @@ class SessionService : Service() {
                     videoCopy.close()
                 }
                 callback = cb
+                runCatching { cb.onReceiverAvailability(receiverAvailability.ordinal) }
                 activeAudioGeneration?.let { runCatching { cb.onAudioStreamStarted(it) } }
                 sendNowPlaying(
                     cb,
@@ -269,7 +271,7 @@ class SessionService : Service() {
         }
 
         override fun startServer() {
-            startAirPlaySession()
+            mainHandler.post { startAirPlaySession() }
         }
 
         override fun updatePlaybackTelemetry(
@@ -373,7 +375,7 @@ class SessionService : Service() {
             piUuid = identity.piUuid,
             publicKeyHex = identity.ed25519PublicKeyHex
         )
-        mdnsAdvertiser = MdnsAdvertiser(this)
+        mdnsAdvertiser = MdnsAdvertiser(this, ::publishReceiverAvailability)
         dacpController = DacpController(this) {
             mainHandler.post {
                 synchronized(callbackLock) {
@@ -386,11 +388,21 @@ class SessionService : Service() {
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         if (!promoteToForeground()) {
+            publishReceiverAvailability(ReceiverAvailability.UNAVAILABLE)
             stopSelf(startId)
             return START_NOT_STICKY
         }
         startAirPlaySession()
         return START_STICKY
+    }
+
+    private fun publishReceiverAvailability(availability: ReceiverAvailability) {
+        synchronized(callbackLock) {
+            if (receiverAvailability == availability) return
+            receiverAvailability = availability
+            Log.i(PLAYBACK_DIAGNOSTICS_TAG, "route=startup event=receiver_state state=$availability")
+            runCatching { callback?.onReceiverAvailability(availability.ordinal) }
+        }
     }
 
     private fun sendAudioControlsAvailability(target: ITvPlayCallback) {
@@ -438,7 +450,8 @@ class SessionService : Service() {
                 ServiceInfo.FOREGROUND_SERVICE_TYPE_CONNECTED_DEVICE
             )
         }.onFailure {
-            Log.w(TAG, "Could not promote SessionService to foreground", it)
+            Log.w(PLAYBACK_DIAGNOSTICS_TAG,
+                "route=startup event=foreground_failed reason=${it.javaClass.simpleName}", it)
         }.isSuccess
     }
 
@@ -504,6 +517,7 @@ class SessionService : Service() {
         if (delayMs == null) {
             endpointFailures = 0
             Log.e(TAG, "AirPlay endpoint startup retries exhausted")
+            publishReceiverAvailability(ReceiverAvailability.UNAVAILABLE)
             return
         }
         endpointRetryPending = mainHandler.postDelayed(retryAirPlayEndpoints, delayMs)

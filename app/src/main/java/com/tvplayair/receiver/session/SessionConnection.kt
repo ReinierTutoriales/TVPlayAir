@@ -19,6 +19,7 @@ import com.tvplayair.receiver.video.NO_DIRECT_CHECKPOINT_MS
 interface SessionEventListener {
     fun onSharedMemoryReady(generationId: Int, activeDirectPlaybackId: Long) = Unit
     fun onSharedMemoryDetached() = Unit
+    fun onReceiverAvailability(availability: ReceiverAvailability) = Unit
     fun onVideoConfigChanged(
         mimeType: String, width: Int, height: Int, generationId: Int, codecConfig: ByteArray, opensProjection: Boolean
     ) = Unit
@@ -92,6 +93,11 @@ class SessionConnection(
         }
 
         override fun onSessionUnavailable() = deliver(epoch) { handleBinderDeath(epoch) }
+
+        override fun onReceiverAvailability(state: Int) {
+            val availability = ReceiverAvailability.entries.getOrNull(state) ?: return
+            deliver(epoch) { listener.onReceiverAvailability(availability) }
+        }
 
         override fun onVideoConfigChanged(
             mimeType: String, width: Int, height: Int, generationId: Int, codecConfig: ByteArray, opensProjection: Boolean
