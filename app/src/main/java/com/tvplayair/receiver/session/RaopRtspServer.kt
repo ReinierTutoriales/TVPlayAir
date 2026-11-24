@@ -364,8 +364,10 @@ internal class RaopRtspServer(
                             rejectConcurrentAudio(output, cseq)
                             null
                         } else {
-                            source.announcedAudioSdp?.let(::configureFromSdp)
-                            if (startAudioTransport(source, request, peer, transport.controlPort)) {
+                            val started = startAudioTransport(source, request, peer, transport.controlPort) {
+                                source.announcedAudioSdp?.let(::configureFromSdp)
+                            }
+                            if (started) {
                                 RtspMessageParser.formatAudioSetupTransport(
                                     audioReceiver.localAudioPort,
                                     audioReceiver.localControlPort,
@@ -496,10 +498,12 @@ internal class RaopRtspServer(
         source: AirPlayConnectionCrypto,
         request: RtspRequest,
         peer: InetAddress?,
-        controlPort: Int?
+        controlPort: Int?,
+        configureDecoder: () -> Unit
     ): Boolean {
-        val generation = generationId.incrementAndGet()
-        if (!audioReceiver.start(peer, controlPort, source, generation)) return false
+        val generation = generationId.get() + 1
+        if (!audioReceiver.start(peer, controlPort, source, generation, configureDecoder)) return false
+        generationId.set(generation)
         Log.i(TAG, "RAOP UDP ready generation=$generation audio=${audioReceiver.localAudioPort} " +
             "control=${audioReceiver.localControlPort}")
         nowPlaying.activate(source, remoteFor(request)) {
@@ -671,18 +675,20 @@ internal class RaopRtspServer(
                 "SETUP audio stream: ct=$ct sr=$sampleRate spf=$spf codec=$codec " +
                     "hasKey=${pairedKey != null} hasShk=${shk != null} hasEcdh=${ecdhSecret != null} hasIv=${source.sessionIv != null} keys=${stream.keys}"
             )
-            audioReceiver.configureSession(
-                codec = codec,
-                sampleRate = sampleRate,
-                sessionAesKey = pairedKey,
-                sessionAesIv = source.sessionIv,
-                samplesPerFrame = spf,
-                alternateAesKey = rawKey,
-                extraAesKeys = extraKeys
-            )
             val remoteControlPort = (stream["controlPort"] as? Long)
                 ?.takeIf { it in 1L..65535L }?.toInt()
-            if (startAudioTransport(source, request, peer, remoteControlPort)) {
+            val started = startAudioTransport(source, request, peer, remoteControlPort) {
+                audioReceiver.configureSession(
+                    codec = codec,
+                    sampleRate = sampleRate,
+                    sessionAesKey = pairedKey,
+                    sessionAesIv = source.sessionIv,
+                    samplesPerFrame = spf,
+                    alternateAesKey = rawKey,
+                    extraAesKeys = extraKeys
+                )
+            }
+            if (started) {
                 mapOf(
                     "dataPort" to audioReceiver.localAudioPort.toLong(),
                     "controlPort" to audioReceiver.localControlPort.toLong(),
