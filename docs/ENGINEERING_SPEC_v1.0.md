@@ -10,7 +10,7 @@ La experiencia objetivo es conectar el iPhone una vez y manejar la sesión desde
 
 La pantalla de espera cede el espacio al video, al espejo o a **Ahora suena** cuando llega contenido. En audio, la sesión RTSP propietaria aporta título, artista, álbum y destino DACP. Los metadatos y la carátula se asocian por `rtptime` cuando el emisor lo incluye. Cambiar de canción retira la carátula anterior y una respuesta atrasada de otra conexión no puede reemplazarla. Los controles de pista de la TV usan DACP y requieren que el emisor publique un destino válido.
 
-La TV muestra **Ahora suena** en negro con carátula, título, artista y tres controles para el mando. El video directo abre a pantalla completa. Arriba o abajo muestran el estado y el avance, OK alterna reproducción y pausa, e izquierda o derecha saltan diez segundos cuando la fuente lo permite. La franja se cierra con Atrás o tras cuatro segundos de inactividad. En espejo se muestra la pantalla del iPhone y se conserva el control HID cuando está disponible. Referencias de diseño [CarPlay en iOS 27](https://developer.apple.com/videos/play/wwdc2026/212/?time=382) y [controles de Android TV](https://developer.android.com/training/tv/playback/controls).
+La TV muestra **Ahora suena** en negro con carátula, título, artista y tres controles para el mando. El video directo abre a pantalla completa. Arriba o abajo muestran el estado y el avance, OK alterna reproducción y pausa, e izquierda o derecha mueven la posición un 1 % cuando el foco está en la barra y la fuente permite buscar. La franja se cierra con Atrás o tras cinco segundos de inactividad durante la reproducción. En espejo se muestra la pantalla del iPhone y se conserva el control HID cuando está disponible. Referencias de diseño [CarPlay en iOS 27](https://developer.apple.com/videos/play/wwdc2026/212/?time=382) y [controles de Android TV](https://developer.android.com/training/tv/playback/controls).
 
 Al cambiar de app con video directo, el reproductor reutiliza la superficie y el canal inverso de la app entrante puede abrirse antes de pedir el video. Los controles con ID de sesión y las actualizaciones del reproductor se verifican contra el video activo. Los emisores que omiten ese ID conservan el control desde la misma dirección IP. Un `FLUSH` de una conexión RAOP reemplazada se descarta. Si llega audio mientras ExoPlayer usa la salida, Oboe registra la sesión y puede reanudarla al terminar el video. La latencia de estas transiciones se mide en el televisor.
 
@@ -24,7 +24,7 @@ El arranque directo depende de que el equipo permita seleccionar Inicio y de que
 | Proceso aislado `:session` + SharedMemory SPSC | Reemplazo del motor C por Rust/Kotlin puro |
 | Espejo 4K/HEVC (MediaCodec Low-Latency) | GLSurfaceView / OpenGL ES (PiP y Split-Screen) |
 | Video Web directo 4K HDR (Media3 ExoPlayer) | Mezclador multi-bus con ducking (multi-cliente) |
-| Audio PCM 48 kHz (FFmpeg → Google Oboe) + offset ± ms | Reloj PTP (IEEE 802.1AS) multiroom |
+| Audio PCM 48 kHz (MediaCodec/ALAC nativo → Google Oboe) + offset ± ms | Reloj PTP (IEEE 802.1AS) multiroom |
 | Control remoto bidireccional DACP (obligatorio) | Puente cableado USB CDC-NCM |
 | Control Bluetooth HID (opcional / best-effort) | Emparejamiento HomeKit persistente (Ed25519) |
 
@@ -36,9 +36,9 @@ El sistema separa estrictamente la red/protocolo del renderizado y la UI mediant
 +-------------------------------------------------------------------+
 | PROCESO AISLADO (:session) — Resiliencia ante crashes nativos     |
 |                                                                   |
-|  [MdnsAdvertiser]  -->  [Núcleo C: raop + playfair]               |
+|  [MdnsAdvertiser]  -->  [RTSP/HTTP Kotlin + PlayFair JNI]               |
 |  (_airplay / _raop)      ├── Video NALs (H.264/HEVC)              |
-|                          ├── Audio (FFmpeg -> PCM 48kHz)          |
+|                          ├── Audio (MediaCodec/ALAC -> PCM 48 kHz)          |
 |                          └── Eventos RTSP/HTTP + DACP             |
 +-------------------------------------------------------------------+
          | (Control: AIDL)                     | (Datos: SharedMemory)
@@ -59,18 +59,18 @@ El sistema separa estrictamente la red/protocolo del renderizado y la UI mediant
 
 ### Capa 1: Motor de Sesión (`android:process=":session"`)
 
-- **Protocolo**: Núcleo C mínimo (raop + playfair, sin GStreamer) encapsulado detrás de un puente JNI propio. Si el código nativo sufre un crash o fuga de memoria, Android reinicia `:session` sin tumbar la UI ni ExoPlayer.
-- **Descubrimiento mDNS** (`MdnsAdvertiser`): Publica `_airplay._tcp` (puerto 7000) y `_raop._tcp` (puerto 5000) con `features=0x5A7FFFF7,0x1E`, `flags=0x44`, `model=AppleTV11,1`, `overscanned=0` y WifiLock (`WIFI_MODE_FULL_LOW_LATENCY`).
-- **Decodificación de Audio en `:session`**: FFmpeg (`libavcodec`) normaliza AAC-ELD, AAC-LC y ALAC a PCM 16-bit / 48 kHz estéreo antes de escribir en memoria compartida.
+- **Protocolo**: RTSP, HTTP, AirPlay y RAOP en Kotlin con PlayFair, ALAC y transporte en memoria compartida mediante JNI. El enlace Binder permite detectar la pérdida de `:session` y volver a conectar la UI.
+- **Descubrimiento mDNS** (`MdnsAdvertiser`): Publica `_airplay._tcp` (puerto 7000) y `_raop._tcp` (puerto 5000) con `features=0x5A7FFFF3,0x1C` con ScreenMultiCodec cuando el perfil admite HEVC, `flags=0x44`, `model=AppleTV3,2`, `overscanned=0` y WifiLock (`WIFI_MODE_FULL_LOW_LATENCY`).
+- **Decodificación de Audio en `:session`**: MediaCodec decodifica AAC-ELD y AAC-LC. El decodificador ALAC nativo maneja ALAC. El remuestreador normaliza a PCM estéreo de 16 bits y 48 kHz antes de publicarlo en memoria compartida.
 - **Asignación de Memoria**: Creada 100% en C++ con `ASharedMemory_create()` (`<android/sharedmem.h>`), sin reflexión en Kotlin. Los descriptores (fd) se entregan a la UI vía `ParcelFileDescriptor.adoptFd(fd)` por AIDL.
 
 ### Capa 2: Motor de Presentación (Proceso Principal)
 
 - **Video (Cero OpenGL en v1.0)**: Dos `SurfaceView` nativos superpuestos gestionados por SurfaceFlinger. Garantiza paso directo al Hardware Composer y preserva metadatos HDR10 / HLG / Dolby Vision en ExoPlayer.
 - **Gestión de VPU (Límite de Hardware)**: Los SoCs de Android TV (Amlogic/MediaTek) no soportan doble decodificación 4K HEVC simultánea.
-  - Al entrar `POST /play` (video web maximizado), ExoPlayer prepara el stream con User-Agent de Safari iOS y `setForceHighestSupportedBitrate(true)`.
+  - Al entrar `POST /play` (video web maximizado), ExoPlayer prepara el stream con User-Agent de Safari iOS y selección adaptativa de pistas.
   - Se libera MediaCodec del espejo antes de preparar ExoPlayer. `onRenderedFirstFrame` registra cuándo ExoPlayer muestra imagen.
-- **Retorno limpio al Espejo (Caché SPS/PPS + Compuerta IDR)**: Al detener ExoPlayer, se recrea MediaCodec (`KEY_LOW_LATENCY = 1`), se inyectan los últimos headers SPS/PPS/VPS cacheados y se descartan todos los paquetes entrantes hasta recibir el primer frame IDR limpio (evita corrupción/pantalla verde).
+- **Retorno limpio al Espejo (Caché SPS/PPS + Compuerta IDR)**: Al detener ExoPlayer, se recrea MediaCodec (baja latencia cuando el decodificador la admite), se inyectan los últimos headers SPS/PPS/VPS cacheados y se descartan todos los paquetes entrantes hasta recibir el primer frame IDR limpio (evita corrupción/pantalla verde).
 - **Audio**: Google Oboe (C++) lee directamente del SharedRingBuffer de audio con ajuste manual de sincronización (-200 ms a +200 ms). AudioFocus nativo arbitra la transición con ExoPlayer.
 
 ### Capa 3: Capa de Interacción (Proceso Principal)
@@ -98,12 +98,12 @@ El sistema separa estrictamente la red/protocolo del renderizado y la UI mediant
 
 ## 5. Estructura del Repositorio y Entorno
 
-- Requisitos de compilación: `minSdk = 29`, `targetSdk = 35`, Kotlin DSL, NDK r27+, CMake 3.22+, `buildFeatures { compose = true; prefab = true }`, `aidl = true`.
+- Requisitos de compilación: `minSdk = 29`, `targetSdk = 35`, `compileSdk = 37.1`, Kotlin DSL, NDK 30.0.16248370, CMake 4.1.2, `buildFeatures { compose = true; prefab = true }`, `aidl = true`.
 - Librerías NDK obligatorias: `android` (para `ASharedMemory_create`), `log`, `oboe::oboe`.
 
 ```
-TVPlay/app/src/main/
-├── aidl/com/tvplay/receiver/ipc/
+TVPlayAir/app/src/main/
+├── aidl/com/tvplayair/receiver/ipc/
 │   ├── ITvPlaySession.aidl
 │   └── ITvPlayCallback.aidl
 ├── cpp/
@@ -112,7 +112,7 @@ TVPlay/app/src/main/
 │   ├── session_jni.cpp              # Puente productor (:session -> RingBuffer)
 │   ├── consumer_jni.cpp             # Puente consumidor (RingBuffer -> MediaCodec / Oboe)
 │   └── third_party/                 # libuxplay.a, openssl, libplist, llhttp, ffmpeg (solo audio)
-└── java/com/tvplay/receiver/
+└── java/com/tvplayair/receiver/
     ├── service/TvPlaySessionService.kt
     ├── network/MdnsAdvertiser.kt
     ├── engine/
