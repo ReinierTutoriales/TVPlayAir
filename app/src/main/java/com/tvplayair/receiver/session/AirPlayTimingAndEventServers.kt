@@ -49,7 +49,9 @@ object AirPlayTimingPacket {
  * UDP NTP timing responder (port 6002) and persistent TCP event endpoint (port 7101)
  * required by iOS between initial SETUP and stream SETUP/RECORD.
  */
-class AirPlayTimingAndEventServers {
+class AirPlayTimingAndEventServers(
+    private val hasActiveControl: (java.net.InetAddress) -> Boolean = { false }
+) {
     companion object {
         private const val TAG = "AirPlayTimingEvent"
         const val DEFAULT_EVENT_PORT = 7101
@@ -173,7 +175,15 @@ class AirPlayTimingAndEventServers {
                     val input = BufferedInputStream(sock.getInputStream())
                     val output = sock.getOutputStream()
                     while (running.get() && !server.isClosed) {
-                    val method = readAirPlayEventMethod(input) ?: break
+                    val method = readAirPlayEventMethod(input) {
+                        val keep = running.get() && !server.isClosed && hasActiveControl(sock.inetAddress)
+                        Log.i(TAG, "Event idle timeout keepOpen=$keep")
+                        keep
+                    }
+                    if (method == null) {
+                        Log.i(TAG, "Event connection ended (EOF or invalid request)")
+                        break
+                    }
                     if (method == "POST" || method == "GET") {
                         val ok = "HTTP/1.1 200 OK\r\nContent-Length: 0\r\n\r\n"
                         output.write(ok.toByteArray(StandardCharsets.US_ASCII))
@@ -190,8 +200,11 @@ class AirPlayTimingAndEventServers {
     }
 }
 
-internal fun readAirPlayEventMethod(input: BufferedInputStream): String? {
-    val header = readAirPlayHttpHeader(input, allowIdleTimeout = true) ?: return null
+internal fun readAirPlayEventMethod(
+    input: BufferedInputStream,
+    keepIdleConnection: () -> Boolean = { false }
+): String? {
+    val header = readAirPlayHttpHeader(input, keepIdleConnection = keepIdleConnection) ?: return null
     val lines = header.toString(StandardCharsets.US_ASCII).split("\r\n")
     val length = airPlayContentLength(lines, 2 * 1024 * 1024) ?: return null
     if (!drainAirPlayBody(input, length)) return null

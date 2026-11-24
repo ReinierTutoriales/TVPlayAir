@@ -85,8 +85,10 @@ internal class RaopRtspServer(
         Thread(runnable, "TVPlayAir-RtspClient").apply { isDaemon = true }
     }
     private val audioReceiver = RaopAudioRtpReceiver()
-    private val timingAndEventServers = AirPlayTimingAndEventServers()
     private val activeSockets = java.util.Collections.newSetFromMap(java.util.concurrent.ConcurrentHashMap<Socket, Boolean>())
+    private val timingAndEventServers = AirPlayTimingAndEventServers { peer ->
+        activeSockets.any { !it.isClosed && it.inetAddress == peer }
+    }
 
     @Volatile
     private var serverSocket: ServerSocket? = null

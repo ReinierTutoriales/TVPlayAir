@@ -36,7 +36,21 @@ class AirPlayHttpHeaderTest {
         val input = BufferedInputStream(streamEndingInTimeout(wire), 1)
         assertEquals("POST", readAirPlayEventMethod(input))
         assertEquals("GET", readAirPlayEventMethod(input))
-        assertNull(readAirPlayEventMethod(input))
+        assertThrows(SocketTimeoutException::class.java) { readAirPlayEventMethod(input) }
+    }
+
+    @Test
+    fun eventIdleTimeoutCanKeepTheChannelOpenUntilItsNextRequest() {
+        val bytes = "GET /info HTTP/1.1\r\n\r\n".toByteArray()
+        var reads = -1
+        val input = BufferedInputStream(object : InputStream() {
+            override fun read(): Int {
+                if (reads++ == -1) throw SocketTimeoutException("idle")
+                return bytes.getOrNull(reads - 1)?.toInt() ?: -1
+            }
+        }, 1)
+        assertEquals("GET", readAirPlayEventMethod(input) { true })
+        assertNull(readAirPlayEventMethod(input) { true })
     }
 
     @Test
