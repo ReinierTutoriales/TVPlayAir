@@ -174,11 +174,12 @@ class RaopAudioDecoder {
     private var producedFrames = 0L
     private var queuedFrames = 0L
     private var decodeFailures = 0L
+    private var aacInputDrops = 0L
 
     @Synchronized
     fun pcmStats(): String =
         "pcmProduced=$producedFrames pcmQueued=$queuedFrames " +
-            "pcmRejected=${producedFrames - queuedFrames} decodeFailures=$decodeFailures"
+            "pcmRejected=${producedFrames - queuedFrames} decodeFailures=$decodeFailures aacInputDrops=$aacInputDrops"
 
     private val srcSamples = ShortArray(MAX_PCM_FRAMES * PcmResampler.CHANNELS)
     private val resampler = PcmResampler()
@@ -205,6 +206,7 @@ class RaopAudioDecoder {
         producedFrames = 0L
         queuedFrames = 0L
         decodeFailures = 0L
+        aacInputDrops = 0L
 
         if (codec == RaopAudioCodec.PCM_L16_48K || codec == RaopAudioCodec.PCM_L16_44K1) {
             Log.i(TAG, "Configured PCM decoder ($codec @ $inputSampleRate Hz)")
@@ -315,8 +317,12 @@ class RaopAudioDecoder {
                     aacTimestamps.clear()
                     aacNextPtsUs = 0L
                 }
-                val inIdx = runCatching { decoder.dequeueInputBuffer(DEQUEUE_TIMEOUT_US) }
-                    .getOrDefault(-1)
+                var inIdx = dequeueAacInput(decoder)
+                if (inIdx == MediaCodec.INFO_TRY_AGAIN_LATER) {
+                    // Output can hold codec capacity. Drain before the bounded retry.
+                    drainAacOutput(decoder, generationId)
+                    inIdx = dequeueAacInput(decoder)
+                }
                 if (inIdx >= 0) {
                     val inBuf = decoder.getInputBuffer(inIdx)
                     if (inBuf != null && length <= inBuf.capacity()) {
@@ -326,40 +332,59 @@ class RaopAudioDecoder {
                         val inputPtsUs = aacNextPtsUs
                         decoder.queueInputBuffer(inIdx, 0, length, inputPtsUs, 0)
                         aacTimestamps[inputPtsUs] = senderTimeUs
-                        if (aacTimestamps.size > 64) {
-                            aacTimestamps.remove(aacTimestamps.keys.first())
-                        }
+                        if (aacTimestamps.size > 64) aacTimestamps.remove(aacTimestamps.keys.first())
                     } else {
-                        runCatching { decoder.queueInputBuffer(inIdx, 0, 0, 0L, 0) }
+                        decodeFailures++
+                        decoder.queueInputBuffer(inIdx, 0, 0, 0L, 0)
+                    }
+                } else if (inIdx == MediaCodec.INFO_TRY_AGAIN_LATER) {
+                    aacInputDrops++
+                }
+                drainAacOutput(decoder, generationId)
+            }
+        }
+    }
+
+    private fun dequeueAacInput(decoder: MediaCodec): Int =
+        try {
+            decoder.dequeueInputBuffer(DEQUEUE_TIMEOUT_US)
+        } catch (error: IllegalStateException) {
+            decodeFailures++
+            Log.w(TAG, "AAC input dequeue failed", error)
+            Int.MIN_VALUE
+        }
+
+    private fun drainAacOutput(decoder: MediaCodec, generationId: Int) {
+        val info = MediaCodec.BufferInfo()
+        while (true) {
+            val outIdx = try {
+                decoder.dequeueOutputBuffer(info, 0L)
+            } catch (error: IllegalStateException) {
+                decodeFailures++
+                Log.w(TAG, "AAC output dequeue failed", error)
+                return
+            }
+            if (outIdx == MediaCodec.INFO_OUTPUT_FORMAT_CHANGED) {
+                updateAacOutputFormat(decoder.outputFormat)
+                continue
+            }
+            if (outIdx < 0) break
+            try {
+                val outputTimeUs = aacTimestamps.remove(info.presentationTimeUs) ?: 0L
+                val outBuf = decoder.getOutputBuffer(outIdx)
+                if (outBuf != null && info.size > 0) {
+                    val frames = if (aacOutputEncoding == AudioFormat.ENCODING_PCM_16BIT &&
+                        aacOutputRate >= PcmResampler.MIN_SOURCE_SAMPLE_RATE
+                    ) copyPcm16ToStereo(outBuf, info.offset, info.size, aacOutputChannels, srcSamples)
+                    else 0
+                    if (frames > 0) {
+                        publishResampled(frames, generationId, outputTimeUs, aacOutputRate)
+                    } else {
+                        decodeFailures++
                     }
                 }
-                val info = MediaCodec.BufferInfo()
-                while (true) {
-                    val outIdx = runCatching { decoder.dequeueOutputBuffer(info, 0L) }
-                        .getOrDefault(MediaCodec.INFO_TRY_AGAIN_LATER)
-                    if (outIdx == MediaCodec.INFO_OUTPUT_FORMAT_CHANGED) {
-                        updateAacOutputFormat(decoder.outputFormat)
-                        continue
-                    }
-                    if (outIdx < 0) break
-                    try {
-                        val outputTimeUs = aacTimestamps.remove(info.presentationTimeUs) ?: 0L
-                        val outBuf = decoder.getOutputBuffer(outIdx)
-                        if (outBuf != null && info.size > 0) {
-                            val frames = if (aacOutputEncoding == AudioFormat.ENCODING_PCM_16BIT &&
-                                aacOutputRate >= PcmResampler.MIN_SOURCE_SAMPLE_RATE
-                            ) copyPcm16ToStereo(outBuf, info.offset, info.size, aacOutputChannels, srcSamples)
-                            else 0
-                            if (frames > 0) {
-                                publishResampled(frames, generationId, outputTimeUs, aacOutputRate)
-                            } else {
-                                decodeFailures++
-                            }
-                        }
-                    } finally {
-                        decoder.releaseOutputBuffer(outIdx, false)
-                    }
-                }
+            } finally {
+                decoder.releaseOutputBuffer(outIdx, false)
             }
         }
     }
