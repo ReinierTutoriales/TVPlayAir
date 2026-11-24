@@ -96,16 +96,24 @@ data class TvOverlayState(
         awaitingAudioPresentation = !showStandby
     )
 
-    fun withAudioStreamStopped(): TvOverlayState = clearAudioMetadata().copy(
-        audioGeneration = null,
-        audioControlsAvailable = false
-    )
+    fun withAudioStreamStopped(generationId: Int? = null): TvOverlayState =
+        if (generationId != null && generationId != 0 && audioGeneration != null && audioGeneration != generationId) {
+            this
+        } else {
+            clearAudioMetadata().copy(
+                audioGeneration = null,
+                audioControlsAvailable = false
+            )
+        }
 
-    fun withNowPlaying(metadata: RaopNowPlaying?): TvOverlayState = when {
-        showStandby -> copy(nowPlaying = metadata)
-        awaitingAudioPresentation -> copy(pendingNowPlaying = metadata)
-        else -> this
-    }
+    fun withNowPlaying(metadata: RaopNowPlaying?, generationId: Int? = null): TvOverlayState =
+        if (generationId != null && generationId != 0 && audioGeneration != null && audioGeneration != generationId) {
+            this
+        } else when {
+            showStandby -> copy(nowPlaying = metadata)
+            awaitingAudioPresentation -> copy(pendingNowPlaying = metadata)
+            else -> this
+        }
 
     fun clearAudioMetadata(): TvOverlayState = copy(
         nowPlaying = null,

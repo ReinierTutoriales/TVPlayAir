@@ -36,7 +36,8 @@ data class RtpAudioPacket(
     val sequenceNumber: Int,
     val timestamp: Long,
     val payloadOffset: Int,
-    val payloadLength: Int
+    val payloadLength: Int,
+    val ssrc: Long = 0L
 )
 
 object RtpAudioPacketParser {
@@ -60,6 +61,10 @@ object RtpAudioPacketParser {
             ((packet[baseOffset + 5].toLong() and 0xFF) shl 16) or
             ((packet[baseOffset + 6].toLong() and 0xFF) shl 8) or
             (packet[baseOffset + 7].toLong() and 0xFF)
+        val ssrc = ((packet[baseOffset + 8].toLong() and 0xFF) shl 24) or
+            ((packet[baseOffset + 9].toLong() and 0xFF) shl 16) or
+            ((packet[baseOffset + 10].toLong() and 0xFF) shl 8) or
+            (packet[baseOffset + 11].toLong() and 0xFF)
 
         var headerLen = MIN_RTP_HEADER_BYTES + csrcCount * 4
         if (headerLen > length) return null
@@ -87,7 +92,8 @@ object RtpAudioPacketParser {
             sequenceNumber = seq,
             timestamp = ts,
             payloadOffset = baseOffset + headerLen,
-            payloadLength = payloadLen
+            payloadLength = payloadLen,
+            ssrc = ssrc
         )
     }
 }
@@ -106,18 +112,126 @@ internal class RaopRtpJitterBuffer(
     private var nextExpectedSeq: Int = -1
     private var lastRequestedSeq: Int = -1
     private val buffered = HashMap<Int, Packet>()
+    private val requestedMissingSeqs = HashSet<Int>()
+    private var activeSsrc: Long? = null
+    private var retiredSsrc: Long? = null
+    private var probationSsrc: Long? = null
+    private var probationNextSeq: Int = -1
+    private var probationPacket: Pair<Int, Packet>? = null
 
     @Synchronized
-    fun reset() {
-        nextExpectedSeq = -1
+    fun reset(
+        initialSeq: Int? = null,
+        retireCurrentSsrc: Boolean = false,
+        preserveActiveSsrc: Boolean = false
+    ) {
+        if (retireCurrentSsrc && activeSsrc != null) {
+            retiredSsrc = activeSsrc
+        }
+        if (!preserveActiveSsrc) {
+            activeSsrc = null
+        }
+        probationSsrc = null
+        probationNextSeq = -1
+        probationPacket = null
+        nextExpectedSeq = initialSeq?.and(0xFFFF) ?: -1
         lastRequestedSeq = -1
+        requestedMissingSeqs.clear()
         buffered.clear()
     }
 
     @Synchronized
-    fun push(seq: Int, payload: ByteArray, rtpTimestamp: Long): PushResult {
+    fun seedInitialSeq(initialSeq: Int) {
+        if (nextExpectedSeq == -1 && buffered.isEmpty()) {
+            nextExpectedSeq = initialSeq and 0xFFFF
+        }
+    }
+
+    @Synchronized
+    fun isPendingRetransmit(seq: Int): Boolean {
+        if (nextExpectedSeq == -1) return false
+        val normSeq = seq and 0xFFFF
+        if (normSeq !in requestedMissingSeqs || buffered.containsKey(normSeq)) return false
+        val delta = (normSeq - nextExpectedSeq) and 0xFFFF
+        return delta in 0..maxReorderWindow
+    }
+
+    @Synchronized
+    fun push(
+        seq: Int,
+        payload: ByteArray,
+        rtpTimestamp: Long = 0L,
+        ssrc: Long? = null
+    ): PushResult {
         val packet = Packet(payload, rtpTimestamp)
         val normSeq = seq and 0xFFFF
+        var promotedFromProbation: Pair<Int, Packet>? = null
+
+        if (ssrc != null) {
+            val currentSsrc = activeSsrc
+            if (currentSsrc == null) {
+                val anchored = nextExpectedSeq != -1 &&
+                    ((normSeq - nextExpectedSeq) and 0xFFFF) <= maxReorderWindow
+                val needsProbation = (retiredSsrc != null && ssrc == retiredSsrc && !anchored) ||
+                    (nextExpectedSeq != -1 && !anchored)
+                if (needsProbation) {
+                    if (probationSsrc == ssrc && normSeq == probationNextSeq) {
+                        activeSsrc = ssrc
+                        promotedFromProbation = probationPacket
+                        probationSsrc = null
+                        probationNextSeq = -1
+                        probationPacket = null
+                        if (nextExpectedSeq != -1 && promotedFromProbation != null) {
+                            nextExpectedSeq = promotedFromProbation.first
+                        }
+                    } else {
+                        probationSsrc = ssrc
+                        probationNextSeq = (normSeq + 1) and 0xFFFF
+                        probationPacket = normSeq to packet
+                        return PushResult(emptyList(), null)
+                    }
+                } else {
+                    activeSsrc = ssrc
+                    probationSsrc = null
+                    probationNextSeq = -1
+                    probationPacket = null
+                }
+            } else if (ssrc != currentSsrc) {
+                if (probationSsrc == ssrc && normSeq == probationNextSeq) {
+                    activeSsrc = ssrc
+                    promotedFromProbation = probationPacket
+                    probationSsrc = null
+                    probationNextSeq = -1
+                    probationPacket = null
+                    buffered.clear()
+                    requestedMissingSeqs.clear()
+                    lastRequestedSeq = -1
+                    nextExpectedSeq = promotedFromProbation?.first ?: normSeq
+                } else {
+                    probationSsrc = ssrc
+                    probationNextSeq = (normSeq + 1) and 0xFFFF
+                    probationPacket = normSeq to packet
+                    return PushResult(emptyList(), null)
+                }
+            } else {
+                probationSsrc = null
+                probationNextSeq = -1
+                probationPacket = null
+            }
+        }
+
+        if (promotedFromProbation != null) {
+            val (firstSeq, firstPkt) = promotedFromProbation
+            requestedMissingSeqs.remove(firstSeq)
+            requestedMissingSeqs.remove(normSeq)
+            nextExpectedSeq = (normSeq + 1) and 0xFFFF
+            val ready = ArrayList<Packet>(buffered.size + 2)
+            ready.add(firstPkt)
+            ready.add(packet)
+            drainContiguous(ready)
+            return PushResult(ready, null)
+        }
+
         if (nextExpectedSeq == -1) {
             nextExpectedSeq = (normSeq + 1) and 0xFFFF
             return PushResult(listOf(packet), null)
@@ -125,6 +239,7 @@ internal class RaopRtpJitterBuffer(
 
         val delta = (normSeq - nextExpectedSeq) and 0xFFFF
         if (delta == 0) {
+            requestedMissingSeqs.remove(normSeq)
             val ready = ArrayList<Packet>(buffered.size + 1)
             ready.add(packet)
             nextExpectedSeq = (nextExpectedSeq + 1) and 0xFFFF
@@ -140,11 +255,13 @@ internal class RaopRtpJitterBuffer(
         // Large forward jump (stream reset / seek): flush stale buffered packets.
         if (delta > maxReorderWindow) {
             buffered.clear()
+            requestedMissingSeqs.clear()
             lastRequestedSeq = -1
             nextExpectedSeq = (normSeq + 1) and 0xFFFF
             return PushResult(listOf(packet), null)
         }
 
+        requestedMissingSeqs.remove(normSeq)
         buffered[normSeq] = packet
         val ready = ArrayList<Packet>()
         if (buffered.size > maxHoldPackets) {
@@ -159,7 +276,14 @@ internal class RaopRtpJitterBuffer(
         val missingCount = (normSeq - nextExpectedSeq) and 0xFFFF
         val missingRange = if (missingCount in 1..maxReorderWindow && nextExpectedSeq != lastRequestedSeq) {
             lastRequestedSeq = nextExpectedSeq
-            nextExpectedSeq to missingCount.coerceAtMost(maxHoldPackets)
+            val count = missingCount.coerceAtMost(maxHoldPackets)
+            for (i in 0 until count) {
+                val missingSeq = (nextExpectedSeq + i) and 0xFFFF
+                if (!buffered.containsKey(missingSeq)) {
+                    requestedMissingSeqs.add(missingSeq)
+                }
+            }
+            nextExpectedSeq to count
         } else {
             null
         }
@@ -169,6 +293,7 @@ internal class RaopRtpJitterBuffer(
     private fun drainContiguous(out: MutableList<Packet>) {
         while (true) {
             val next = buffered.remove(nextExpectedSeq) ?: break
+            requestedMissingSeqs.remove(nextExpectedSeq)
             out.add(next)
             nextExpectedSeq = (nextExpectedSeq + 1) and 0xFFFF
         }
@@ -181,7 +306,8 @@ internal class RaopRtpJitterBuffer(
  * and writes into the lock-free audio SharedRingBuffer.
  */
 class RaopAudioRtpReceiver(
-    private val generationProvider: () -> Int
+    private val generationProvider: () -> Int,
+    private val payloadObserver: ((ByteArray, Int) -> Unit)? = null
 ) {
     companion object {
         private const val TAG = "RaopAudioRtpReceiver"
@@ -204,6 +330,38 @@ class RaopAudioRtpReceiver(
                 (cnt and 0xFF).toByte()
             )
         }
+
+        internal fun isExpectedPeer(expected: InetAddress?, actual: InetAddress?): Boolean {
+            if (expected == null) return true
+            if (actual == null) return false
+            return normalizeIpBytes(expected.address).contentEquals(normalizeIpBytes(actual.address))
+        }
+
+        private fun normalizeIpBytes(raw: ByteArray): ByteArray {
+            if (raw.size == 16 &&
+                (0 until 10).all { raw[it] == 0.toByte() } &&
+                raw[10] == 0xFF.toByte() &&
+                raw[11] == 0xFF.toByte()
+            ) {
+                return raw.copyOfRange(12, 16)
+            }
+            return raw
+        }
+    }
+
+    internal class TransportSession(
+        val owner: Any?,
+        val peerAddress: InetAddress?,
+        @Volatile var remoteControlPort: Int,
+        val audioSocket: DatagramSocket?,
+        val controlSocket: DatagramSocket?,
+        val closed: AtomicBoolean = AtomicBoolean(false)
+    ) {
+        fun close() {
+            closed.set(true)
+            runCatching { audioSocket?.close() }
+            runCatching { controlSocket?.close() }
+        }
     }
 
     private val running = AtomicBoolean(false)
@@ -211,15 +369,9 @@ class RaopAudioRtpReceiver(
     private val jitterBuffer = RaopRtpJitterBuffer()
     private val decodeLock = Any()
     private var jitterGeneration: Int? = null
+    @Volatile
+    private var activeTransport: TransportSession? = null
 
-    @Volatile
-    private var socket: DatagramSocket? = null
-    @Volatile
-    private var controlSocket: DatagramSocket? = null
-    @Volatile
-    private var clientControlAddress: InetAddress? = null
-    @Volatile
-    private var clientControlPort: Int = 0
     @Volatile
     private var aesKey: ByteArray? = null
     @Volatile
@@ -250,8 +402,13 @@ class RaopAudioRtpReceiver(
     private var workerThread: Thread? = null
     private var controlThread: Thread? = null
 
+    internal val localAudioPort: Int
+        get() = activeTransport?.audioSocket?.localPort ?: 0
+
     internal val localControlPort: Int
-        get() = controlSocket?.localPort ?: 0
+        get() = activeTransport?.controlSocket?.localPort ?: 0
+
+    internal fun currentTransportForTest(): TransportSession? = activeTransport
 
     fun configureSession(
         codec: RaopAudioCodec,
@@ -263,61 +420,112 @@ class RaopAudioRtpReceiver(
         alternateAesKey: ByteArray? = null,
         extraAesKeys: List<ByteArray> = emptyList()
     ) {
-        val primary = sessionAesKey?.takeIf { it.size == 16 }?.copyOf()
-        val alt = alternateAesKey?.takeIf { it.size == 16 }?.copyOf()
-        val candidates = buildList {
-            if (primary != null) add(primary)
-            if (alt != null && (primary == null || !primary.contentEquals(alt))) add(alt)
-            for (extra in extraAesKeys) {
-                if (extra.size == 16 && none { it.contentEquals(extra) }) {
-                    add(extra.copyOf())
+        closeActiveTransport(retireSsrc = true)
+        synchronized(decodeLock) {
+            val primary = sessionAesKey?.takeIf { it.size == 16 }?.copyOf()
+            val alt = alternateAesKey?.takeIf { it.size == 16 }?.copyOf()
+            val candidates = buildList {
+                if (primary != null) add(primary)
+                if (alt != null && (primary == null || !primary.contentEquals(alt))) add(alt)
+                for (extra in extraAesKeys) {
+                    if (extra.size == 16 && none { it.contentEquals(extra) }) {
+                        add(extra.copyOf())
+                    }
                 }
             }
+            aesKey = primary
+            candidateAesKeys = candidates
+            keyConfirmed = candidates.size <= 1
+            val iv = sessionAesIv?.takeIf { it.size == 16 }?.copyOf()
+            aesIv = iv
+            alacKeySelector = if (codec == RaopAudioCodec.ALAC && iv != null && candidates.isNotEmpty()) {
+                RaopAlacKeySelector(candidates, iv)
+            } else null
+            jitterGeneration = null
+            clockAnchor = null
+            clockSampleRate = sampleRate
+            rxPackets = 0L
+            unmatchedAlacPackets = 0L
+            unencryptedPrefix0 = -1
+            unencryptedPrefix1 = -1
+            decoder.configure(codec, sampleRate, csd0, samplesPerFrame)
         }
-        aesKey = primary
-        candidateAesKeys = candidates
-        keyConfirmed = candidates.size <= 1
-        val iv = sessionAesIv?.takeIf { it.size == 16 }?.copyOf()
-        aesIv = iv
-        alacKeySelector = if (codec == RaopAudioCodec.ALAC && iv != null && candidates.isNotEmpty()) {
-            RaopAlacKeySelector(candidates, iv)
-        } else null
-        jitterBuffer.reset()
-        clockAnchor = null
-        clockSampleRate = sampleRate
-        clientControlAddress = null
-        clientControlPort = 0
-        rxPackets = 0L
-        unmatchedAlacPackets = 0L
-        unencryptedPrefix0 = -1
-        unencryptedPrefix1 = -1
-        decoder.configure(codec, sampleRate, csd0, samplesPerFrame)
     }
 
-    fun start(peer: InetAddress?, remoteControlPort: Int? = null): Boolean {
-        clientControlAddress = peer
-        clientControlPort = remoteControlPort?.takeIf { it in 1..65535 } ?: 0
-        if (running.get()) return true
-        val udp = bindUdp(DEFAULT_AUDIO_PORT) ?: return false
-        val ctrlUdp = bindUdp(DEFAULT_CONTROL_PORT) ?: bindUdp(0)
+    fun start(peer: InetAddress?, remoteControlPort: Int? = null, owner: Any? = null): Boolean {
+        closeActiveTransport(retireSsrc = true)
+        val udp = bindUdp(0) ?: bindUdp(DEFAULT_AUDIO_PORT) ?: return false
+        val ctrlUdp = bindUdp(0) ?: bindUdp(DEFAULT_CONTROL_PORT)
         if (ctrlUdp == null) {
             udp.close()
             return false
         }
 
-        socket = udp
-        controlSocket = ctrlUdp
-        running.set(true)
-        workerThread = Thread({ receiveLoop(udp) }, "TVPlayAir-RaopAudioUdp").apply {
+        val session = TransportSession(
+            owner = owner,
+            peerAddress = peer,
+            remoteControlPort = remoteControlPort?.takeIf { it in 1..65535 } ?: 0,
+            audioSocket = udp,
+            controlSocket = ctrlUdp
+        )
+        synchronized(decodeLock) {
+            activeTransport = session
+            running.set(true)
+        }
+        workerThread = Thread({ receiveLoop(session, udp) }, "TVPlayAir-RaopAudioUdp").apply {
             isDaemon = true
             start()
         }
-        controlThread = Thread({ controlLoop(ctrlUdp) }, "TVPlayAir-RaopControlUdp").apply {
+        controlThread = Thread({ controlLoop(session, ctrlUdp) }, "TVPlayAir-RaopControlUdp").apply {
             isDaemon = true
             start()
         }
         Log.i(TAG, "RAOP audio UDP receiver listening on port ${udp.localPort} (control=${ctrlUdp.localPort})")
         return true
+    }
+
+    fun onRecord(owner: Any?, initialSeq: Int?) {
+        if (initialSeq == null) return
+        synchronized(decodeLock) {
+            val current = activeTransport ?: return
+            if (current.closed.get() || (owner != null && current.owner !== owner)) return
+            jitterBuffer.seedInitialSeq(initialSeq)
+        }
+    }
+
+    fun onFlush(owner: Any?, newGeneration: Int, flushSeq: Int?) {
+        synchronized(decodeLock) {
+            val current = activeTransport ?: return
+            if (current.closed.get() || (owner != null && current.owner !== owner)) return
+            jitterGeneration = newGeneration
+            clockAnchor = null
+            jitterBuffer.reset(initialSeq = flushSeq, preserveActiveSsrc = true)
+        }
+    }
+
+    private fun closeActiveTransport(retireSsrc: Boolean) {
+        val prevWorker: Thread?
+        val prevControl: Thread?
+        synchronized(decodeLock) {
+            running.set(false)
+            activeTransport?.close()
+            activeTransport = null
+            jitterGeneration = null
+            jitterBuffer.reset(retireCurrentSsrc = retireSsrc)
+            clockAnchor = null
+            prevWorker = workerThread
+            prevControl = controlThread
+            workerThread = null
+            controlThread = null
+        }
+        prevWorker?.let {
+            it.interrupt()
+            if (it !== Thread.currentThread()) runCatching { it.join(500L) }
+        }
+        prevControl?.let {
+            it.interrupt()
+            if (it !== Thread.currentThread()) runCatching { it.join(500L) }
+        }
     }
 
     private fun bindUdp(port: Int): DatagramSocket? {
@@ -333,68 +541,67 @@ class RaopAudioRtpReceiver(
     }
 
     fun stop() {
-        running.set(false)
-        jitterBuffer.reset()
-        clockAnchor = null
-        clientControlAddress = null
-        clientControlPort = 0
-        runCatching { socket?.close() }
-        socket = null
-        runCatching { controlSocket?.close() }
-        controlSocket = null
-        workerThread?.let {
-            it.interrupt()
-            runCatching { it.join(500L) }
+        closeActiveTransport(retireSsrc = false)
+        synchronized(decodeLock) {
+            decoder.release()
         }
-        workerThread = null
-        controlThread?.let {
-            it.interrupt()
-            runCatching { it.join(500L) }
-        }
-        controlThread = null
-        decoder.release()
     }
 
-    private fun controlLoop(ctrlUdp: DatagramSocket) {
+    private fun controlLoop(session: TransportSession, ctrlUdp: DatagramSocket) {
         val rxBuf = ByteArray(MAX_UDP_PACKET)
         val packet = DatagramPacket(rxBuf, rxBuf.size)
-        while (running.get() && !ctrlUdp.isClosed) {
+        while (!session.closed.get() && !ctrlUdp.isClosed) {
             packet.length = rxBuf.size
             try {
                 ctrlUdp.receive(packet)
             } catch (error: IOException) {
-                if (!ctrlUdp.isClosed) Log.w(TAG, "Control socket read failed", error)
+                if (!ctrlUdp.isClosed && !session.closed.get()) {
+                    Log.w(TAG, "Control socket read failed", error)
+                }
                 break
             }
-            if (ctrlUdp.isClosed || packet.length < 4) continue
-            if (clientControlAddress == null && packet.address != null) {
-                clientControlAddress = packet.address
-            }
-            if (clientControlPort <= 0 && packet.port > 0) {
-                clientControlPort = packet.port
-            }
-            val payloadType = rxBuf[1].toInt() and 0x7F
-            if (payloadType == 0x54 && clientControlAddress == packet.address &&
-                clientControlPort == packet.port
-            ) {
-                val generation = generationProvider()
-                RaopClockAnchor.parse(rxBuf, packet.length)?.let {
-                    clockAnchor = SessionClockAnchor(generation, it)
-                }
-            }
-            if (payloadType == 0x56 && packet.length > 4 + RtpAudioPacketParser.MIN_RTP_HEADER_BYTES) {
-                val parsed = RtpAudioPacketParser.parse(rxBuf, packet.length - 4, baseOffset = 4) ?: continue
-                if (parsed.payloadType == 96) {
-                    enqueueRtpPacket(parsed, rxBuf)
-                }
-            }
+            if (ctrlUdp.isClosed || session.closed.get() || packet.length < 4) continue
+            ingestControlDatagram(session, rxBuf, packet.length, packet.address, packet.port)
         }
     }
 
-    private fun sendRetransmitRequest(firstSeq: Int, count: Int) {
-        val ctrlUdp = controlSocket ?: return
-        val addr = clientControlAddress ?: return
-        val port = clientControlPort
+    internal fun ingestControlDatagram(
+        session: TransportSession,
+        rxBuf: ByteArray,
+        length: Int,
+        senderAddress: InetAddress?,
+        senderPort: Int
+    ): Boolean {
+        if (session.closed.get() || activeTransport !== session || length < 4) return false
+        if (!isExpectedPeer(session.peerAddress, senderAddress)) return false
+        if (session.remoteControlPort <= 0 && senderPort > 0) {
+            session.remoteControlPort = senderPort
+        }
+        if (session.remoteControlPort > 0 && senderPort != session.remoteControlPort) return false
+
+        val payloadType = rxBuf[1].toInt() and 0x7F
+        if (payloadType == 0x54) {
+            val anchor = RaopClockAnchor.parse(rxBuf, length) ?: return false
+            synchronized(decodeLock) {
+                if (session.closed.get() || activeTransport !== session) return false
+                clockAnchor = SessionClockAnchor(generationProvider(), anchor)
+            }
+            return true
+        }
+        if (payloadType == 0x56 && length > 4 + RtpAudioPacketParser.MIN_RTP_HEADER_BYTES) {
+            val parsed = RtpAudioPacketParser.parse(rxBuf, length - 4, baseOffset = 4) ?: return false
+            if (parsed.payloadType != 96) return false
+            if (!jitterBuffer.isPendingRetransmit(parsed.sequenceNumber)) return false
+            return enqueueRtpPacket(session, parsed, rxBuf)
+        }
+        return false
+    }
+
+    private fun sendRetransmitRequest(session: TransportSession, firstSeq: Int, count: Int) {
+        if (session.closed.get() || activeTransport !== session) return
+        val ctrlUdp = session.controlSocket ?: return
+        val addr = session.peerAddress ?: return
+        val port = session.remoteControlPort
         if (ctrlUdp.isClosed || port <= 0) return
         val req = buildRetransmitRequest(firstSeq, count)
         runCatching {
@@ -402,27 +609,37 @@ class RaopAudioRtpReceiver(
         }
     }
 
-    private fun receiveLoop(udp: DatagramSocket) {
+    private fun receiveLoop(session: TransportSession, udp: DatagramSocket) {
         val rxBuf = ByteArray(MAX_UDP_PACKET)
         val packet = DatagramPacket(rxBuf, rxBuf.size)
-        while (running.get() && !udp.isClosed) {
+        while (!session.closed.get() && !udp.isClosed) {
             packet.length = rxBuf.size
             try {
                 udp.receive(packet)
             } catch (error: IOException) {
-                if (!udp.isClosed) Log.w(TAG, "Audio socket read failed", error)
+                if (!udp.isClosed && !session.closed.get()) {
+                    Log.w(TAG, "Audio socket read failed", error)
+                }
                 break
             }
-            if (udp.isClosed) break
-            if (clientControlAddress == null && packet.address != null) {
-                clientControlAddress = packet.address
-            }
-            val parsed = RtpAudioPacketParser.parse(rxBuf, packet.length) ?: continue
-            // Audio data only; sync and retransmissions arrive on the control socket.
-            if (parsed.payloadType != 96) continue
-            logSenderClockSample(parsed.timestamp)
-            enqueueRtpPacket(parsed, rxBuf)
+            if (udp.isClosed || session.closed.get()) break
+            ingestAudioDatagram(session, rxBuf, packet.length, packet.address)
         }
+    }
+
+    internal fun ingestAudioDatagram(
+        session: TransportSession,
+        rxBuf: ByteArray,
+        length: Int,
+        senderAddress: InetAddress?
+    ): Boolean {
+        if (session.closed.get() || activeTransport !== session) return false
+        if (!isExpectedPeer(session.peerAddress, senderAddress)) return false
+        val parsed = RtpAudioPacketParser.parse(rxBuf, length) ?: return false
+        // Audio data only; sync and retransmissions arrive on the control socket.
+        if (parsed.payloadType != 96) return false
+        logSenderClockSample(parsed.timestamp)
+        return enqueueRtpPacket(session, parsed, rxBuf)
     }
 
     private fun logSenderClockSample(rtpTimestamp: Long) {
@@ -435,16 +652,25 @@ class RaopAudioRtpReceiver(
         }
     }
 
-    private fun enqueueRtpPacket(packet: RtpAudioPacket, buf: ByteArray) {
-        val generation = generationProvider()
+    private fun enqueueRtpPacket(session: TransportSession, packet: RtpAudioPacket, buf: ByteArray): Boolean {
         val payload = buf.copyOfRange(packet.payloadOffset, packet.payloadOffset + packet.payloadLength)
+        var acceptedAny = false
         val missing = synchronized(decodeLock) {
-            if (generation != generationProvider()) return
-            if (jitterGeneration != generation) {
-                jitterBuffer.reset()
+            if (session.closed.get() || activeTransport !== session) return false
+            val generation = generationProvider()
+            if (jitterGeneration == null) {
+                jitterGeneration = generation
+            } else if (jitterGeneration != generation) {
+                jitterBuffer.reset(preserveActiveSsrc = true)
                 jitterGeneration = generation
             }
-            val result = jitterBuffer.push(packet.sequenceNumber, payload, packet.timestamp)
+            val result = jitterBuffer.push(
+                seq = packet.sequenceNumber,
+                payload = payload,
+                rtpTimestamp = packet.timestamp,
+                ssrc = packet.ssrc
+            )
+            acceptedAny = result.readyPayloads.isNotEmpty()
             val timing = clockAnchor?.takeIf { it.generation == generation }
             val sampleRate = clockSampleRate
             for (ready in result.readyPayloads) {
@@ -455,10 +681,15 @@ class RaopAudioRtpReceiver(
             }
             result.missingRange
         }
-        missing?.let { (firstMissing, count) -> sendRetransmitRequest(firstMissing, count) }
+        missing?.let { (firstMissing, count) -> sendRetransmitRequest(session, firstMissing, count) }
+        return acceptedAny
     }
 
     private fun decodeAudioPayload(buf: ByteArray, offset: Int, length: Int, generation: Int, senderTimeUs: Long) {
+        if (payloadObserver != null) {
+            payloadObserver.invoke(buf.copyOfRange(offset, offset + length), generation)
+            return
+        }
         val key = aesKey
         val iv = aesIv
         rxPackets++

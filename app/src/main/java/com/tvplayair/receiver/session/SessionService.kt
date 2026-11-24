@@ -163,7 +163,7 @@ class SessionService : Service() {
             }
         }
 
-        override fun onNowPlaying(metadata: RaopNowPlaying?) {
+        override fun onNowPlaying(metadata: RaopNowPlaying?, generationId: Int) {
             synchronized(callbackLock) {
                 val remote = metadata?.remote
                 if (remote != latestNowPlaying?.remote ||
@@ -178,17 +178,24 @@ class SessionService : Service() {
                 latestNowPlaying = metadata
                 // Metadata can be absent while RAOP audio is still streaming.
                 // Only transport lifecycle events may reset activeAudioGeneration.
-                callback?.let { sendNowPlaying(it, metadata) }
+                val gen = generationId.takeIf { it != 0 }
+                    ?: activeAudioGeneration
+                    ?: protocolEngine.currentGenerationId()
+                callback?.let { sendNowPlaying(it, metadata, gen) }
             }
         }
 
-        override fun onAudioStreamStopped() {
+        override fun onAudioStreamStopped(generationId: Int) {
             synchronized(callbackLock) {
+                val stoppedGen = generationId.takeIf { it != 0 } ?: activeAudioGeneration ?: 0
+                if (activeAudioGeneration != null && stoppedGen != 0 && activeAudioGeneration != stoppedGen) {
+                    return
+                }
                 activeAudioGeneration?.let {
                     Log.i(PLAYBACK_DIAGNOSTICS_TAG, "route=raop generation=$it event=stopped")
                 }
                 activeAudioGeneration = null
-                runCatching { callback?.onAudioStreamStopped() }
+                runCatching { callback?.onAudioStreamStopped(stoppedGen) }
             }
         }
 
@@ -232,7 +239,11 @@ class SessionService : Service() {
                 }
                 callback = cb
                 activeAudioGeneration?.let { runCatching { cb.onAudioStreamStarted(it) } }
-                sendNowPlaying(cb, latestNowPlaying)
+                sendNowPlaying(
+                    cb,
+                    latestNowPlaying,
+                    activeAudioGeneration ?: protocolEngine.currentGenerationId()
+                )
                 sendAudioControlsAvailability(cb)
                 latestMirrorConfig?.let { config -> runCatching { config.sendTo(cb) } }
                 directPlayback?.let { video -> runCatching { cb.showDirectVideo(video) } }
@@ -404,9 +415,10 @@ class SessionService : Service() {
         runCatching { target.onAudioControlsAvailable(dacpController.canSendCommands()) }
     }
 
-    private fun sendNowPlaying(target: ITvPlayCallback, metadata: RaopNowPlaying?) {
+    private fun sendNowPlaying(target: ITvPlayCallback, metadata: RaopNowPlaying?, generationId: Int) {
         runCatching {
             target.onNowPlaying(
+                generationId,
                 metadata != null,
                 metadata?.track?.title.orEmpty(),
                 metadata?.track?.artist.orEmpty(),

@@ -15,7 +15,7 @@ oneway interface ITvPlayCallback {
     void onClientConnected(String clientName, String dacpId, String activeRemote);
     void onMirrorStreamEnded(int generationId);
     void onAudioStreamStarted(int generationId);
-    void onNowPlaying(boolean available, String title, String artist, String album, in byte[] artwork);
+    void onNowPlaying(int generationId, boolean available, String title, String artist, String album, in byte[] artwork);
     void onAudioControlsAvailable(boolean available);
-    void onAudioStreamStopped();
+    void onAudioStreamStopped(int generationId);
 }
