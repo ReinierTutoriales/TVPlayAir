@@ -12,6 +12,7 @@ import android.os.Handler
 import android.os.IBinder
 import android.os.Looper
 import android.os.ParcelFileDescriptor
+import android.provider.Settings
 import android.util.Log
 import com.tvplayair.receiver.MainActivity
 import com.tvplayair.receiver.R
@@ -461,6 +462,10 @@ class SessionService : Service() {
                     if (pendingProjection !== this) return
                     pendingProjection = null
                     if (projectionVisible || !autoOpenVisual) return
+                    if (!Settings.canDrawOverlays(this@SessionService)) {
+                        Log.i(PLAYBACK_DIAGNOSTICS_TAG, "route=projection event=overlay_access_missing")
+                        return
+                    }
                     runCatching { startActivity(projectionIntent()) }.onFailure {
                         Log.w(TAG, "Unable to auto-launch MainActivity from background", it)
                     }

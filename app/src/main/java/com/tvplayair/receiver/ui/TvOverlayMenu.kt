@@ -77,6 +77,7 @@ fun TvOverlayMenu(
     onToggleResolution: () -> Unit,
     onToggleHevc: () -> Unit,
     onToggleAutoOpenVisual: () -> Unit,
+    onManageNotifications: () -> Unit,
     onToggleAutoStartReceiver: () -> Unit,
     onAdjustAudioOffset: (Int) -> Unit,
     onAudioCommand: (DacpCommand) -> Unit,
@@ -177,7 +178,12 @@ fun TvOverlayMenu(
                 if (state.autoStartReceiver) "Activado" else "Desactivado",
                 onToggleAutoStartReceiver
             )
-            SettingRow("Abrir al recibir vídeo", if (state.autoOpenVisual) "Activado" else "Desactivado", onToggleAutoOpenVisual)
+            SettingRow(stringResource(R.string.receiver_auto_open), stringResource(state.autoOpenSettingText), onToggleAutoOpenVisual)
+            SettingRow(
+                stringResource(R.string.receiver_notifications),
+                stringResource(if (state.notificationsEnabled) R.string.receiver_setting_on else R.string.receiver_setting_off),
+                onManageNotifications
+            )
 
             Row(
                 modifier = Modifier.fillMaxWidth().padding(top = 8.dp),

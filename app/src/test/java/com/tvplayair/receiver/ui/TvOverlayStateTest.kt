@@ -16,6 +16,15 @@ import org.junit.Test
 class TvOverlayStateTest {
 
     @Test
+    fun autoOpenRequiresCurrentOverlayAccessEvenWhenPreviouslyEnabled() {
+        val enabled = TvOverlayState(autoOpenVisual = true, overlayAccessGranted = true)
+        assertEquals(R.string.receiver_setting_on, enabled.autoOpenSettingText)
+        assertEquals(R.string.receiver_access_required,
+            enabled.copy(overlayAccessGranted = false).autoOpenSettingText)
+        assertEquals(R.string.receiver_setting_off, enabled.copy(autoOpenVisual = false).autoOpenSettingText)
+    }
+
+    @Test
     fun standbyDistinguishesStartupDiscoveryAndNetworkLoss() {
         val state = TvOverlayState()
         assertEquals(R.string.receiver_starting, state.standbyStatusText)

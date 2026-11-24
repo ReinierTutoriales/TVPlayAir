@@ -15,4 +15,11 @@
     <string name="receiver_unavailable">Receptor no disponible.</string>
     <string name="receiver_network_unavailable">Red no disponible. Comprueba la conexión.</string>
     <string name="receiver_connected">Dispositivo conectado</string>
+    <string name="receiver_auto_open">Abrir al recibir vídeo</string>
+    <string name="receiver_notifications">Notificaciones del receptor</string>
+    <string name="receiver_access_required">Conceder acceso</string>
+    <string name="receiver_setting_on">Activado</string>
+    <string name="receiver_setting_off">Desactivado</string>
+    <string name="receiver_overlay_settings_unavailable">El televisor no muestra el ajuste para abrir sobre otras apps.</string>
+    <string name="receiver_notification_settings_unavailable">El televisor no muestra los ajustes de notificaciones.</string>
 </resources>

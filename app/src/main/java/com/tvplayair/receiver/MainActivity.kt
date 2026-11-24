@@ -1,6 +1,12 @@
 package com.tvplayair.receiver
 
+import android.Manifest
+import android.app.NotificationManager
 import android.content.Intent
+import android.content.pm.PackageManager
+import android.net.Uri
+import android.os.Build
+import android.provider.Settings
 import android.graphics.Color
 import android.os.Bundle
 import android.os.Handler
@@ -15,8 +21,10 @@ import android.view.View
 import android.view.ViewGroup
 import android.view.WindowManager
 import android.widget.FrameLayout
+import android.widget.Toast
 import androidx.activity.ComponentActivity
 import androidx.activity.OnBackPressedCallback
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.activity.viewModels
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -79,6 +87,15 @@ class MainActivity : ComponentActivity(), SurfaceLayerController {
     private var mirrorSurfaceTimeout: Runnable? = null
     private var directRequestedAtMs = 0L
     private var overlayState by mutableStateOf(TvOverlayState())
+
+    private val overlaySettings = registerForActivityResult(ActivityResultContracts.StartActivityForResult()) {
+        refreshAccessStatus()
+        if (overlayState.overlayAccessGranted) setAutoOpenVisual(true)
+    }
+
+    private val notificationPermission = registerForActivityResult(ActivityResultContracts.RequestPermission()) {
+        refreshAccessStatus()
+    }
 
     private val mainHandler = Handler(Looper.getMainLooper())
     private var pendingVideoSelect: Pair<Long, Long>? = null
@@ -150,6 +167,7 @@ class MainActivity : ComponentActivity(), SurfaceLayerController {
                         onToggleResolution = ::toggleResolutionPreset,
                         onToggleHevc = ::toggleHevcSetting,
                         onToggleAutoOpenVisual = ::toggleAutoOpenVisual,
+                        onManageNotifications = ::manageNotifications,
                         onToggleAutoStartReceiver = ::toggleAutoStartReceiver,
                         onAdjustAudioOffset = ::adjustAudioOffset,
                         onAudioCommand = { command -> sendAudioCommand(command, audioGeneration) },
@@ -409,6 +427,11 @@ class MainActivity : ComponentActivity(), SurfaceLayerController {
         if (directPlaybackId != 0L) publishDirectPlayback()
     }
 
+    override fun onResume() {
+        super.onResume()
+        refreshAccessStatus()
+    }
+
     override fun onStop() {
         saveDirectCheckpoint()
         screenStarted = false
@@ -643,7 +666,49 @@ class MainActivity : ComponentActivity(), SurfaceLayerController {
     }
 
     private fun toggleAutoOpenVisual() {
-        val enabled = !overlayState.autoOpenVisual
+        refreshAccessStatus()
+        if (overlayState.overlayAccessGranted) {
+            setAutoOpenVisual(!overlayState.autoOpenVisual)
+            return
+        }
+        runCatching {
+            overlaySettings.launch(Intent(Settings.ACTION_MANAGE_OVERLAY_PERMISSION, Uri.parse("package:$packageName")))
+        }.onFailure {
+            Toast.makeText(this, R.string.receiver_overlay_settings_unavailable, Toast.LENGTH_LONG).show()
+        }
+    }
+
+    private fun refreshAccessStatus() {
+        overlayState = overlayState.copy(
+            overlayAccessGranted = Settings.canDrawOverlays(this),
+            notificationsEnabled = getSystemService(NotificationManager::class.java)?.areNotificationsEnabled() == true
+        )
+    }
+
+    private fun manageNotifications() {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU &&
+            checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED
+        ) {
+            val prefs = getPreferences(MODE_PRIVATE)
+            val requested = prefs.getBoolean("notification_permission_requested", false)
+            if (!requested || shouldShowRequestPermissionRationale(Manifest.permission.POST_NOTIFICATIONS)) {
+                prefs.edit().putBoolean("notification_permission_requested", true).apply()
+                notificationPermission.launch(Manifest.permission.POST_NOTIFICATIONS)
+                return
+            }
+        }
+
+        runCatching {
+            startActivity(Intent(Settings.ACTION_APP_NOTIFICATION_SETTINGS).putExtra(Settings.EXTRA_APP_PACKAGE, packageName))
+        }.recoverCatching {
+            startActivity(Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS, Uri.parse("package:$packageName")))
+        }.onFailure {
+            Toast.makeText(this, R.string.receiver_notification_settings_unavailable, Toast.LENGTH_LONG).show()
+        }
+    }
+
+    private fun setAutoOpenVisual(enabled: Boolean) {
+        if (overlayState.autoOpenVisual == enabled) return
         overlayState = overlayState.copy(autoOpenVisual = enabled)
         getSharedPreferences("receiver_presentation", MODE_PRIVATE)
             .edit().putBoolean("auto_open_visual", enabled).apply()

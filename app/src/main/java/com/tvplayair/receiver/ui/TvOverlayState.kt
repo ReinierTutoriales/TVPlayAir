@@ -19,6 +19,8 @@ data class TvOverlayState(
     val resolutionPreset: ResolutionPreset = ResolutionPreset.UHD_4K,
     val hevcEnabled: Boolean = true,
     val autoOpenVisual: Boolean = false,
+    val overlayAccessGranted: Boolean = false,
+    val notificationsEnabled: Boolean = false,
     val autoStartReceiver: Boolean = true,
     val audioOffsetMs: Int = 0,
     val presentationState: PresentationState = PresentationState.IDLE,
@@ -35,6 +37,13 @@ data class TvOverlayState(
     private val awaitingAudioPresentation: Boolean = false,
     private val pendingNowPlaying: RaopNowPlaying? = null
 ) {
+    internal val autoOpenSettingText: Int
+        get() = when {
+            !overlayAccessGranted -> R.string.receiver_access_required
+            autoOpenVisual -> R.string.receiver_setting_on
+            else -> R.string.receiver_setting_off
+        }
+
     internal val standbyStatusText: Int
         get() = if (connectedClient != null) R.string.receiver_connected else when (receiverAvailability) {
             ReceiverAvailability.STARTING -> R.string.receiver_starting
