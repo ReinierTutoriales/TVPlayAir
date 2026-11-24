@@ -7,7 +7,6 @@ import com.tvplayair.receiver.video.MirrorFrameGate
 import java.io.BufferedInputStream
 import java.io.EOFException
 import java.io.IOException
-import java.net.InetSocketAddress
 import java.net.ServerSocket
 import java.net.Socket
 import java.net.SocketTimeoutException
@@ -266,10 +265,7 @@ class AirPlayMirrorStreamReceiver(
         // A retired accept thread still owns the reusable buffers and the SPSC producer.
         if (acceptThread?.isAlive == true) return false
         val socket = runCatching {
-            ServerSocket().apply {
-                reuseAddress = true
-                bind(InetSocketAddress(port))
-            }
+            openAirPlayListener(port)
         }.onFailure {
             Log.e(TAG, "Failed to bind AirPlay mirror stream port $port", it)
         }.getOrNull() ?: return false

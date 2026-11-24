@@ -10,7 +10,6 @@ import java.io.EOFException
 import java.io.IOException
 import java.io.OutputStream
 import java.net.InetAddress
-import java.net.InetSocketAddress
 import java.net.ServerSocket
 import java.net.Socket
 import java.net.SocketTimeoutException
@@ -99,10 +98,7 @@ internal class RaopRtspServer(
     fun start(port: Int = DEFAULT_RAOP_PORT): Boolean {
         if (running.get()) return true
         val socket = runCatching {
-            ServerSocket().apply {
-                reuseAddress = true
-                bind(InetSocketAddress(port))
-            }
+            openAirPlayListener(port)
         }.onFailure {
             Log.e(TAG, "Failed to bind RAOP RTSP port $port", it)
         }.getOrNull() ?: return false

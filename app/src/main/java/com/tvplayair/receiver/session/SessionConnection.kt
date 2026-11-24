@@ -172,6 +172,8 @@ class SessionConnection(
         }
 
         override fun onServiceDisconnected(name: ComponentName?) = handleBinderDeath(epoch)
+        override fun onBindingDied(name: ComponentName) = handleBinderDeath(epoch)
+        override fun onNullBinding(name: ComponentName) = handleBinderDeath(epoch)
     }
 
     internal fun replaceListener(listener: SessionEventListener, replay: Boolean = false) {

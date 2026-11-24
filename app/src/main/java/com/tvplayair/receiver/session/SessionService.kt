@@ -32,6 +32,7 @@ class SessionService : Service() {
         private const val TAG = "SessionService"
         private const val CHANNEL_ID = "tvplayair_session"
         private const val NOTIFICATION_ID = 1001
+        private val endpointRetryDelaysMs = longArrayOf(500, 1_500, 4_000)
 
         fun startInBackground(context: Context) {
             val appContext = context.applicationContext
@@ -85,6 +86,15 @@ class SessionService : Service() {
     private var advertiseConfig = AirPlayAdvertiseConfig()
     private var ed25519PrivateKey: ByteArray? = null
     private var serverRunning = false
+    private var receiverDestroyed = false
+    private var endpointRetryPending = false
+    private val retryAirPlayEndpoints = Runnable {
+        synchronized(this) {
+            endpointRetryPending = false
+            startAirPlaySession()
+        }
+    }
+    private var endpointFailures = 0
 
     private val protocolListener = object : AirPlayProtocolListener {
         override fun onVideoConfigChanged(
@@ -478,12 +488,25 @@ class SessionService : Service() {
 
     @Synchronized
     private fun startAirPlaySession() {
-        if (serverRunning) return
-        if (ensureBuffer(0) == null || ensureBuffer(1) == null) {
+        if (receiverDestroyed || serverRunning || endpointRetryPending) return
+
+        if (ensureBuffer(0) != null && ensureBuffer(1) != null) {
+            serverRunning = startAirPlayEndpoints()
+            if (serverRunning) {
+                endpointFailures = 0
+                return
+            }
+        } else {
             Log.e(TAG, "AirPlay cannot start without video and audio shared memory")
+        }
+
+        val delayMs = endpointRetryDelaysMs.getOrNull(endpointFailures++)
+        if (delayMs == null) {
+            endpointFailures = 0
+            Log.e(TAG, "AirPlay endpoint startup retries exhausted")
             return
         }
-        serverRunning = startAirPlayEndpoints()
+        endpointRetryPending = mainHandler.postDelayed(retryAirPlayEndpoints, delayMs)
     }
 
     private fun startAirPlayEndpoints(): Boolean {
@@ -495,6 +518,9 @@ class SessionService : Service() {
 
     @Synchronized
     private fun stopAirPlaySession() {
+        receiverDestroyed = true
+        endpointRetryPending = false
+        mainHandler.removeCallbacks(retryAirPlayEndpoints)
         serverRunning = false
         mdnsAdvertiser.stop()
         protocolEngine.stop()

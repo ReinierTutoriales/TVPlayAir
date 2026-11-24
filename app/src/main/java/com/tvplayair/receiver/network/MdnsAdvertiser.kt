@@ -104,37 +104,28 @@ class MdnsAdvertiser(context: Context) {
     private val advertisements = mutableMapOf<String, Advertisement>()
     private var networkCallback: ConnectivityManager.NetworkCallback? = null
     private var activeNetwork: Network? = null
-    private var sawNetworkLoss = false
     private var activeConfig: AirPlayAdvertiseConfig? = null
-    private var started = false
 
     @Synchronized
     fun start(config: AirPlayAdvertiseConfig) {
-        if (started && isSameMdnsAdvertisement(activeConfig, config)) {
-            activeConfig = config
-            return
-        }
-        if (started) stop()
+        if (isSameMdnsAdvertisement(activeConfig, config)) return
+        if (activeConfig != null) stop()
         activeConfig = config
         acquireLocks()
-        started = true
         registerAdvertisements(config)
         registerNetworkCallback()
     }
 
     @Synchronized
     fun stop() {
-        started = false
         activeConfig = null
         unregisterNetworkCallback()
         unregisterAdvertisements()
         releaseLocks()
     }
 
-    @Synchronized
     private fun reregisterOnNetworkChange() {
         val config = activeConfig ?: return
-        if (!started) return
         Log.i(TAG, "Network changed; re-registering AirPlay and RAOP mDNS advertisements")
         unregisterAdvertisements()
         registerAdvertisements(config)
@@ -165,18 +156,15 @@ class MdnsAdvertiser(context: Context) {
         val cm = connectivityManager ?: return
         if (networkCallback != null) return
         activeNetwork = cm.activeNetwork
-        sawNetworkLoss = false
         val callback = object : ConnectivityManager.NetworkCallback() {
             override fun onAvailable(network: Network) {
                 synchronized(this@MdnsAdvertiser) {
                     if (networkCallback !== this) return
                     Log.i(PLAYBACK_DIAGNOSTICS_TAG,
                         "route=network event=default_available handle=${network.networkHandle}")
-                    val previous = activeNetwork
+                    if (activeNetwork == network) return
                     activeNetwork = network
-                    val changed = previous != network || sawNetworkLoss
-                    sawNetworkLoss = false
-                    if (changed) reregisterOnNetworkChange()
+                    reregisterOnNetworkChange()
                 }
             }
 
@@ -185,10 +173,9 @@ class MdnsAdvertiser(context: Context) {
                     if (networkCallback !== this) return
                     Log.i(PLAYBACK_DIAGNOSTICS_TAG,
                         "route=network event=default_lost handle=${network.networkHandle}")
-                    if (activeNetwork == network) sawNetworkLoss = true
+                    if (activeNetwork == network) activeNetwork = null
                 }
             }
-
         }
         runCatching {
             cm.registerDefaultNetworkCallback(callback)
@@ -203,7 +190,6 @@ class MdnsAdvertiser(context: Context) {
         val callback = networkCallback ?: return
         networkCallback = null
         activeNetwork = null
-        sawNetworkLoss = false
         runCatching { cm.unregisterNetworkCallback(callback) }
     }
 
