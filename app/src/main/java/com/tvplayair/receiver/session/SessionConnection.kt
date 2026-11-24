@@ -27,9 +27,9 @@ interface SessionEventListener {
     fun onClientConnected(clientName: String, dacpId: String, activeRemote: String) = Unit
     fun onMirrorStreamEnded(generationId: Int) = Unit
     fun onAudioStreamStarted(generationId: Int) = Unit
-    fun onAudioStreamStopped() = Unit
+    fun onAudioStreamStopped(generationId: Int = 0) = Unit
     fun onAudioControlsAvailable(available: Boolean) = Unit
-    fun onNowPlaying(metadata: RaopNowPlaying?) = Unit
+    fun onNowPlaying(metadata: RaopNowPlaying?, generationId: Int = 0) = Unit
 }
 
 class SessionConnection(
@@ -119,20 +119,20 @@ class SessionConnection(
         override fun onAudioStreamStarted(generationId: Int) =
             deliver(epoch) { listener.onAudioStreamStarted(generationId) }
 
-        override fun onAudioStreamStopped() =
-            deliver(epoch) { listener.onAudioStreamStopped() }
+        override fun onAudioStreamStopped(generationId: Int) =
+            deliver(epoch) { listener.onAudioStreamStopped(generationId) }
 
         override fun onAudioControlsAvailable(available: Boolean) =
             deliver(epoch) { listener.onAudioControlsAvailable(available) }
 
         override fun onNowPlaying(
-            available: Boolean, title: String, artist: String, album: String, artwork: ByteArray
+            generationId: Int, available: Boolean, title: String, artist: String, album: String, artwork: ByteArray
         ) {
             val metadata = if (available) RaopNowPlaying(
                 RaopTrack(title.ifBlank { null }, artist.ifBlank { null }, album.ifBlank { null }),
                 artwork.takeIf { it.isNotEmpty() }
             ) else null
-            deliver(epoch) { listener.onNowPlaying(metadata) }
+            deliver(epoch) { listener.onNowPlaying(metadata, generationId) }
         }
     }
 

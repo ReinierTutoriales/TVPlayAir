@@ -352,9 +352,12 @@ class MainActivity : ComponentActivity(), SurfaceLayerController {
                 }
             }
 
-            override fun onAudioStreamStopped() {
+            override fun onAudioStreamStopped(generationId: Int) {
+                if (generationId != 0 && overlayState.audioGeneration != null &&
+                    overlayState.audioGeneration != generationId
+                ) return
                 audioConsumer.stop()
-                overlayState = overlayState.withAudioStreamStopped().let { state ->
+                overlayState = overlayState.withAudioStreamStopped(generationId).let { state ->
                     if (!mirrorRequested && !presentationCoordinator.hasDirectPlayback) {
                         state.copy(connectedClient = null)
                     } else {
@@ -368,10 +371,10 @@ class MainActivity : ComponentActivity(), SurfaceLayerController {
                 overlayState = overlayState.copy(audioControlsAvailable = available)
             }
 
-            override fun onNowPlaying(metadata: RaopNowPlaying?) {
+            override fun onNowPlaying(metadata: RaopNowPlaying?, generationId: Int) {
                 // Metadata is not a transport stop signal: artwork/title may disappear
                 // while the sender keeps its audio stream alive (including on lock).
-                overlayState = overlayState.withNowPlaying(metadata)
+                overlayState = overlayState.withNowPlaying(metadata, generationId)
                 updateScreenWake()
             }
         }

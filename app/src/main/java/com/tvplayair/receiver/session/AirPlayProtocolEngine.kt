@@ -21,9 +21,9 @@ interface AirPlayProtocolListener {
     fun onDirectVideoCommand(command: String, value: Double, playbackId: Long)
     fun onClientConnected(clientName: String, dacpId: String, activeRemote: String)
     fun onMirrorStreamEnded(generationId: Int)
-    fun onNowPlaying(metadata: RaopNowPlaying?) = Unit
+    fun onNowPlaying(metadata: RaopNowPlaying?, generationId: Int = 0) = Unit
     fun onAudioStreamStarted(generationId: Int) = Unit
-    fun onAudioStreamStopped() = Unit
+    fun onAudioStreamStopped(generationId: Int = 0) = Unit
 }
 
 /**

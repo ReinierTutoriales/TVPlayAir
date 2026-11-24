@@ -69,7 +69,9 @@ internal class RaopRtspServer(
 
     private val running = AtomicBoolean(false)
     private val generationId = sharedGenerationId
-    private val nowPlaying = RaopNowPlayingSession(listener::onNowPlaying)
+    private val nowPlaying = RaopNowPlayingSession { metadata ->
+        listener.onNowPlaying(metadata, generationId.get())
+    }
     private val artworkExecutor = Executors.newSingleThreadExecutor { runnable ->
         Thread(runnable, "TVPlayAir-ArtworkPrep").apply { isDaemon = true }
     }
@@ -82,7 +84,7 @@ internal class RaopRtspServer(
     ) { runnable ->
         Thread(runnable, "TVPlayAir-RtspClient").apply { isDaemon = true }
     }
-    private val audioReceiver = RaopAudioRtpReceiver { generationId.get() }
+    private val audioReceiver = RaopAudioRtpReceiver()
     private val timingAndEventServers = AirPlayTimingAndEventServers()
     private val activeSockets = java.util.Collections.newSetFromMap(java.util.concurrent.ConcurrentHashMap<Socket, Boolean>())
 
@@ -363,10 +365,9 @@ internal class RaopRtspServer(
                             null
                         } else {
                             source.announcedAudioSdp?.let(::configureFromSdp)
-                            if (audioReceiver.start(peer, transport.controlPort)) {
-                                activateAudioSource(source, request)
+                            if (startAudioTransport(source, request, peer, transport.controlPort)) {
                                 RtspMessageParser.formatAudioSetupTransport(
-                                    RaopAudioRtpReceiver.DEFAULT_AUDIO_PORT,
+                                    audioReceiver.localAudioPort,
                                     audioReceiver.localControlPort,
                                     RaopAudioRtpReceiver.DEFAULT_TIMING_PORT
                                 )
@@ -390,7 +391,11 @@ internal class RaopRtspServer(
             }
             "RECORD" -> {
                 remoteFor(request)?.let { nowPlaying.updateRemote(source, it) }
-                nowPlaying.withOwner(source) { listener.onAudioStreamStarted(generationId.get()) }
+                val initialSeq = RaopMetadataParser.sequenceNumber(request.header("rtp-info"))
+                nowPlaying.withOwner(source) {
+                    audioReceiver.onRecord(source, initialSeq)
+                    listener.onAudioStreamStarted(generationId.get())
+                }
                 Log.i(TAG, "-> RECORD 200 OK (cseq=$cseq gen=${generationId.get()})")
                 output.write(
                     RtspMessageParser.formatResponse(
@@ -445,9 +450,12 @@ internal class RaopRtspServer(
                 output.write(RtspMessageParser.formatResponse(200, "OK", cseq))
             }
             "FLUSH" -> {
+                val flushSeq = RaopMetadataParser.sequenceNumber(request.header("rtp-info"))
                 nowPlaying.onFlush(source)
                 nowPlaying.withOwner(source) {
-                    listener.onAudioStreamStarted(generationId.incrementAndGet())
+                    val nextGen = generationId.incrementAndGet()
+                    audioReceiver.onFlush(source, nextGen, flushSeq)
+                    listener.onAudioStreamStarted(nextGen)
                 }
                 Log.i(TAG, "-> FLUSH 200 OK (cseq=$cseq gen=${generationId.get()})")
                 output.write(RtspMessageParser.formatResponse(200, "OK", cseq))
@@ -479,14 +487,25 @@ internal class RaopRtspServer(
     }
 
     private fun stopAudioStream() {
+        val stoppedGen = generationId.get()
         audioReceiver.stop()
-        listener.onAudioStreamStopped()
+        listener.onAudioStreamStopped(stoppedGen)
     }
 
-    private fun activateAudioSource(source: Any, request: RtspRequest) {
+    private fun startAudioTransport(
+        source: AirPlayConnectionCrypto,
+        request: RtspRequest,
+        peer: InetAddress?,
+        controlPort: Int?
+    ): Boolean {
+        val generation = generationId.incrementAndGet()
+        if (!audioReceiver.start(peer, controlPort, source, generation)) return false
+        Log.i(TAG, "RAOP UDP ready generation=$generation audio=${audioReceiver.localAudioPort} " +
+            "control=${audioReceiver.localControlPort}")
         nowPlaying.activate(source, remoteFor(request)) {
-            listener.onAudioStreamStarted(generationId.incrementAndGet())
+            listener.onAudioStreamStarted(generation)
         }
+        return true
     }
 
     private fun updateVolume(body: ByteArray) {
@@ -663,10 +682,9 @@ internal class RaopRtspServer(
             )
             val remoteControlPort = (stream["controlPort"] as? Long)
                 ?.takeIf { it in 1L..65535L }?.toInt()
-            if (audioReceiver.start(peer, remoteControlPort)) {
-                activateAudioSource(source, request)
+            if (startAudioTransport(source, request, peer, remoteControlPort)) {
                 mapOf(
-                    "dataPort" to RaopAudioRtpReceiver.DEFAULT_AUDIO_PORT.toLong(),
+                    "dataPort" to audioReceiver.localAudioPort.toLong(),
                     "controlPort" to audioReceiver.localControlPort.toLong(),
                     "type" to 96L
                 )

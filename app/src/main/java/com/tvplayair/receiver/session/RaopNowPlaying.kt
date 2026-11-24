@@ -51,6 +51,10 @@ internal object RaopMetadataParser {
     fun timestamp(rtpInfo: String?): Long? = rtpInfo?.split(';', ',')
         ?.firstOrNull { it.substringBefore('=').trim().equals("rtptime", ignoreCase = true) }
         ?.substringAfter('=')?.trim()?.toLongOrNull()?.takeIf { it in 0..0xFFFF_FFFFL }
+
+    fun sequenceNumber(rtpInfo: String?): Int? = rtpInfo?.split(';', ',')
+        ?.firstOrNull { it.substringBefore('=').trim().equals("seq", ignoreCase = true) }
+        ?.substringAfter('=')?.trim()?.toIntOrNull()?.takeIf { it in 0..0xFFFF }
 }
 
 internal class RaopNowPlayingSession(private val publish: (RaopNowPlaying?) -> Unit) {

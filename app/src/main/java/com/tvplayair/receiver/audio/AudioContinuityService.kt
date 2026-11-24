@@ -40,8 +40,9 @@ class AudioContinuityService : Service() {
             consumer?.start(generationId)
         }
 
-        override fun onAudioStreamStopped() {
+        override fun onAudioStreamStopped(generationId: Int) {
             if (!ownsHandoff) return
+            if (generationId != 0 && audioGeneration != null && audioGeneration != generationId) return
             audioGeneration = null
             consumer?.stop()
             stopSelf()
