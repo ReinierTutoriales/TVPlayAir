@@ -480,7 +480,9 @@ class RaopAudioRtpReceiver(
             isDaemon = true
             start()
         }
-        Log.i(TAG, "RAOP audio UDP receiver listening on port ${udp.localPort} (control=${ctrlUdp.localPort})")
+        runCatching {
+            Log.i(TAG, "RAOP audio UDP receiver listening on port ${udp.localPort} (control=${ctrlUdp.localPort})")
+        }
         return true
     }
 
@@ -535,7 +537,7 @@ class RaopAudioRtpReceiver(
             udp
         } catch (error: IOException) {
             udp.close()
-            Log.w(TAG, "Failed to bind RAOP UDP port $port", error)
+            runCatching { Log.w(TAG, "Failed to bind RAOP UDP port $port", error) }
             null
         }
     }
@@ -556,7 +558,7 @@ class RaopAudioRtpReceiver(
                 ctrlUdp.receive(packet)
             } catch (error: IOException) {
                 if (!ctrlUdp.isClosed && !session.closed.get()) {
-                    Log.w(TAG, "Control socket read failed", error)
+                    runCatching { Log.w(TAG, "Control socket read failed", error) }
                 }
                 break
             }
@@ -618,7 +620,7 @@ class RaopAudioRtpReceiver(
                 udp.receive(packet)
             } catch (error: IOException) {
                 if (!udp.isClosed && !session.closed.get()) {
-                    Log.w(TAG, "Audio socket read failed", error)
+                    runCatching { Log.w(TAG, "Audio socket read failed", error) }
                 }
                 break
             }
@@ -648,7 +650,9 @@ class RaopAudioRtpReceiver(
         if (sampleRate <= 0 || timing.generation != generationProvider()) return
         if (timestampedPackets++ % 200L == 0L) {
             val senderTimeUs = timing.anchor.senderTimeUsAt(rtpTimestamp, sampleRate)
-            Log.i(TAG, "RAOP clock sample gen=${timing.generation} rtp=$rtpTimestamp senderTimeUs=$senderTimeUs")
+            runCatching {
+                Log.i(TAG, "RAOP clock sample gen=${timing.generation} rtp=$rtpTimestamp senderTimeUs=$senderTimeUs")
+            }
         }
     }
 
