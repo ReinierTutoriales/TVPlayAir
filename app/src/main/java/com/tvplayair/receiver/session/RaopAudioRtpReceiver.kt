@@ -374,17 +374,9 @@ class RaopAudioRtpReceiver(
     @Volatile
     private var aesKey: ByteArray? = null
     @Volatile
-    private var candidateAesKeys: List<ByteArray> = emptyList()
-    @Volatile
     private var alacKeySelector: RaopAlacKeySelector? = null
     @Volatile
-    private var keyConfirmed: Boolean = false
-    @Volatile
     private var aesIv: ByteArray? = null
-    @Volatile
-    private var unencryptedPrefix0: Int = -1
-    @Volatile
-    private var unencryptedPrefix1: Int = -1
     private data class SessionClockAnchor(val generation: Int, val anchor: RaopClockAnchor)
 
     @Volatile
@@ -419,11 +411,10 @@ class RaopAudioRtpReceiver(
         alternateAesKey: ByteArray? = null,
         extraAesKeys: List<ByteArray> = emptyList()
     ) {
-        closeActiveTransport(retireSsrc = true)
         synchronized(decodeLock) {
             val primary = sessionAesKey?.takeIf { it.size == 16 }?.copyOf()
             val alt = alternateAesKey?.takeIf { it.size == 16 }?.copyOf()
-            val candidates = buildList {
+            val candidates = if (codec == RaopAudioCodec.ALAC) buildList {
                 if (primary != null) add(primary)
                 if (alt != null && (primary == null || !primary.contentEquals(alt))) add(alt)
                 for (extra in extraAesKeys) {
@@ -431,10 +422,8 @@ class RaopAudioRtpReceiver(
                         add(extra.copyOf())
                     }
                 }
-            }
+            } else emptyList()
             aesKey = primary
-            candidateAesKeys = candidates
-            keyConfirmed = candidates.size <= 1
             val iv = sessionAesIv?.takeIf { it.size == 16 }?.copyOf()
             aesIv = iv
             alacKeySelector = if (codec == RaopAudioCodec.ALAC && iv != null && candidates.isNotEmpty()) {
@@ -444,19 +433,32 @@ class RaopAudioRtpReceiver(
             clockSampleRate = sampleRate
             rxPackets = 0L
             unmatchedAlacPackets = 0L
-            unencryptedPrefix0 = -1
-            unencryptedPrefix1 = -1
             decoder.configure(codec, sampleRate, csd0, samplesPerFrame)
         }
     }
 
-    fun start(peer: InetAddress?, remoteControlPort: Int?, owner: Any, generation: Int): Boolean {
-        closeActiveTransport(retireSsrc = true)
+    fun start(
+        peer: InetAddress?,
+        remoteControlPort: Int?,
+        owner: Any,
+        generation: Int,
+        configureDecoder: () -> Unit = {}
+    ): Boolean {
         val udp = bindUdp(0) ?: bindUdp(DEFAULT_AUDIO_PORT) ?: return false
         val ctrlUdp = bindUdp(0) ?: bindUdp(DEFAULT_CONTROL_PORT)
         if (ctrlUdp == null) {
             udp.close()
             return false
+        }
+
+        // Reserve both new sockets before retiring the current transport.
+        closeActiveTransport(retireSsrc = true)
+        try {
+            configureDecoder()
+        } catch (error: Exception) {
+            udp.close()
+            ctrlUdp.close()
+            throw error
         }
 
         val session = TransportSession(
@@ -715,45 +717,9 @@ class RaopAudioRtpReceiver(
             }
             return
         }
-        if (key != null && iv != null) {
-            if (length < 16) {
-                if (length >= 2 && unencryptedPrefix0 == -1) {
-                    unencryptedPrefix0 = buf[offset].toInt() and 0xFF
-                    unencryptedPrefix1 = buf[offset + 1].toInt() and 0xFF
-                }
-                decoder.decodeAndPublish(buf, offset, length, generation, senderTimeUs)
-                return
-            }
-            var plain = SessionCrypto.decryptRaopAudioCbc(key, iv, buf, offset, length)
-            if (!keyConfirmed && plain.size >= 16) {
-                val candidates = candidateAesKeys
-                var matchedIdx = -1
-                for (idx in candidates.indices) {
-                    val cand = candidates[idx]
-                    val candPlain = if (idx == 0) plain else SessionCrypto.decryptRaopAudioCbc(
-                        cand, iv, buf, offset, length
-                    )
-                    val b0 = candPlain[0].toInt() and 0xFF
-                    val b1 = candPlain[1].toInt() and 0xFF
-                    val b2 = candPlain[2].toInt() and 0xFF
-                    val looksAlac = b0 == 0x20 && b1 == 0x00 && (b2 and 0xE0) == 0x00
-                    val looksAacEld = (unencryptedPrefix0 != -1 && b0 == unencryptedPrefix0 && (b1 and 0xF0) == (unencryptedPrefix1 and 0xF0)) ||
-                        (b0 == 0x00 && (b1 and 0xF0) == 0x60)
-                    if (looksAlac || looksAacEld) {
-                        matchedIdx = idx
-                        aesKey = cand
-                        plain = candPlain
-                        break
-                    }
-                }
-                if (matchedIdx >= 0) {
-                    Log.i(
-                        TAG,
-                        "Selected RAOP AES key idx=$matchedIdx (len=${plain.size} hdr=${plain[0].toInt() and 0xFF},${plain[1].toInt() and 0xFF})"
-                    )
-                    keyConfirmed = true
-                }
-            }
+        if (key != null && iv != null && length >= 16) {
+            // AAC and PCM keep the SETUP key for the lifetime of the stream.
+            val plain = SessionCrypto.decryptRaopAudioCbc(key, iv, buf, offset, length)
             decoder.decodeAndPublish(plain, 0, plain.size, generation, senderTimeUs)
         } else {
             decoder.decodeAndPublish(buf, offset, length, generation, senderTimeUs)

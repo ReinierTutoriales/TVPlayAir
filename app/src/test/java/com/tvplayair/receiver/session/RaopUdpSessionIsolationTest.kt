@@ -72,7 +72,9 @@ class RaopUdpSessionIsolationTest {
             assertTrue(receiver.start(iphoneIpv4, remoteControlPort = 55001, owner = ownerA, generation = currentGen))
             val transportA = receiver.currentTransportForTest()!!
             val portA = receiver.localAudioPort
+            val controlPortA = receiver.localControlPort
             assertTrue(portA > 0)
+            assertTrue(controlPortA > 0)
 
             val pktA100 = buildRtpAudioPacket(100, 1000L, 0x1111_2222L, byteArrayOf(0xA1.toByte()))
             assertTrue(receiver.ingestAudioDatagram(transportA, pktA100, pktA100.size, iphoneIpv4))
@@ -84,11 +86,18 @@ class RaopUdpSessionIsolationTest {
             val inFlight = buildRtpAudioPacket(101, 1352L, 0x1111_2222L, byteArrayOf(0x01))
             assertTrue(receiver.ingestAudioDatagram(transportA, inFlight, inFlight.size, iphoneIpv4))
             assertEquals(1, decoded.last().second)
-            assertTrue(receiver.start(iphoneIpv4, remoteControlPort = 55002, owner = ownerB, generation = currentGen))
+            var decoderConfigured = false
+            assertTrue(receiver.start(iphoneIpv4, remoteControlPort = 55002, owner = ownerB, generation = currentGen) {
+                assertTrue(transportA.closed.get())
+                assertNull(receiver.currentTransportForTest())
+                decoderConfigured = true
+            })
+            assertTrue(decoderConfigured)
             val transportB = receiver.currentTransportForTest()!!
             val portB = receiver.localAudioPort
             assertTrue(transportA.closed.get())
             assertNotEquals(portA, portB)
+            assertNotEquals(controlPortA, receiver.localControlPort)
             decoded.clear()
 
             // 1a) Packet still queued on old transportA is rejected.
