@@ -26,6 +26,8 @@ internal class PcmResampler {
         const val CHANNELS = 2
         const val MAX_DRIFT_PPM = 500
         private const val DRIFT_STEP_PPM = 150
+        private const val PPM_SCALE = 1_000_000L
+        private const val INPUT_FRAME_INTERVAL = TARGET_SAMPLE_RATE * PPM_SCALE
 
         internal fun computeDriftPpm(fillPercent: Int): Int = when (fillPercent) {
             in 0..3 -> DRIFT_STEP_PPM
@@ -39,7 +41,7 @@ internal class PcmResampler {
     private var previousLeft = 0
     private var previousRight = 0
     // Position of the next output sample relative to the previous input frame.
-    // One input-frame interval is TARGET_SAMPLE_RATE units.
+    // Fixed-point phase keeps fractional source rates and history across drift changes.
     private var phase = 0L
     private var hasPreviousFrame = false
 
@@ -61,13 +63,8 @@ internal class PcmResampler {
     ): Int {
         if (srcFrames <= 0 || srcRate < MIN_SOURCE_SAMPLE_RATE) return 0
         val clampedDrift = driftPpm.coerceIn(-MAX_DRIFT_PPM, MAX_DRIFT_PPM)
-        if (srcRate == TARGET_SAMPLE_RATE && clampedDrift == 0) {
-            src.copyInto(dst, endIndex = srcFrames * CHANNELS)
-            return srcFrames
-        }
-        val effectiveRate = (srcRate.toLong() * (1_000_000L - clampedDrift) / 1_000_000L)
-            .toInt()
-            .coerceAtLeast(MIN_SOURCE_SAMPLE_RATE)
+        val effectiveRate = (srcRate.toLong() * (PPM_SCALE - clampedDrift))
+            .coerceAtLeast(MIN_SOURCE_SAMPLE_RATE * PPM_SCALE)
 
         var outSamples = 0
         var inputFrame = 0
@@ -80,19 +77,19 @@ internal class PcmResampler {
             previousRight = r0
             dst[outSamples++] = src[0]
             dst[outSamples++] = src[1]
-            phase = effectiveRate.toLong()
+            phase = effectiveRate
             hasPreviousFrame = true
             inputFrame = 1
         }
         while (inputFrame < srcFrames) {
             val left = src[inputFrame * CHANNELS].toInt()
             val right = src[inputFrame * CHANNELS + 1].toInt()
-            while (phase <= TARGET_SAMPLE_RATE) {
+            while (phase <= INPUT_FRAME_INTERVAL) {
                 dst[outSamples++] = cubicHermite(prev2Left, previousLeft, left)
                 dst[outSamples++] = cubicHermite(prev2Right, previousRight, right)
                 phase += effectiveRate
             }
-            phase -= TARGET_SAMPLE_RATE
+            phase -= INPUT_FRAME_INTERVAL
             prev2Left = previousLeft
             prev2Right = previousRight
             previousLeft = left
@@ -103,7 +100,7 @@ internal class PcmResampler {
     }
 
     private fun cubicHermite(y0: Int, y1: Int, y2: Int): Short {
-        val t = phase.toDouble() / TARGET_SAMPLE_RATE
+        val t = phase.toDouble() / INPUT_FRAME_INTERVAL
         val t2 = t * t
         val t3 = t2 * t
         val h00 = 2.0 * t3 - 3.0 * t2 + 1.0

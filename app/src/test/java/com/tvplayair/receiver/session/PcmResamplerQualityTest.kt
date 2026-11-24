@@ -61,4 +61,22 @@ class PcmResamplerQualityTest {
         assertTrue(slowOut < srcFrames)
         assertTrue(fastOut > slowOut)
     }
+    @Test
+    fun `changing drift at 48 kHz never interpolates against a retired chunk`() {
+        val resampler = PcmResampler()
+        val dst = ShortArray(1_000)
+        var previous = 0
+        for ((chunk, drift) in listOf(500, 0, 500, -150, 0).withIndex()) {
+            val src = ShortArray(960) { ((chunk * 480 + it / 2) * 12).toShort() }
+            val frames = resampler.resampleStereoI16(src, 480, 48_000, dst, drift)
+            assertTrue(frames in 479..481)
+            for (i in 0 until frames * 2 step 2) {
+                val sample = dst[i].toInt()
+                assertTrue("chunk=$chunk frame=${i / 2} previous=$previous sample=$sample",
+                    sample - previous in 0..15)
+                previous = sample
+            }
+        }
+    }
+
 }
